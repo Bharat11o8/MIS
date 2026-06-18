@@ -22,6 +22,10 @@ class CreateUserRequest(BaseModel):
     role: str
     department: Optional[str] = None
 
+class UpdateProfileRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+
 class UserOut(BaseModel):
     id: str
     name: str
@@ -33,6 +37,33 @@ class UserOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── Own profile ──────────────────────────────────────────────────────────────
+@router.patch("/me")
+def update_my_profile(
+    body: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if body.email and body.email.strip().lower() != current_user.email:
+        conflict = db.query(User).filter(User.email == body.email.strip().lower()).first()
+        if conflict:
+            raise HTTPException(status_code=409, detail="Email already in use by another account")
+        current_user.email = body.email.strip().lower()
+
+    if body.name and body.name.strip():
+        current_user.name = body.name.strip()
+
+    db.commit()
+    db.refresh(current_user)
+    return {
+        "id": str(current_user.id),
+        "name": current_user.name,
+        "email": current_user.email,
+        "role": current_user.role,
+        "department": current_user.department,
+    }
 
 
 # ── Guards ───────────────────────────────────────────────────────────────────

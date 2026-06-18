@@ -25,6 +25,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   clearPasswordFlag: () => void;
+  updateUser: (updates: Partial<Pick<User, "name" | "email">>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -95,6 +96,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem("mis_token");
   };
 
+  const updateUser = (updates: Partial<Pick<User, "name" | "email">>) => {
+    if (!user) return;
+    const updated = { ...user, ...updates };
+    setUser(updated);
+    localStorage.setItem("mis_user", JSON.stringify(updated));
+  };
+
   // Called by ResetPasswordPage after successful reset
   const clearPasswordFlag = () => {
     setMustChangePassword(false);
@@ -107,7 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, isAuthenticated: !!user, mustChangePassword, login, logout, clearPasswordFlag }}
+      value={{ user, token, isAuthenticated: !!user, mustChangePassword, login, logout, clearPasswordFlag, updateUser }}
     >
       {children}
     </AuthContext.Provider>

@@ -9,6 +9,7 @@ import SalesPage from "@/pages/SalesPage";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadsUploadPage from "@/pages/LeadsUploadPage";
 import ExportPage from "@/pages/ExportPage";
+import ProfilePage from "@/pages/ProfilePage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, mustChangePassword } = useAuth();
@@ -70,6 +71,7 @@ function AppRoutes() {
         <Route path="leads" element={<LeadsPage />} />
         <Route path="leads/upload" element={<LeadsUploadPage />} />
         <Route path="export" element={<ExportPage />} />
+        <Route path="profile" element={<ProfilePage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
