@@ -1,0 +1,173 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design Tokens ─────────────────────────────────── */
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 217 33% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 217 91% 60%;
+    --radius: 0.75rem;
+  }
+}
+
+/* ─── Base Resets ────────────────────────────────────── */
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    @apply bg-brand-bg font-sans text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-orange-200 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-orange-300;
+  }
+}
+
+/* ─── Component Utilities ────────────────────────────── */
+@layer components {
+
+  /* Glass card — login page */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  }
+
+  /* Premium white card — dashboard */
+  .card-premium {
+    @apply bg-white rounded-2xl border border-gray-100 shadow-sm;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .card-premium:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Sidebar nav item */
+  .nav-item {
+    @apply flex items-center gap-3 h-12 px-4 rounded-2xl text-sm font-medium text-gray-500 cursor-pointer;
+    transition: all 0.3s ease;
+  }
+  .nav-item:hover {
+    @apply bg-orange-50 text-orange-600;
+  }
+  .nav-item.active {
+    @apply bg-white text-orange-600 border border-orange-100;
+    box-shadow: 0 2px 12px rgba(244, 102, 23, 0.08);
+  }
+  .nav-item.active .nav-icon {
+    @apply bg-orange-50 text-orange-600 border border-orange-200;
+  }
+
+  /* Nav icon container */
+  .nav-icon {
+    @apply flex items-center justify-center w-8 h-8 rounded-xl text-gray-400;
+    transition: all 0.3s ease;
+  }
+
+  /* Section label */
+  .nav-section-label {
+    @apply text-[10px] font-bold uppercase tracking-widest text-gray-400 px-4 pt-4 pb-1;
+  }
+
+  /* Two-tone page title */
+  .page-title-dark {
+    @apply text-3xl font-black text-gray-900 tracking-tight;
+  }
+  .page-title-orange {
+    @apply text-3xl font-black tracking-tight;
+    color: #f46617;
+  }
+
+  /* KPI stat card */
+  .kpi-card {
+    @apply card-premium p-6 flex flex-col gap-1;
+  }
+
+  /* Badge */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider;
+  }
+  .badge-orange {
+    @apply badge bg-orange-500 text-white;
+  }
+  .badge-blue {
+    @apply badge bg-blue-500 text-white;
+  }
+  .badge-green {
+    @apply badge bg-green-500 text-white;
+  }
+  .badge-red {
+    @apply badge bg-red-500 text-white;
+  }
+  .badge-yellow {
+    @apply badge bg-yellow-400 text-gray-900;
+  }
+
+  /* Glow blob backgrounds */
+  .blob-orange {
+    position: absolute;
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(circle, rgba(244, 102, 23, 0.15) 0%, transparent 70%);
+    border-radius: 50%;
+    filter: blur(60px);
+    pointer-events: none;
+  }
+  .blob-blue {
+    position: absolute;
+    width: 350px;
+    height: 350px;
+    background: radial-gradient(circle, rgba(59, 130, 246, 0.12) 0%, transparent 70%);
+    border-radius: 50%;
+    filter: blur(60px);
+    pointer-events: none;
+  }
+}

@@ -1,0 +1,38 @@
+# ── Frontend ──────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+backend/venv/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ── Local data sheets (customer data — never commit) ─────────────────────────
+Local_sheets/
+
+# ── IDE & tooling ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.claude/
+*.suo
+*.user
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
