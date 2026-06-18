@@ -234,7 +234,7 @@ export default function LoginPage() {
             style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}
           >
             <p className="text-[10px] text-white/35 uppercase tracking-wider font-medium">
-              Demo: admin@autoformindia.com / admin123
+              Demo: dev@autoformindia.com / admin123
             </p>
           </div>
         </div>

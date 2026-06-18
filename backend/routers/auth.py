@@ -161,7 +161,7 @@ def _send_otp_email(to_email: str, otp: str, name: str) -> None:
           <p style="color:#f46617;font-size:36px;font-weight:900;letter-spacing:0.25em;margin:0;">{otp}</p>
         </div>
         <p style="color:#9ca3af;font-size:12px;line-height:1.6;margin:0;">
-          If you didn't request this, you can safely ignore this email. Your password won't change.
+          If you didn't request this contact IT Support immediately.
         </p>
       </div>
       <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">

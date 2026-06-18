@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { User, Mail, Shield, CheckCircle, AlertCircle, KeyRound } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { User, Mail, Shield, CheckCircle, AlertCircle } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -26,7 +25,6 @@ const ROLE_COLORS: Record<UserRole, string> = {
 
 export default function ProfilePage() {
   const { user, token, updateUser } = useAuth();
-  const navigate = useNavigate();
 
   const [name, setName] = useState(user?.name ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
@@ -187,21 +185,6 @@ export default function ProfilePage() {
           </div>
         </form>
 
-        <div className="h-px bg-gray-100" />
-
-        {/* Change password shortcut */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-bold text-gray-700">Password</p>
-            <p className="text-xs text-gray-400 mt-0.5">Change your account password</p>
-          </div>
-          <button
-            onClick={() => navigate("/reset-password")}
-            className="flex items-center gap-2 h-9 px-4 rounded-xl text-xs font-bold text-gray-600 border border-gray-200 hover:border-orange-300 hover:text-orange-600 transition-all duration-200"
-          >
-            <KeyRound size={13} /> Change Password
-          </button>
-        </div>
       </motion.div>
     </div>
   );

@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
+import { Eye, EyeOff, Lock, AlertCircle } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
-import { Eye, EyeOff, Lock, ShieldCheck } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const logoSrc = "/autoform-logo.png";
 
 function getStrength(pw: string): { score: number; label: string; color: string } {
   let score = 0;
@@ -71,7 +73,7 @@ export default function ResetPasswordPage() {
 
       setSuccess(true);
       clearPasswordFlag();
-      setTimeout(() => navigate("/"), 1500);
+      setTimeout(() => navigate("/dashboard"), 1500);
     } catch {
       setError("Network error. Please try again.");
     } finally {
@@ -80,96 +82,146 @@ export default function ResetPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0f1e] flex items-center justify-center p-4">
-      {/* Background glow */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[500px] h-[500px] rounded-full bg-blue-600/10 blur-[120px]" />
-      </div>
+    <div className="relative min-h-screen w-full overflow-hidden flex items-center justify-center">
+      {/* Background */}
+      <div
+        className="absolute inset-0 z-0"
+        style={{
+          backgroundImage: "url('../Assets/seat-cover-hero-4.webp')",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+        }}
+      />
+      <div className="absolute inset-0 z-0" style={{ background: "rgba(8, 15, 30, 0.2)" }} />
 
-      <div className="relative w-full max-w-md">
-        {/* Card */}
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
-          {/* Icon */}
-          <div className="flex justify-center mb-6">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/30">
-              <ShieldCheck className="w-8 h-8 text-white" />
+      <motion.div
+        initial={{ opacity: 0, y: 24, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.5, ease: [0.4, 0, 0.2, 1] }}
+        className="relative z-10 w-full max-w-[400px] mx-4"
+      >
+        <div className="glass-card rounded-3xl p-8 flex flex-col gap-6">
+          {/* Logo + heading */}
+          <div className="flex flex-col items-center gap-3">
+            <img
+              src={logoSrc}
+              alt="AutoForm India"
+              className="h-12 w-auto"
+              style={{ filter: "brightness(0) invert(1)" }}
+            />
+            <div className="text-center">
+              <p className="text-sm font-bold text-white">Set Your Password</p>
+              <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/60 mt-1">
+                First-time login — please update your credentials
+              </p>
+            </div>
+            <div className="flex items-center gap-3 w-full">
+              <div className="flex-1 h-px bg-white/10" />
+              <div
+                className="text-[9px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border"
+                style={{
+                  color: "#ffffff",
+                  borderColor: "rgba(255,255,255,0.1)",
+                  backgroundColor: "rgba(255,255,255,0.1)",
+                }}
+              >
+                Account Setup
+              </div>
+              <div className="flex-1 h-px bg-white/10" />
             </div>
           </div>
 
-          <h1 className="text-2xl font-bold text-white text-center mb-1">Set Your Password</h1>
-          <p className="text-sm text-gray-400 text-center mb-8">
-            Your account requires a password reset before continuing.
-          </p>
-
           {success ? (
-            <div className="bg-green-500/15 border border-green-500/30 rounded-xl p-4 text-center">
-              <p className="text-green-400 font-medium">✅ Password changed! Redirecting…</p>
+            <div
+              className="rounded-xl p-4 text-center"
+              style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.25)" }}
+            >
+              <p className="text-green-400 font-bold text-sm">Password updated! Redirecting…</p>
             </div>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-5">
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               {/* Current password */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-white/80">
                   Current Password
                 </label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/70" />
                   <input
                     type={showCurrent ? "text" : "password"}
                     value={currentPw}
                     onChange={(e) => setCurrentPw(e.target.value)}
                     required
-                    className="w-full pl-10 pr-10 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
-                    placeholder="Enter current password"
+                    placeholder="Enter your current password"
+                    className="w-full h-11 pl-9 pr-10 rounded-xl text-sm text-white placeholder-white/35 outline-none transition-all duration-200"
+                    style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
+                    onFocus={(e) => {
+                      e.target.style.border = "1px solid rgba(244,102,23,0.5)";
+                      e.target.style.background = "rgba(255,255,255,0.12)";
+                    }}
+                    onBlur={(e) => {
+                      e.target.style.border = "1px solid rgba(255,255,255,0.12)";
+                      e.target.style.background = "rgba(255,255,255,0.08)";
+                    }}
                   />
                   <button
                     type="button"
                     onClick={() => setShowCurrent(!showCurrent)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-white/70 hover:text-white/60 transition-colors"
                   >
-                    {showCurrent ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showCurrent ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
                 </div>
               </div>
 
               {/* New password */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-white/80">
                   New Password
                 </label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/70" />
                   <input
                     type={showNew ? "text" : "password"}
                     value={newPw}
                     onChange={(e) => setNewPw(e.target.value)}
                     required
-                    className="w-full pl-10 pr-10 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
                     placeholder="Create a strong password"
+                    className="w-full h-11 pl-9 pr-10 rounded-xl text-sm text-white placeholder-white/35 outline-none transition-all duration-200"
+                    style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
+                    onFocus={(e) => {
+                      e.target.style.border = "1px solid rgba(244,102,23,0.5)";
+                      e.target.style.background = "rgba(255,255,255,0.12)";
+                    }}
+                    onBlur={(e) => {
+                      e.target.style.border = "1px solid rgba(255,255,255,0.12)";
+                      e.target.style.background = "rgba(255,255,255,0.08)";
+                    }}
                   />
                   <button
                     type="button"
                     onClick={() => setShowNew(!showNew)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-white/70 hover:text-white/60 transition-colors"
                   >
-                    {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showNew ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
                 </div>
                 {/* Strength bar */}
                 {newPw && (
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-1 space-y-1">
                     <div className="flex gap-1">
                       {[0, 1, 2, 3].map((i) => (
                         <div
                           key={i}
                           className="h-1 flex-1 rounded-full transition-all duration-300"
                           style={{
-                            backgroundColor: i < strength.score ? strength.color : "rgba(255,255,255,0.1)",
+                            backgroundColor: i < strength.score ? strength.color : "rgba(255,255,255,0.12)",
                           }}
                         />
                       ))}
                     </div>
-                    <p className="text-xs" style={{ color: strength.color }}>
+                    <p className="text-[10px] font-bold" style={{ color: strength.color }}>
                       {strength.label}
                     </p>
                   </div>
@@ -177,40 +229,66 @@ export default function ResetPasswordPage() {
               </div>
 
               {/* Confirm */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-white/80">
                   Confirm New Password
                 </label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/70" />
                   <input
                     type="password"
                     value={confirmPw}
                     onChange={(e) => setConfirmPw(e.target.value)}
                     required
-                    className="w-full pl-10 pr-3 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
                     placeholder="Repeat new password"
+                    className="w-full h-11 pl-9 pr-4 rounded-xl text-sm text-white placeholder-white/35 outline-none transition-all duration-200"
+                    style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
+                    onFocus={(e) => {
+                      e.target.style.border = "1px solid rgba(244,102,23,0.5)";
+                      e.target.style.background = "rgba(255,255,255,0.12)";
+                    }}
+                    onBlur={(e) => {
+                      e.target.style.border = "1px solid rgba(255,255,255,0.12)";
+                      e.target.style.background = "rgba(255,255,255,0.08)";
+                    }}
                   />
                 </div>
               </div>
 
               {error && (
-                <div className="bg-red-500/15 border border-red-500/30 rounded-xl p-3">
-                  <p className="text-red-400 text-sm">{error}</p>
-                </div>
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-red-300"
+                  style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)" }}
+                >
+                  <AlertCircle size={13} className="shrink-0" />
+                  {error}
+                </motion.div>
               )}
 
-              <button
+              <motion.button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 rounded-xl font-semibold text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg shadow-blue-500/20"
+                whileTap={{ scale: 0.97 }}
+                className="w-full h-11 rounded-xl text-sm font-bold uppercase tracking-wider text-white transition-all duration-200 disabled:opacity-60 mt-1"
+                style={{
+                  background: loading
+                    ? "rgba(139, 28, 28, 0.5)"
+                    : "linear-gradient(135deg, #9B2020, #6B1010)",
+                  boxShadow: loading ? "none" : "0 4px 24px rgba(139, 20, 20, 0.5)",
+                }}
               >
-                {loading ? "Changing…" : "Set New Password"}
-              </button>
+                {loading ? "Updating…" : "Set New Password"}
+              </motion.button>
             </form>
           )}
         </div>
-      </div>
+
+        <p className="text-center text-[10px] text-white/100 mt-4 uppercase tracking-wider">
+          © 2025 AutoForm India
+        </p>
+      </motion.div>
     </div>
   );
 }
