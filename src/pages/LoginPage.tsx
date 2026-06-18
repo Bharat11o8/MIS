@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Lock, Mail, AlertCircle } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -172,6 +172,16 @@ export default function LoginPage() {
                 {error}
               </motion.div>
             )}
+
+            {/* Forgot password */}
+            <div className="text-right -mt-1">
+              <Link
+                to="/forgot-password"
+                className="text-[11px] text-white/50 hover:text-orange-400 transition-colors font-medium"
+              >
+                Forgot password?
+              </Link>
+            </div>
 
             {/* Submit Button */}
             <motion.button

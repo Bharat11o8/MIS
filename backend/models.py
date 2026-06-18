@@ -19,10 +19,12 @@ class User(Base):
     role                 = Column(String(50), nullable=False)
     department           = Column(String(100))
     is_active            = Column(Boolean, default=True)
-    must_change_password = Column(Boolean, default=False)
-    created_by           = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at           = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at           = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+    must_change_password  = Column(Boolean, default=False)
+    reset_otp             = Column(String(6), nullable=True)
+    reset_otp_expires_at  = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_by            = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at            = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at            = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Lead(Base):
