@@ -1,27 +1,10 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { User, Mail, Shield, CheckCircle, AlertCircle } from "lucide-react";
-import { useAuth, UserRole } from "@/context/AuthContext";
+import { useAuth } from "@/context/AuthContext";
+import { ROLE_LABELS, ROLE_COLORS } from "@/lib/roles";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-const ROLE_LABELS: Record<UserRole, string> = {
-  superadmin: "Super Admin",
-  management: "Management",
-  sales_head: "Sales Head",
-  leads_head: "Leads Head",
-  sales_rep: "Sales Rep",
-  staff: "Staff",
-};
-
-const ROLE_COLORS: Record<UserRole, string> = {
-  superadmin: "bg-purple-100 text-purple-700",
-  management: "bg-blue-100 text-blue-700",
-  sales_head: "bg-green-100 text-green-700",
-  leads_head: "bg-orange-100 text-orange-700",
-  sales_rep: "bg-yellow-100 text-yellow-700",
-  staff: "bg-gray-100 text-gray-600",
-};
 
 export default function ProfilePage() {
   const { user, token, updateUser } = useAuth();

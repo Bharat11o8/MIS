@@ -1,0 +1,470 @@
+import { useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  UserPlus, Search, ShieldCheck, UserCheck, UserX, KeyRound,
+  X, Eye, EyeOff, RefreshCw as Shuffle, Copy, Check, AlertCircle, Users as UsersIcon,
+} from "lucide-react";
+import { useAuth, UserRole } from "@/context/AuthContext";
+import { ROLE_LABELS, ROLE_COLORS, ALL_ROLES } from "@/lib/roles";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+interface AppUser {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  department: string | null;
+  is_active: boolean;
+  must_change_password: boolean;
+  created_at: string | null;
+}
+
+const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
+const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: { duration: 0.35 } } };
+
+function generatePassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%";
+  let out = "";
+  for (let i = 0; i < 10; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+export default function UsersPage() {
+  const { user: me, token } = useAuth();
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<UserRole | "">("");
+  const [pendingToggle, setPendingToggle] = useState<string | null>(null);
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [justCreated, setJustCreated] = useState<{ email: string; password: string } | null>(null);
+
+  const isSuperadmin = me?.role === "superadmin";
+
+  const fetchUsers = () => {
+    setLoading(true);
+    fetch(`${API_URL}/users/`, { headers })
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.json();
+      })
+      .then(setUsers)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { if (token && isSuperadmin) fetchUsers(); }, [token, isSuperadmin]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return users.filter((u) => {
+      if (roleFilter && u.role !== roleFilter) return false;
+      if (q && !u.name.toLowerCase().includes(q) && !u.email.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [users, search, roleFilter]);
+
+  const kpis = [
+    { id: "users-total", label: "Total Users", value: users.length, icon: <UsersIcon size={18} />, color: "#3b82f6", bg: "#eff6ff" },
+    { id: "users-active", label: "Active", value: users.filter((u) => u.is_active).length, icon: <UserCheck size={18} />, color: "#22c55e", bg: "#f0fdf4" },
+    { id: "users-inactive", label: "Inactive", value: users.filter((u) => !u.is_active).length, icon: <UserX size={18} />, color: "#ef4444", bg: "#fef2f2" },
+    { id: "users-pending-reset", label: "Pending Reset", value: users.filter((u) => u.must_change_password).length, icon: <KeyRound size={18} />, color: "#f59e0b", bg: "#fffbeb" },
+  ];
+
+  const toggleActive = async (u: AppUser) => {
+    setPendingToggle(u.id);
+    setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, is_active: !x.is_active } : x)));
+    try {
+      const res = await fetch(`${API_URL}/users/${u.id}/toggle-active`, { method: "PATCH", headers });
+      if (!res.ok) throw new Error();
+    } catch {
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, is_active: u.is_active } : x)));
+    } finally {
+      setPendingToggle(null);
+    }
+  };
+
+  if (!isSuperadmin) {
+    return (
+      <div className="p-6 flex items-center justify-center h-full">
+        <div className="card-premium p-8 flex flex-col items-center gap-3 text-center max-w-sm">
+          <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-400 flex items-center justify-center">
+            <ShieldCheck size={22} />
+          </div>
+          <p className="text-sm font-bold text-gray-700">Access Restricted</p>
+          <p className="text-xs text-gray-400">User management is only available to Super Admin accounts.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 flex flex-col gap-6">
+      {/* Header */}
+      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="flex items-end justify-between">
+        <div>
+          <h1 className="flex items-center gap-3">
+            <span className="page-title-dark">USER</span>
+            <span className="page-title-orange">MANAGEMENT</span>
+          </h1>
+          <div className="flex items-center gap-2 mt-1">
+            <div className="w-8 h-0.5 bg-gray-800 rounded" />
+            <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+              Create & Manage Team Accounts
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => { setJustCreated(null); setModalOpen(true); }}
+          className="flex items-center gap-2 h-11 px-5 rounded-xl text-sm font-bold text-white transition-all duration-200"
+          style={{ background: "linear-gradient(135deg,#f46617,#d85512)", boxShadow: "0 4px 16px rgba(244,102,23,0.3)" }}
+        >
+          <UserPlus size={16} /> Add User
+        </button>
+      </motion.div>
+
+      {/* Just-created credentials banner */}
+      <AnimatePresence>
+        {justCreated && (
+          <CreatedBanner info={justCreated} onDismiss={() => setJustCreated(null)} />
+        )}
+      </AnimatePresence>
+
+      {/* KPI Cards */}
+      <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        {kpis.map((kpi) => (
+          <motion.div key={kpi.id} variants={item} id={kpi.id} className="kpi-card">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>
+              {kpi.icon}
+            </div>
+            <div className="mt-3">
+              <p className="text-2xl font-black text-gray-900">{loading ? "—" : kpi.value}</p>
+              <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
+            </div>
+          </motion.div>
+        ))}
+      </motion.div>
+
+      {/* Toolbar */}
+      <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[220px] max-w-sm">
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-300" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name or email…"
+            className="w-full h-10 pl-10 pr-3 rounded-xl border border-gray-200 text-sm text-gray-700 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
+          />
+        </div>
+        <select
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value as UserRole | "")}
+          className="h-10 px-3 rounded-xl border border-gray-200 text-xs font-medium text-gray-700 bg-white outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all cursor-pointer"
+        >
+          <option value="">All Roles</option>
+          {ALL_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+        </select>
+        <button
+          onClick={fetchUsers}
+          className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 h-10 rounded-xl border border-gray-200 hover:border-orange-200"
+        >
+          <Shuffle size={13} className={loading ? "animate-spin" : ""} /> Refresh
+        </button>
+        <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 ml-auto">
+          {filtered.length} of {users.length} users
+        </p>
+      </motion.div>
+
+      {/* Table */}
+      <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="card-premium overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-y border-gray-50 bg-gray-50/50">
+                {["User", "Role", "Department", "Status", "Password", "Created", ""].map((h) => (
+                  <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-3 first:pl-6 last:pr-6">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {loading ? (
+                <tr><td colSpan={7} className="text-center py-8 text-sm text-gray-400">Loading users…</td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={7} className="text-center py-8 text-sm text-gray-400">No users match the current filters.</td></tr>
+              ) : filtered.map((u) => {
+                const isSelf = u.id === me?.id;
+                return (
+                  <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
+                    <td className="px-6 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center text-xs font-bold shrink-0">
+                          {u.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-gray-800 truncate">{u.name}{isSelf && <span className="text-gray-300 font-normal"> (you)</span>}</p>
+                          <p className="text-[11px] text-gray-400 truncate">{u.email}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${ROLE_COLORS[u.role]}`}>
+                        {ROLE_LABELS[u.role]}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3.5 text-xs text-gray-600">{u.department ?? <span className="text-gray-300">—</span>}</td>
+                    <td className="px-4 py-3.5">
+                      <span className={`badge ${u.is_active ? "badge-green" : "badge-red"}`}>
+                        {u.is_active ? "Active" : "Inactive"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      {u.must_change_password ? (
+                        <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Pending Reset</span>
+                      ) : (
+                        <span className="text-[10px] text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5 text-xs text-gray-400">
+                      {u.created_at ? new Date(u.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                    </td>
+                    <td className="px-4 py-3.5 pr-6 text-right">
+                      <button
+                        onClick={() => toggleActive(u)}
+                        disabled={isSelf || pendingToggle === u.id}
+                        title={isSelf ? "You can't deactivate yourself" : u.is_active ? "Deactivate" : "Activate"}
+                        className={`text-[11px] font-bold px-3 py-1.5 rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                          u.is_active
+                            ? "text-red-500 border-red-200 hover:bg-red-50"
+                            : "text-green-600 border-green-200 hover:bg-green-50"
+                        }`}
+                      >
+                        {pendingToggle === u.id ? "…" : u.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </motion.div>
+
+      <AnimatePresence>
+        {modalOpen && (
+          <CreateUserModal
+            headers={headers}
+            onClose={() => setModalOpen(false)}
+            onCreated={(u, password) => {
+              setUsers((prev) => [u, ...prev]);
+              setJustCreated({ email: u.email, password });
+              setModalOpen(false);
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Created-credentials banner ────────────────────────────────────────────────
+function CreatedBanner({ info, onDismiss }: { info: { email: string; password: string }; onDismiss: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    navigator.clipboard.writeText(info.password).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.25 }}
+      className="overflow-hidden"
+    >
+      <div className="flex items-center gap-3 bg-green-50 border border-green-100 rounded-2xl p-4">
+        <ShieldCheck size={18} className="text-green-600 shrink-0" />
+        <div className="flex-1 text-xs text-green-800">
+          <span className="font-bold">{info.email}</span> created. Share this temporary password — they'll be forced to reset it on first login:{" "}
+          <span className="font-mono font-bold bg-white px-2 py-0.5 rounded-lg border border-green-200">{info.password}</span>
+        </div>
+        <button onClick={copy} className="text-[11px] font-bold text-green-700 hover:text-green-800 flex items-center gap-1 px-2 py-1 shrink-0">
+          {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}
+        </button>
+        <button onClick={onDismiss} className="text-green-400 hover:text-green-600 shrink-0"><X size={15} /></button>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Create User Modal ─────────────────────────────────────────────────────────
+function CreateUserModal({
+  headers, onClose, onCreated,
+}: {
+  headers: Record<string, string>;
+  onClose: () => void;
+  onCreated: (user: AppUser, password: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [role, setRole] = useState<UserRole>("staff");
+  const [department, setDepartment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const valid = name.trim().length > 0 && /\S+@\S+\.\S+/.test(email) && password.length >= 6;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!valid) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch(`${API_URL}/users/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+          role,
+          department: department.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || "Failed to create user.");
+      } else {
+        onCreated(data, password);
+      }
+    } catch {
+      setError("Cannot connect to server.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 12 }}
+        transition={{ duration: 0.2 }}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-5"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-black text-gray-900">Add New User</h2>
+          <button onClick={onClose} className="text-gray-300 hover:text-gray-500"><X size={18} /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Full Name</label>
+            <input
+              value={name} onChange={(e) => setName(e.target.value)} required autoFocus
+              placeholder="e.g. Priya Sharma"
+              className="h-11 px-4 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Email Address</label>
+            <input
+              type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+              placeholder="name@autoformindia.com"
+              className="h-11 px-4 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Temporary Password</label>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6}
+                  placeholder="Min. 6 characters"
+                  className="h-11 w-full px-4 pr-10 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
+                />
+                <button type="button" onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500">
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setPassword(generatePassword()); setShowPassword(true); }}
+                title="Generate password"
+                className="h-11 w-11 shrink-0 rounded-xl border border-gray-200 text-gray-500 hover:border-orange-300 hover:text-orange-500 flex items-center justify-center transition-all"
+              >
+                <Shuffle size={15} />
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-400">User will be forced to set their own password on first login.</p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Role</label>
+            <select
+              value={role} onChange={(e) => setRole(e.target.value as UserRole)}
+              className="h-11 px-4 rounded-xl border border-gray-200 text-sm text-gray-800 bg-white outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all cursor-pointer"
+            >
+              {ALL_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+              Department <span className="text-gray-300 normal-case font-normal">(optional)</span>
+            </label>
+            <input
+              value={department} onChange={(e) => setDepartment(e.target.value)}
+              placeholder="e.g. Sales, Leads, Operations"
+              className="h-11 px-4 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
+            />
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs text-red-600 bg-red-50 border border-red-100">
+              <AlertCircle size={13} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              type="submit" disabled={!valid || saving}
+              className="flex-1 h-11 rounded-xl text-sm font-bold text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: "linear-gradient(135deg,#f46617,#d85512)", boxShadow: "0 4px 16px rgba(244,102,23,0.3)" }}
+            >
+              {saving ? "Creating…" : "Create User"}
+            </button>
+            <button
+              type="button" onClick={onClose}
+              className="h-11 px-5 rounded-xl text-sm font-medium text-gray-500 border border-gray-200 hover:border-gray-300 hover:text-gray-700 transition-all"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}

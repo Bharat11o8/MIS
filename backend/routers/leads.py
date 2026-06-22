@@ -4,7 +4,7 @@ Upload, unified analytics (filter-aware), filter options, paginated list, upload
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, text, extract
+from sqlalchemy import func, case, text, extract, and_, or_
 from typing import Optional
 from datetime import date, timedelta
 from database import get_db
@@ -31,6 +31,21 @@ def apply_user_scope_sql(where_clauses: list, params: dict, current_user: User):
         params["_scope_user_id"] = str(current_user.id)
 
 
+# ── Month-list helper ──────────────────────────────────────────────────────────
+def parse_months_param(months: Optional[str]) -> list[tuple[int, int]]:
+    """Parse a comma-separated 'YYYY-MM,YYYY-MM' string into (year, month) tuples."""
+    if not months:
+        return []
+    pairs = []
+    for token in months.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        year_s, month_s = token.split("-")
+        pairs.append((int(year_s), int(month_s)))
+    return pairs
+
+
 # ── Shared filter helper ──────────────────────────────────────────────────────
 def apply_filters(q, filters: dict):
     """Apply common filters to any Lead query."""
@@ -38,6 +53,11 @@ def apply_filters(q, filters: dict):
         q = q.filter(Lead.lead_date >= filters["date_from"])
     if filters.get("date_to"):
         q = q.filter(Lead.lead_date <= filters["date_to"])
+    if filters.get("months"):
+        q = q.filter(or_(*[
+            and_(extract("year", Lead.lead_date) == y, extract("month", Lead.lead_date) == m)
+            for y, m in filters["months"]
+        ]))
     if filters.get("source"):
         q = q.filter(Lead.source == filters["source"])
     if filters.get("asm"):
@@ -61,6 +81,13 @@ def apply_filters_text(where_clauses: list, params: dict, filters: dict):
     if filters.get("date_to"):
         where_clauses.append("lead_date <= :date_to")
         params["date_to"] = filters["date_to"]
+    if filters.get("months"):
+        month_clauses = []
+        for i, (y, m) in enumerate(filters["months"]):
+            month_clauses.append(f"(EXTRACT(year FROM lead_date) = :_my{i} AND EXTRACT(month FROM lead_date) = :_mm{i})")
+            params[f"_my{i}"] = y
+            params[f"_mm{i}"] = m
+        where_clauses.append("(" + " OR ".join(month_clauses) + ")")
     if filters.get("source"):
         where_clauses.append("source = :source")
         params["source"] = filters["source"]
@@ -188,6 +215,7 @@ def filter_options(
 def leads_analytics(
     date_from:       Optional[date] = None,
     date_to:         Optional[date] = None,
+    months:          Optional[str]  = None,
     source:          Optional[str]  = None,
     asm:             Optional[str]  = None,
     call_status:     Optional[str]  = None,
@@ -198,7 +226,7 @@ def leads_analytics(
     current_user: User = Depends(get_current_user),
 ):
     filters = {
-        "date_from": date_from, "date_to": date_to,
+        "date_from": date_from, "date_to": date_to, "months": parse_months_param(months),
         "source": source, "asm": asm,
         "call_status": call_status, "review_status": review_status,
         "reason_category": reason_category, "state": state,
@@ -289,6 +317,7 @@ def leads_list(
     per_page:        int           = Query(50, ge=1, le=200),
     date_from:       Optional[date] = None,
     date_to:         Optional[date] = None,
+    months:          Optional[str]  = None,
     source:          Optional[str]  = None,
     asm:             Optional[str]  = None,
     call_status:     Optional[str]  = None,
@@ -299,7 +328,7 @@ def leads_list(
     current_user: User = Depends(get_current_user),
 ):
     filters = {
-        "date_from": date_from, "date_to": date_to,
+        "date_from": date_from, "date_to": date_to, "months": parse_months_param(months),
         "source": source, "asm": asm,
         "call_status": call_status, "review_status": review_status,
         "reason_category": reason_category, "state": state,

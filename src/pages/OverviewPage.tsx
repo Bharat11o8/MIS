@@ -48,7 +48,7 @@ function SkeletonCard() {
 }
 
 export default function OverviewPage() {
-  const { user, token } = useAuth();
+  const { user, token, logout } = useAuth();
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -57,8 +57,12 @@ export default function OverviewPage() {
     fetch(`${API_URL}/leads/analytics`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => r.json())
-      .then(setData)
+      .then((r) => {
+        if (r.status === 401) { logout(); return null; }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => { if (d) setData(d); })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [token]);
@@ -80,7 +84,7 @@ export default function OverviewPage() {
     {
       id: "total-leads",
       label: "Total Leads",
-      value: loading ? "—" : (data?.kpis.total ?? 0).toLocaleString("en-IN"),
+      value: loading ? "—" : (data?.kpis?.total ?? 0).toLocaleString("en-IN"),
       sub: isManagement ? "All channels combined" : "Your portfolio",
       icon: <Users size={18} />,
       color: "#f46617",
@@ -89,7 +93,7 @@ export default function OverviewPage() {
     {
       id: "closed-won",
       label: "Closed Won",
-      value: loading ? "—" : (data?.kpis.closed_won ?? 0).toLocaleString("en-IN"),
+      value: loading ? "—" : (data?.kpis?.closed_won ?? 0).toLocaleString("en-IN"),
       sub: "Converted leads",
       icon: <CheckCircle size={18} />,
       color: "#22c55e",
@@ -98,7 +102,7 @@ export default function OverviewPage() {
     {
       id: "conversion-rate",
       label: "Conversion Rate",
-      value: loading ? "—" : `${data?.kpis.conversion_rate ?? 0}%`,
+      value: loading ? "—" : `${data?.kpis?.conversion_rate ?? 0}%`,
       sub: "Lead to Closed Won",
       icon: <TrendingUp size={18} />,
       color: "#3b82f6",
@@ -107,8 +111,8 @@ export default function OverviewPage() {
     {
       id: "top-source",
       label: "Top Channel",
-      value: loading ? "—" : (data?.kpis.top_source ?? "—"),
-      sub: loading ? "" : `${(data?.kpis.top_source_count ?? 0).toLocaleString("en-IN")} leads`,
+      value: loading ? "—" : (data?.kpis?.top_source ?? "—"),
+      sub: loading ? "" : `${(data?.kpis?.top_source_count ?? 0).toLocaleString("en-IN")} leads`,
       icon: <Radio size={18} />,
       color: "#8b5cf6",
       bg: "#f5f3ff",

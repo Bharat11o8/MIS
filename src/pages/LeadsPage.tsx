@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Users, TrendingUp, PhoneCall, CheckCircle2,
@@ -9,6 +9,8 @@ import {
   PieChart, Pie, Cell, Legend, LineChart, Line,
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
+import Select from "@/components/ui/Select";
+import MultiSelect from "@/components/ui/MultiSelect";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -31,7 +33,7 @@ const STATUS_BADGE: Record<string, string> = {
   "Complaint": "bg-pink-100 text-pink-700",
 };
 const REASON_COLORS: Record<string, string> = {
-  "ASM Shared": "#6366f1", "Already Bought": "#22c55e",
+  "Assigned to ASM": "#6366f1", "Already Bought": "#22c55e",
   "Images Shared": "#3b82f6", "Store Shared": "#f59e0b",
   "Inquiry": "#ec4899", "Other": "#94a3b8",
 };
@@ -44,18 +46,21 @@ interface FilterOptions {
   reason_cats: string[]; states: string[];
 }
 interface ActiveFilters {
-  month: MonthOption | null;
+  year: number | null;
+  months: number[]; // selected month numbers within `year`; empty = all months in that year
   source: string; asm: string; call_status: string;
   review_status: string; reason_category: string; state: string;
 }
 
 const EMPTY_FILTERS: ActiveFilters = {
-  month: null, source: "", asm: "", call_status: "",
+  year: null, months: [], source: "", asm: "", call_status: "",
   review_status: "", reason_category: "", state: "",
 };
 
 const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
 const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: { duration: 0.35 } } };
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // ── Select helper ─────────────────────────────────────────────────────────────
 function FilterSelect({
@@ -67,15 +72,11 @@ function FilterSelect({
   return (
     <div className="flex flex-col gap-1 min-w-[130px]">
       <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</label>
-      <select
+      <Select
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="text-xs border border-gray-200 rounded-xl px-3 py-2 bg-white text-gray-700 font-medium
-          focus:outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-400 transition cursor-pointer"
-      >
-        <option value="">{allLabel}</option>
-        {options.map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
+        onChange={onChange}
+        options={[{ value: "", label: allLabel }, ...options.map((o) => ({ value: o, label: o }))]}
+      />
     </div>
   );
 }
@@ -104,7 +105,13 @@ export default function LeadsPage() {
   // ── Build query params from active filters ─────────────────────────────────
   const buildParams = useCallback((f: ActiveFilters) => {
     const p = new URLSearchParams();
-    if (f.month) { p.set("date_from", f.month.date_from); p.set("date_to", f.month.date_to); }
+    if (f.year !== null) {
+      const monthsInYear = (filterOptions?.months ?? []).filter((m) => m.year === f.year);
+      const selected = f.months.length === 0 ? monthsInYear : monthsInYear.filter((m) => f.months.includes(m.month));
+      if (selected.length) {
+        p.set("months", selected.map((m) => `${m.year}-${String(m.month).padStart(2, "0")}`).join(","));
+      }
+    }
     if (f.source) p.set("source", f.source);
     if (f.asm) p.set("asm", f.asm);
     if (f.call_status) p.set("call_status", f.call_status);
@@ -112,7 +119,7 @@ export default function LeadsPage() {
     if (f.reason_category) p.set("reason_category", f.reason_category);
     if (f.state) p.set("state", f.state);
     return p.toString();
-  }, []);
+  }, [filterOptions]);
 
   // ── Fetch all analytics + list whenever filters change ────────────────────
   const fetchData = useCallback(async (f: ActiveFilters) => {
@@ -144,7 +151,7 @@ export default function LeadsPage() {
 
   // ── Active filter count ────────────────────────────────────────────────────
   const activeCount = [
-    filters.month, filters.source, filters.asm, filters.call_status,
+    filters.year !== null, filters.source, filters.asm, filters.call_status,
     filters.review_status, filters.reason_category, filters.state,
   ].filter(Boolean).length;
 
@@ -152,6 +159,25 @@ export default function LeadsPage() {
     setFilters((prev) => ({ ...prev, [key]: value }));
 
   const clearAll = () => setFilters(EMPTY_FILTERS);
+
+  // ── Year / Month filter (scales across years instead of one flat chip list) ─
+  const availableYears = useMemo(() => {
+    const years = Array.from(new Set((filterOptions?.months ?? []).map((m) => m.year)));
+    return years.sort((a, b) => b - a);
+  }, [filterOptions]);
+
+  const monthsInSelectedYear = useMemo(() => {
+    if (filters.year === null) return [];
+    return (filterOptions?.months ?? [])
+      .filter((m) => m.year === filters.year)
+      .sort((a, b) => a.month - b.month);
+  }, [filterOptions, filters.year]);
+
+  const handleYearChange = (yearStr: string) =>
+    setFilters((prev) => ({ ...prev, year: yearStr === "" ? null : Number(yearStr), months: [] }));
+
+  const handleMonthsChange = (monthStrs: string[]) =>
+    setFilter("months", monthStrs.map(Number));
 
   // ── KPI cards ──────────────────────────────────────────────────────────────
   const kpiCards = analytics ? [
@@ -229,34 +255,30 @@ export default function LeadsPage() {
           >
             <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
               <div className="flex flex-wrap gap-4 items-end">
-                {/* Month chips */}
+                {/* Year + Month */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Year</label>
+                  <Select
+                    value={filters.year !== null ? String(filters.year) : ""}
+                    onChange={handleYearChange}
+                    options={[
+                      { value: "", label: "All Years" },
+                      ...availableYears.map((y) => ({ value: String(y), label: String(y) })),
+                    ]}
+                    className="min-w-[110px]"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Month</label>
-                  <div className="flex gap-1.5 flex-wrap">
-                    <button
-                      onClick={() => setFilter("month", null)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-                        !filters.month
-                          ? "bg-orange-500 text-white border-orange-500"
-                          : "bg-white text-gray-600 border-gray-200 hover:border-orange-300"
-                      }`}
-                    >
-                      All
-                    </button>
-                    {filterOptions?.months.map((m) => (
-                      <button
-                        key={`${m.year}-${m.month}`}
-                        onClick={() => setFilter("month", m)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-                          filters.month?.month === m.month && filters.month?.year === m.year
-                            ? "bg-orange-500 text-white border-orange-500"
-                            : "bg-white text-gray-600 border-gray-200 hover:border-orange-300"
-                        }`}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
+                  <MultiSelect
+                    values={filters.months.map(String)}
+                    onChange={handleMonthsChange}
+                    options={monthsInSelectedYear.map((m) => ({ value: String(m.month), label: MONTH_NAMES[m.month - 1] }))}
+                    placeholder="All Months"
+                    disabled={filters.year === null}
+                    className="min-w-[130px]"
+                  />
                 </div>
 
                 <div className="w-px h-10 bg-gray-100 hidden xl:block" />
@@ -521,7 +543,7 @@ export default function LeadsPage() {
                   <BarChart2 size={16} />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-gray-800">Reason Categories</h3>
+                  <h3 className="text-sm font-bold text-gray-800">Lead Distribution</h3>
                   <p className="text-[11px] text-gray-400">Click to filter</p>
                 </div>
               </div>
@@ -575,7 +597,7 @@ export default function LeadsPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-y border-gray-50 bg-gray-50/50">
-                    {["Date", "Name", "Mobile", "State", "Source", "Product", "ASM", "Review Status"].map((h) => (
+                    {["Date", "Name", "Mobile", "State", "Source", "Product", "ASM", "Review Status", "Review Reason"].map((h) => (
                       <th key={h}
                         className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-3 first:pl-6 last:pr-6">
                         {h}
@@ -586,7 +608,7 @@ export default function LeadsPage() {
                 <tbody className="divide-y divide-gray-50">
                   {leads.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-8 text-sm text-gray-400">
+                      <td colSpan={9} className="text-center py-8 text-sm text-gray-400">
                         No leads match the selected filters.
                       </td>
                     </tr>
@@ -629,6 +651,9 @@ export default function LeadsPage() {
                             {row.review_status}
                           </button>
                         ) : <span className="text-gray-300 text-xs">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" title={row.review_reason ?? undefined}>
+                        {row.review_reason ?? <span className="text-gray-300">—</span>}
                       </td>
                     </tr>
                   ))}

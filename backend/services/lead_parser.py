@@ -130,7 +130,7 @@ _ASM_RE = re.compile(
 
 # ── Reason category patterns ────────────────────────────────────────────────
 _REASON_PATTERNS = [
-    (re.compile(r'shared\s+with\s+.+?\s+(?:asm|sir)', re.IGNORECASE), "ASM Shared"),
+    (re.compile(r'shared\s+with\s+.+?\s+(?:asm|sir)', re.IGNORECASE), "Assigned to ASM"),
     (re.compile(r'shared\s+(images?|image)', re.IGNORECASE),           "Images Shared"),
     (re.compile(r'shared\s+.*(store|address)', re.IGNORECASE),         "Store Shared"),
     (re.compile(r'(bought|buy|purchase|said.*bought)', re.IGNORECASE), "Already Bought"),
@@ -261,10 +261,15 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
         if filename.lower().endswith(".csv"):
             df_raw = pd.read_csv(io.BytesIO(file_bytes))
         else:
-            # Try all sheets, combine
             xl = pd.ExcelFile(io.BytesIO(file_bytes))
+            # If a primary "Sheet1" tab exists, use only that — secondary tabs
+            # (e.g. "Store", "Store Leads") are often informal scratch sheets
+            # with unreliable Date columns and shouldn't be combined in.
+            primary = next((s for s in xl.sheet_names if s.strip().lower() == "sheet1"), None)
+            sheets_to_read = [primary] if primary else xl.sheet_names
+
             frames = []
-            for sheet in xl.sheet_names:
+            for sheet in sheets_to_read:
                 try:
                     frames.append(pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet))
                 except Exception as e:
