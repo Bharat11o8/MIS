@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Users, TrendingUp, PhoneCall, CheckCircle2,
+  Users, TrendingUp, PhoneCall, CheckCircle2, Clock, XCircle,
   BarChart2, MapPin, Award, RefreshCw, SlidersHorizontal, X
 } from "lucide-react";
 import {
@@ -189,19 +189,31 @@ export default function LeadsPage() {
     {
       id: "leads-won", label: "Closed Won", value: analytics.kpis.closed_won.toLocaleString(),
       icon: <CheckCircle2 size={18} />, color: "#22c55e", bg: "#f0fdf4",
-      sub: `${analytics.kpis.conversion_rate}% conversion`,
+      sub: "Converted leads",
     },
     {
+      id: "leads-conversion", label: "Conversion Rate",
+      value: `${analytics.kpis.conversion_rate}%`,
+      icon: <TrendingUp size={18} />, color: "#3b82f6", bg: "#eff6ff",
+      sub: "Lead to Closed Won",
+    },
+    {
+      id: "leads-followup", label: "Follow Ups",
+      value: analytics.kpis.follow_up.toLocaleString(),
+      icon: <Clock size={18} />, color: "#f59e0b", bg: "#fffbeb",
+      sub: "Pending follow-up",
+    },
+    {
+      id: "leads-lost", label: "Closed Lost",
+      value: analytics.kpis.closed_lost.toLocaleString(),
+      icon: <XCircle size={18} />, color: "#ef4444", bg: "#fef2f2",
+      sub: "Did not convert",
+    },
+        {
       id: "leads-source", label: "Top Channel",
       value: analytics.kpis.top_source ?? "—",
       icon: <PhoneCall size={18} />, color: "#f46617", bg: "#fff7ed",
       sub: `${analytics.kpis.top_source_count} leads`,
-    },
-    {
-      id: "leads-asm", label: "Top ASM",
-      value: analytics.asm_performance[0]?.asm ?? "—",
-      icon: <Award size={18} />, color: "#6366f1", bg: "#eef2ff",
-      sub: `${analytics.asm_performance[0]?.total ?? 0} leads shared`,
     },
   ] : [];
 
@@ -333,7 +345,7 @@ export default function LeadsPage() {
         <>
           {/* KPI Cards */}
           <motion.div variants={container} initial="hidden" animate="show"
-            className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+            className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
             {kpiCards.map((kpi) => (
               <motion.div key={kpi.id} variants={item} id={kpi.id} className="kpi-card">
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center"
@@ -369,8 +381,14 @@ export default function LeadsPage() {
                   <XAxis dataKey="period" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                   <Tooltip contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Legend iconType="circle" iconSize={8}
+                    formatter={(v) => <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{v}</span>} />
                   <Line type="monotone" dataKey="count" stroke="#f46617" strokeWidth={2.5}
-                    dot={{ fill: "#f46617", r: 4 }} activeDot={{ r: 6 }} name="Leads" />
+                    dot={{ fill: "#f46617", r: 4 }} activeDot={{ r: 6 }} name="Total Leads" />
+                  <Line type="monotone" dataKey="closed_won" stroke="#22c55e" strokeWidth={2.5}
+                    dot={{ fill: "#22c55e", r: 4 }} activeDot={{ r: 6 }} name="Closed Won" />
+                  <Line type="monotone" dataKey="follow_up" stroke="#f59e0b" strokeWidth={2.5}
+                    dot={{ fill: "#f59e0b", r: 4 }} activeDot={{ r: 6 }} name="Follow Up" />
                 </LineChart>
               </ResponsiveContainer>
             </motion.div>

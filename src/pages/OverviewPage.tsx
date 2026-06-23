@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  Users, CheckCircle, TrendingUp, Radio,
+  Users, CheckCircle, TrendingUp, Radio, Clock, XCircle,
   ArrowUpRight, BarChart3, PieChart as PieIcon,
 } from "lucide-react";
 import {
@@ -20,11 +20,13 @@ interface Analytics {
   kpis: {
     total: number;
     closed_won: number;
+    follow_up: number;
+    closed_lost: number;
     conversion_rate: number;
     top_source: string | null;
     top_source_count: number;
   };
-  trends: { period: string; count: number }[];
+  trends: { period: string; count: number; closed_won: number; follow_up: number }[];
   sources: { source: string; count: number }[];
 }
 
@@ -72,6 +74,8 @@ export default function OverviewPage() {
   const trendData = (data?.trends ?? []).map((t) => ({
     month: new Date(t.period).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }),
     leads: t.count,
+    closedWon: t.closed_won,
+    followUp: t.follow_up,
   }));
 
   const sourceData = (data?.sources ?? []).map((s) => ({
@@ -109,6 +113,24 @@ export default function OverviewPage() {
       bg: "#eff6ff",
     },
     {
+      id: "follow-up",
+      label: "Follow Ups",
+      value: loading ? "—" : (data?.kpis?.follow_up ?? 0).toLocaleString("en-IN"),
+      sub: "Pending follow-up",
+      icon: <Clock size={18} />,
+      color: "#f59e0b",
+      bg: "#fffbeb",
+    },
+    {
+      id: "closed-lost",
+      label: "Closed Lost",
+      value: loading ? "—" : (data?.kpis?.closed_lost ?? 0).toLocaleString("en-IN"),
+      sub: "Did not convert",
+      icon: <XCircle size={18} />,
+      color: "#ef4444",
+      bg: "#fef2f2",
+    },
+        {
       id: "top-source",
       label: "Top Channel",
       value: loading ? "—" : (data?.kpis?.top_source ?? "—"),
@@ -147,9 +169,9 @@ export default function OverviewPage() {
       </motion.div>
 
       {/* KPI Cards */}
-      <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+      <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
         {loading
-          ? Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+          ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
           : kpis.map((kpi) => (
               <motion.div key={kpi.id} variants={item} className="kpi-card">
                 <div className="flex items-start justify-between">
@@ -205,6 +227,13 @@ export default function OverviewPage() {
                 <Tooltip
                   contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }}
                 />
+                <Legend
+                  iconType="circle"
+                  iconSize={8}
+                  formatter={(value) => (
+                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{value}</span>
+                  )}
+                />
                 <Line
                   type="monotone"
                   dataKey="leads"
@@ -212,7 +241,25 @@ export default function OverviewPage() {
                   strokeWidth={2.5}
                   dot={{ fill: "#f46617", r: 4 }}
                   activeDot={{ r: 6 }}
-                  name="Leads"
+                  name="Total Leads"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="closedWon"
+                  stroke="#22c55e"
+                  strokeWidth={2.5}
+                  dot={{ fill: "#22c55e", r: 4 }}
+                  activeDot={{ r: 6 }}
+                  name="Closed Won"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="followUp"
+                  stroke="#f59e0b"
+                  strokeWidth={2.5}
+                  dot={{ fill: "#f59e0b", r: 4 }}
+                  activeDot={{ r: 6 }}
+                  name="Follow Up"
                 />
               </LineChart>
             </ResponsiveContainer>

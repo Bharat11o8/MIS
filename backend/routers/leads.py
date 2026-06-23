@@ -242,6 +242,14 @@ def leads_analytics(
     closed_won = base2.filter(Lead.review_status == "Closed Won").count()
     conv_rate  = round((closed_won / total * 100), 1) if total > 0 else 0.0
 
+    base3 = apply_user_scope(db.query(Lead), current_user)
+    base3 = apply_filters(base3, filters)
+    follow_up = base3.filter(Lead.review_status == "Follow Up").count()
+
+    base4 = apply_user_scope(db.query(Lead), current_user)
+    base4 = apply_filters(base4, filters)
+    closed_lost = base4.filter(Lead.review_status == "Closed Lost").count()
+
     # ── Trends ────────────────────────────────────────────────────────────────
     where_clauses = ["1=1"]
     params: dict = {}
@@ -250,7 +258,10 @@ def leads_analytics(
     where_sql = " AND ".join(where_clauses)
 
     trend_rows = db.execute(text(f"""
-        SELECT date_trunc('month', lead_date)::date AS period, COUNT(*) AS count
+        SELECT date_trunc('month', lead_date)::date AS period,
+               COUNT(*) AS count,
+               COUNT(*) FILTER (WHERE review_status = 'Closed Won') AS closed_won,
+               COUNT(*) FILTER (WHERE review_status = 'Follow Up')  AS follow_up
         FROM leads
         WHERE {where_sql}
         GROUP BY period ORDER BY period ASC
@@ -296,11 +307,16 @@ def leads_analytics(
         "kpis": {
             "total": total,
             "closed_won": closed_won,
+            "follow_up": follow_up,
+            "closed_lost": closed_lost,
             "conversion_rate": conv_rate,
             "top_source": src_rows[0].source if src_rows else None,
             "top_source_count": src_rows[0].count if src_rows else 0,
         },
-        "trends":          [{"period": str(r.period), "count": r.count} for r in trend_rows],
+        "trends": [
+            {"period": str(r.period), "count": r.count, "closed_won": r.closed_won, "follow_up": r.follow_up}
+            for r in trend_rows
+        ],
         "sources":         [{"source": r.source, "count": r.count} for r in src_rows],
         "call_status":     [{"status": r.call_status, "count": r.count} for r in cs_rows],
         "review_status":   [{"status": r.review_status, "count": r.count} for r in rs_rows],
