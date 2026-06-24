@@ -2,7 +2,7 @@
 AutoForm MIS — Updated SQLAlchemy ORM Models (Phase 3)
 """
 import uuid
-from sqlalchemy import Column, String, Boolean, Integer, Date, Text, ForeignKey
+from sqlalchemy import Column, String, Boolean, Integer, Date, Text, ForeignKey, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy import TIMESTAMP
@@ -65,21 +65,35 @@ class UploadLog(Base):
     uploaded_at   = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
-class SalesDispatch(Base):
-    __tablename__ = "sales_dispatches"
+class PlantToDepotSale(Base):
+    __tablename__ = "plant_to_depot_sales"
 
     id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    invoice_no    = Column(String(50), unique=True, nullable=False)
-    dispatch_date = Column(Date, nullable=False)
-    plant_name    = Column(String(100), nullable=False)
-    depot_name    = Column(String(100), nullable=False)
-    sku           = Column(String(100), nullable=False)
-    product_name  = Column(String(200))
-    quantity      = Column(Integer, nullable=False)
-    vehicle_no    = Column(String(30))
-    driver_name   = Column(String(100))
-    status        = Column(String(30), default="Pending")
-    remarks       = Column(Text)
-    created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    sale_year     = Column(Integer, nullable=False)
+    sale_month    = Column(Integer, nullable=False)
+    depot         = Column(String(50), nullable=False)
+    brand         = Column(String(20), nullable=False)
+    category      = Column(String(30), nullable=False)
+    qty           = Column(Numeric(12, 2))
+    rate          = Column(Numeric(12, 2))
+    amount        = Column(Numeric(14, 2), nullable=False)
+    sync_log_id   = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at    = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyncLog(Base):
+    __tablename__ = "sync_logs"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    module        = Column(String(50), nullable=False, default="sales_plant_to_depot")
+    source_label  = Column(String(255))
+    rows_total    = Column(Integer, default=0)
+    rows_inserted = Column(Integer, default=0)
+    rows_updated  = Column(Integer, default=0)
+    rows_failed   = Column(Integer, default=0)
+    rows_deleted  = Column(Integer, default=0)
+    status        = Column(String(30), default="Processing")
+    error_details = Column(Text)
+    synced_by     = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    synced_at     = Column(TIMESTAMP(timezone=True), server_default=func.now())
