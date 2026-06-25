@@ -11,6 +11,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
 import MultiSelect from "@/components/ui/MultiSelect";
+import DepotToDistributorTab from "@/pages/DepotToDistributorTab";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -79,6 +80,8 @@ function FilterSelect({
 export default function SalesPage() {
   const { token } = useAuth();
   const headers = { Authorization: `Bearer ${token}` };
+
+  const [activeTab, setActiveTab] = useState<"plant_to_depot" | "depot_to_distributor">("plant_to_depot");
 
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
   const [filters, setFilters] = useState<ActiveFilters>(EMPTY_FILTERS);
@@ -209,18 +212,40 @@ export default function SalesPage() {
         <div>
           <h1 className="flex items-center gap-3">
             <span className="page-title-dark">SALES</span>
-            <span className="page-title-orange">PLANT TO DEPOT</span>
+            <span className="page-title-orange">{activeTab === "plant_to_depot" ? "PLANT TO DEPOT" : "DEPOT TO DISTRIBUTOR"}</span>
           </h1>
           <div className="flex items-center gap-2 mt-1">
             <div className="w-8 h-0.5 bg-gray-800 rounded" />
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
             <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
-              {analytics ? `${formatINR(analytics.kpis.total_amount)} total` : "Loading…"}
-              {activeCount > 0 && <span className="text-orange-500"> · {activeCount} filter{activeCount > 1 ? "s" : ""} active</span>}
+              {activeTab === "plant_to_depot" ? (
+                <>
+                  {analytics ? `${formatINR(analytics.kpis.total_amount)} total` : "Loading…"}
+                  {activeCount > 0 && <span className="text-orange-500"> · {activeCount} filter{activeCount > 1 ? "s" : ""} active</span>}
+                </>
+              ) : "ASM / Distributor targets and attainment"}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+          <button onClick={() => setActiveTab("plant_to_depot")}
+            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+              activeTab === "plant_to_depot" ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            }`}>
+            Plant to Depot
+          </button>
+          <button onClick={() => setActiveTab("depot_to_distributor")}
+            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+              activeTab === "depot_to_distributor" ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            }`}>
+            Depot to Distributor
+          </button>
+        </div>
+      </motion.div>
+
+      {/* Action row — same slot for both tabs, contents differ */}
+      {activeTab === "plant_to_depot" && (
+        <div className="flex items-center justify-end gap-2">
           <button onClick={() => fetchData(filters)}
             className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
             <RefreshCw size={13} /> Refresh
@@ -246,8 +271,12 @@ export default function SalesPage() {
             )}
           </button>
         </div>
-      </motion.div>
+      )}
 
+      {activeTab === "depot_to_distributor" && <DepotToDistributorTab />}
+
+      {activeTab === "plant_to_depot" && (
+      <>
       {/* Sync result card */}
       <AnimatePresence>
         {syncResult && (
@@ -545,6 +574,8 @@ export default function SalesPage() {
             )}
           </div>
         </>
+      )}
+      </>
       )}
     </div>
   );

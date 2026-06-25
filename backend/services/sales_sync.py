@@ -13,16 +13,10 @@ and never reads anything outside its own anchored window — which is also
 why the stray junk columns and leftover one-off blocks that show up in some
 months never need to be cleaned up by the team.
 """
-import os
-import json
-import base64
 import re
 from typing import Optional, Tuple
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-
-SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+from services.google_sheets import get_sheets_service
 
 # ── Fixed vocab ──────────────────────────────────────────────────────────────
 DEPOT_CANON = {
@@ -45,21 +39,6 @@ _TERMINATOR_LABELS = {"GRAND TOTAL", "TOTAL"}
 
 # ── Google Sheets access ─────────────────────────────────────────────────────
 
-def _load_service_account_info() -> dict:
-    raw = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
-    if not raw:
-        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is not set")
-    if raw.startswith("{"):
-        return json.loads(raw)
-    return json.loads(base64.b64decode(raw))
-
-
-def _get_sheets_service():
-    info = _load_service_account_info()
-    creds = service_account.Credentials.from_service_account_info(info, scopes=SHEETS_SCOPES)
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
-
-
 def parse_tab_title(title: str) -> Optional[Tuple[int, int]]:
     """Extract (year, month) from a free-form tab title like 'JAN-26' or 'MAR 26'."""
     m = _TAB_TITLE_RE.search(title.upper())
@@ -78,7 +57,7 @@ def fetch_workbook_grids(sheet_id: str):
       grids        — {tab_title: (year, month, grid)}, grid = list of rows (ragged, 1-indexed via _cell)
       skipped_tabs — titles that didn't match a recognizable month/year
     """
-    service = _get_sheets_service()
+    service = get_sheets_service()
     meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
     titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
 

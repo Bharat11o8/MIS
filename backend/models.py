@@ -82,6 +82,36 @@ class PlantToDepotSale(Base):
     updated_at    = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class SheetSource(Base):
+    __tablename__ = "sheet_sources"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    module        = Column(String(50), nullable=False)
+    sheet_id      = Column(String(100), nullable=False)
+    label         = Column(String(100), nullable=False)
+    calendar_year = Column(Integer, nullable=False)
+    created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class DistributorSale(Base):
+    __tablename__ = "distributor_sales"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    entity_type     = Column(String(20), nullable=False)
+    distributor     = Column(String(150), nullable=False)
+    area_head       = Column(String(100), nullable=True)
+    target          = Column(Numeric(14, 2), nullable=True)
+    sale_year       = Column(Integer, nullable=False)
+    sale_month      = Column(Integer, nullable=False)
+    category        = Column(String(10), nullable=False)
+    amount          = Column(Numeric(14, 2), nullable=False)
+    sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class SyncLog(Base):
     __tablename__ = "sync_logs"
 
