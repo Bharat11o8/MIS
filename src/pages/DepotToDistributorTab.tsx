@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  LineChart, Line, Legend,
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
@@ -108,7 +109,7 @@ export default function DepotToDistributorTab() {
   const [expandedHeads, setExpandedHeads] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("ALL");
   const [monthFilter, setMonthFilter] = useState<MonthFilter>("ALL");
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const activeFilterCount = (categoryFilter !== "ALL" ? 1 : 0) + (monthFilter !== "ALL" ? 1 : 0);
 
   const [showAddForm, setShowAddForm] = useState(false);
@@ -270,6 +271,28 @@ export default function DepotToDistributorTab() {
       .sort((a, b) => (b.attainment_pct ?? -1) - (a.attainment_pct ?? -1));
   }, [filteredAreaHeads]);
 
+  // Always uses all months — category filter not applied here since the whole
+  // point is to see SAM vs EV trajectory through the quarter unobstructed.
+  const trendData = useMemo(() => {
+    if (!analytics) return [];
+    return analytics.company_total.monthly.map((m) => ({
+      name: MONTH_NAMES[m.month],
+      SAM: Math.round(m.sam),
+      EV: Math.round(m.ev),
+    }));
+  }, [analytics]);
+
+  const samEvByAreaHead = useMemo(() => {
+    if (!analytics) return [];
+    return analytics.area_heads
+      .map((g) => ({
+        area_head: g.area_head,
+        SAM: sumMonthly(g.monthly, monthFilter, "SAM"),
+        EV: sumMonthly(g.monthly, monthFilter, "EV"),
+      }))
+      .sort((a, b) => (b.SAM + b.EV) - (a.SAM + a.EV));
+  }, [analytics, monthFilter]);
+
   const kpiCards = analytics && filteredCompanyTotal ? [
     { id: "dd-target", label: "Total Target", value: formatINR(filteredCompanyTotal.target), icon: <Target size={18} />, color: "#3b82f6", bg: "#eff6ff" },
     { id: "dd-achieved", label: "Total Achieved", value: formatINR(filteredCompanyTotal.achieved), icon: <IndianRupee size={18} />, color: "#f46617", bg: "#fff7ed" },
@@ -299,6 +322,12 @@ export default function DepotToDistributorTab() {
           </button>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => selectedSheetId && loadAnalytics(selectedSheetId)}
+            disabled={!selectedSheetId || loading}
+            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 disabled:cursor-not-allowed">
+            <RefreshCw size={13} /> Refresh
+          </button>
           <button
             onClick={() => setFiltersOpen(!filtersOpen)}
             className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
@@ -462,26 +491,49 @@ export default function DepotToDistributorTab() {
             ))}
           </div>
 
-          {/* SAM vs EV split — always shows both, independent of the category filter below */}
-          <div className="card-premium p-5">
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">SAM vs EV Split{monthFilter !== "ALL" ? ` — ${MONTH_NAMES[monthFilter]}` : ""}</h3>
-            <div className="flex flex-col gap-3">
-              {[
-                { label: "SAM", value: samEvSplit.sam, color: "#3b82f6" },
-                { label: "EV", value: samEvSplit.ev, color: "#a855f7" },
-              ].map((row) => {
-                const maxVal = Math.max(samEvSplit.sam, samEvSplit.ev, 1);
-                const widthPct = Math.max(2, (Math.abs(row.value) / maxVal) * 100);
-                return (
-                  <div key={row.label} className="flex items-center gap-3">
-                    <span className="text-xs font-bold text-gray-600 w-8">{row.label}</span>
-                    <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${widthPct}%`, background: row.color }} />
+          {/* Monthly trend + SAM vs EV company split */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className="card-premium p-6 xl:col-span-2">
+              <div className="flex items-center gap-2 mb-5">
+                <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><TrendingUp size={16} /></div>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-800">Monthly Trend</h3>
+                  <p className="text-[11px] text-gray-400">SAM and EV trajectory through the quarter</p>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={trendData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
+                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{v}</span>} />
+                  <Line type="monotone" dataKey="SAM" stroke="#3b82f6" strokeWidth={2.5} dot={{ fill: "#3b82f6", r: 4 }} activeDot={{ r: 6 }} />
+                  <Line type="monotone" dataKey="EV" stroke="#a855f7" strokeWidth={2.5} dot={{ fill: "#a855f7", r: 4 }} activeDot={{ r: 6 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {/* SAM vs EV split — always shows both, independent of the category filter */}
+            <div className="card-premium p-5">
+              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">SAM vs EV Split{monthFilter !== "ALL" ? ` — ${MONTH_NAMES[monthFilter]}` : ""}</h3>
+              <div className="flex flex-col gap-3">
+                {[
+                  { label: "SAM", value: samEvSplit.sam, color: "#3b82f6" },
+                  { label: "EV", value: samEvSplit.ev, color: "#a855f7" },
+                ].map((row) => {
+                  const maxVal = Math.max(samEvSplit.sam, samEvSplit.ev, 1);
+                  const widthPct = Math.max(2, (Math.abs(row.value) / maxVal) * 100);
+                  return (
+                    <div key={row.label} className="flex items-center gap-3">
+                      <span className="text-xs font-bold text-gray-600 w-8">{row.label}</span>
+                      <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${widthPct}%`, background: row.color }} />
+                      </div>
+                      <span className="text-xs font-semibold text-gray-800 w-24 text-right">{formatINR(row.value)}</span>
                     </div>
-                    <span className="text-xs font-semibold text-gray-800 w-24 text-right">{formatINR(row.value)}</span>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
 
@@ -504,6 +556,30 @@ export default function DepotToDistributorTab() {
                   <Bar dataKey="attainment_pct" radius={[0, 6, 6, 0]} name="Attainment">
                     {chartData.map((d) => <Cell key={d.area_head} fill={pctColorScoped(d.attainment_pct, monthFilter)} />)}
                   </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* SAM vs EV breakdown per Area Head */}
+          {samEvByAreaHead.length > 0 && (
+            <div className="card-premium p-6">
+              <div className="flex items-center gap-2 mb-5">
+                <div className="w-8 h-8 rounded-xl bg-purple-50 flex items-center justify-center text-purple-500"><Users size={16} /></div>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-800">SAM vs EV per Area Head</h3>
+                  <p className="text-[11px] text-gray-400">Category mix by ASM{monthFilter !== "ALL" ? ` — ${MONTH_NAMES[monthFilter]}` : ""}</p>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={Math.max(200, samEvByAreaHead.length * 36)}>
+                <BarChart data={samEvByAreaHead} layout="vertical" barSize={16}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
+                  <YAxis dataKey="area_head" type="category" tick={{ fontSize: 11, fill: "#64748b" }} width={120} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{v}</span>} />
+                  <Bar dataKey="SAM" stackId="a" fill="#3b82f6" name="SAM" />
+                  <Bar dataKey="EV" stackId="a" fill="#a855f7" name="EV" radius={[0, 6, 6, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -573,6 +649,11 @@ export default function DepotToDistributorTab() {
                       <span className="font-bold px-2 py-0.5 rounded-full" style={{ color: pctColorScoped(g.attainment_pct, monthFilter), background: pctColorScoped(g.attainment_pct, monthFilter) + "20" }}>
                         {g.attainment_pct !== null ? `${g.attainment_pct}%` : "—"}
                       </span>
+                      {g.target > 0 && (
+                        <span className="font-semibold" style={{ color: monthFilter !== "ALL" ? "#94a3b8" : g.target - g.achieved <= 0 ? "#22c55e" : "#ef4444" }}>
+                          {g.target - g.achieved <= 0 ? `+${formatCr(g.achieved - g.target)} extra` : `Gap ${formatCr(g.target - g.achieved)}`}
+                        </span>
+                      )}
                     </div>
                   </button>
                   <AnimatePresence>
@@ -589,6 +670,7 @@ export default function DepotToDistributorTab() {
                                   <th key={`${m}-${cat}`} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">{MONTH_NAMES[m]} {cat.toUpperCase()}</th>
                                 )))}
                                 <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Achieved</th>
+                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Gap</th>
                                 <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-2">%</th>
                               </tr>
                             </thead>
@@ -603,6 +685,10 @@ export default function DepotToDistributorTab() {
                                     </td>
                                   )))}
                                   <td className="px-3 py-2.5 text-xs font-semibold text-gray-800 text-right">{formatINR(d.achieved)}</td>
+                                  <td className="px-3 py-2.5 text-xs font-semibold text-right whitespace-nowrap"
+                                    style={{ color: d.target === null ? "#94a3b8" : monthFilter !== "ALL" ? "#94a3b8" : d.target - d.achieved <= 0 ? "#22c55e" : "#ef4444" }}>
+                                    {d.target !== null ? (d.target - d.achieved <= 0 ? `+${formatINR(d.achieved - d.target)}` : formatINR(d.target - d.achieved)) : "—"}
+                                  </td>
                                   <td className="px-4 py-2.5 text-xs font-bold text-right" style={{ color: pctColorScoped(d.attainment_pct, monthFilter) }}>
                                     {d.attainment_pct !== null ? `${d.attainment_pct}%` : "—"}
                                   </td>
