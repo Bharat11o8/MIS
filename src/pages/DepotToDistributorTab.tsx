@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   IndianRupee, Target, TrendingUp, Users, RefreshCw, Plus, ChevronDown, ChevronUp,
-  CheckCircle2, XCircle, Clock, History, SlidersHorizontal, X,
+  CheckCircle2, XCircle, Clock, History, SlidersHorizontal, X, Trash2,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
@@ -119,6 +119,7 @@ export default function DepotToDistributorTab() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  const [deleting, setDeleting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [showSyncErrors, setShowSyncErrors] = useState(false);
@@ -162,6 +163,26 @@ export default function DepotToDistributorTab() {
     if (selectedSheetId) { loadAnalytics(selectedSheetId); loadHistory(selectedSheetId); setSyncResult(null); }
   }, [selectedSheetId, loadAnalytics, loadHistory]);
 
+  // ── Delete sheet source ───────────────────────────────────────────────────────
+  const handleDelete = async () => {
+    if (!selectedSheetId) return;
+    const source = sheetSources.find((s) => s.id === selectedSheetId);
+    if (!source) return;
+    const ok = window.confirm(
+      `Delete "${source.label}"?\n\nThis will permanently remove all distributor sales data for this quarter. This cannot be undone.`
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await fetch(`${API_URL}/distributor-sales/sheet-sources/${selectedSheetId}`, { method: "DELETE", headers });
+      setSelectedSheetId("");
+      setAnalytics(null);
+      await loadSheetSources();
+    } catch { /* ignore */ } finally {
+      setDeleting(false);
+    }
+  };
+
   // ── Add sheet ────────────────────────────────────────────────────────────────
   const handleAddSheet = async () => {
     if (!newLink.trim() || !newLabel.trim() || !newYear.trim()) return;
@@ -178,6 +199,25 @@ export default function DepotToDistributorTab() {
       setNewLink(""); setNewLabel(""); setShowAddForm(false);
       await loadSheetSources();
       setSelectedSheetId(data.id);
+      // Auto-sync on first add — use data.id directly since state hasn't flushed yet
+      setSyncing(true);
+      setSyncResult(null);
+      try {
+        const syncRes = await fetch(`${API_URL}/distributor-sales/sheet-sources/${data.id}/sync`, { method: "POST", headers });
+        const syncData = await syncRes.json();
+        if (!syncRes.ok) throw new Error(syncData.detail || "Sync failed");
+        setSyncResult(syncData);
+        loadHistory(data.id);
+        loadSheetSources();
+        loadAnalytics(data.id);
+      } catch (syncErr: any) {
+        setSyncResult({
+          sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 1, rows_deleted: 0,
+          errors: [syncErr.message], status: "Error",
+        });
+      } finally {
+        setSyncing(false);
+      }
     } catch (e: any) {
       setAddError(e.message);
     } finally {
@@ -320,6 +360,12 @@ export default function DepotToDistributorTab() {
             className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
             <Plus size={13} /> Add Sheet
           </button>
+          {selectedSheetId && (
+            <button onClick={handleDelete} disabled={deleting}
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
+              <Trash2 size={13} />
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -375,7 +421,7 @@ export default function DepotToDistributorTab() {
                 </div>
                 <button onClick={handleAddSheet} disabled={adding}
                   className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
-                  {adding ? "Adding…" : "Add"}
+                  {adding ? "Adding…" : syncing ? "Syncing…" : "Add & Sync"}
                 </button>
                 <button onClick={() => setShowAddForm(false)} className="h-10 px-3 text-xs font-medium text-gray-400 hover:text-gray-600">Cancel</button>
               </div>

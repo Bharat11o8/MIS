@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   IndianRupee, TrendingUp, MapPin, Boxes, RefreshCw, SlidersHorizontal, X,
-  CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp, History,
+  CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp, History, Plus, Trash2,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -38,6 +38,10 @@ interface ActiveFilters {
 }
 const EMPTY_FILTERS: ActiveFilters = { year: null, months: [], depot: "", brand: "", category: "" };
 
+interface PtdSheetSource {
+  id: string; sheet_id: string; label: string;
+  created_at: string | null; last_synced_at: string | null; last_sync_status: string | null;
+}
 interface SyncResult {
   sync_id: string; rows_total: number; rows_inserted: number; rows_updated: number;
   rows_failed: number; rows_deleted: number; skipped_tabs: string[]; errors: string[]; status: string;
@@ -97,16 +101,99 @@ export default function SalesPage() {
   const [history, setHistory] = useState<SyncHistoryItem[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
 
+  // Sheet registry for Plant-to-Depot (multi-sheet, one per FY)
+  const [ptdSources, setPtdSources] = useState<PtdSheetSource[]>([]);
+  const [ptdSelectedId, setPtdSelectedId] = useState<string>("");
+  const [ptdShowAdd, setPtdShowAdd] = useState(false);
+  const [ptdNewLink, setPtdNewLink] = useState("");
+  const [ptdNewLabel, setPtdNewLabel] = useState("");
+  const [ptdAdding, setPtdAdding] = useState(false);
+  const [ptdAddError, setPtdAddError] = useState<string | null>(null);
+  const [ptdDeleting, setPtdDeleting] = useState(false);
+
+  const loadPtdSources = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/sales/sheet-sources`, { headers });
+      if (!res.ok) return;
+      const data: PtdSheetSource[] = await res.json();
+      setPtdSources(data);
+      if (data.length && !ptdSelectedId) setPtdSelectedId(data[0].id);
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const handlePtdAddSheet = async () => {
+    if (!ptdNewLink.trim() || !ptdNewLabel.trim()) return;
+    setPtdAdding(true);
+    setPtdAddError(null);
+    try {
+      const res = await fetch(`${API_URL}/sales/sheet-sources`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ sheet_url_or_id: ptdNewLink.trim(), label: ptdNewLabel.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not add sheet");
+      setPtdNewLink(""); setPtdNewLabel(""); setPtdShowAdd(false);
+      await loadPtdSources();
+      setPtdSelectedId(data.id);
+      // Auto-sync on first add — use data.id directly since state hasn't flushed yet
+      setSyncing(true);
+      setSyncResult(null);
+      try {
+        const syncRes = await fetch(`${API_URL}/sales/sheet-sources/${data.id}/sync`, { method: "POST", headers });
+        const syncData = await syncRes.json();
+        if (!syncRes.ok) throw new Error(syncData.detail || "Sync failed");
+        setSyncResult(syncData);
+        loadHistory(data.id);
+        loadPtdSources();
+        fetchData(filters);
+      } catch (syncErr: any) {
+        setSyncResult({
+          sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 1, rows_deleted: 0,
+          skipped_tabs: [], errors: [syncErr.message], status: "Error",
+        });
+      } finally {
+        setSyncing(false);
+      }
+    } catch (e: any) {
+      setPtdAddError(e.message);
+    } finally {
+      setPtdAdding(false);
+    }
+  };
+
+  const handlePtdDelete = async () => {
+    if (!ptdSelectedId) return;
+    const source = ptdSources.find((s) => s.id === ptdSelectedId);
+    if (!source) return;
+    const ok = window.confirm(
+      `Delete "${source.label}"?\n\nThis will permanently remove all Plant-to-Depot sales data synced from this sheet. This cannot be undone.`
+    );
+    if (!ok) return;
+    setPtdDeleting(true);
+    try {
+      await fetch(`${API_URL}/sales/sheet-sources/${ptdSelectedId}`, { method: "DELETE", headers });
+      setPtdSelectedId("");
+      await loadPtdSources();
+      fetchData(filters);
+    } catch { /* ignore */ } finally {
+      setPtdDeleting(false);
+    }
+  };
+
   // ── Load filter options + sync history once ────────────────────────────────
   useEffect(() => {
     fetch(`${API_URL}/sales/filter-options`, { headers })
       .then((r) => r.json()).then(setFilterOptions).catch(console.error);
     loadHistory();
+    loadPtdSources();
   }, [token]);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (sheetSourceId?: string) => {
     try {
-      const res = await fetch(`${API_URL}/sales/sync-history`, { headers });
+      const qs = sheetSourceId ? `?sheet_source_id=${sheetSourceId}` : "";
+      const res = await fetch(`${API_URL}/sales/sync-history${qs}`, { headers });
       if (res.ok) { setHistory(await res.json()); setHistoryLoaded(true); }
     } catch { /* ignore */ }
   }, [token]);
@@ -166,11 +253,15 @@ export default function SalesPage() {
     setSyncing(true);
     setSyncResult(null);
     try {
-      const res = await fetch(`${API_URL}/sales/sync`, { method: "POST", headers });
+      const url = ptdSelectedId
+        ? `${API_URL}/sales/sheet-sources/${ptdSelectedId}/sync`
+        : `${API_URL}/sales/sync`;
+      const res = await fetch(url, { method: "POST", headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sync failed");
       setSyncResult(data);
-      loadHistory();
+      loadHistory(ptdSelectedId || undefined);
+      loadPtdSources();
       fetchData(filters);
     } catch (err: any) {
       setSyncResult({
@@ -245,32 +336,89 @@ export default function SalesPage() {
 
       {/* Action row — same slot for both tabs, contents differ */}
       {activeTab === "plant_to_depot" && (
-        <div className="flex items-center justify-end gap-2">
-          <button onClick={() => fetchData(filters)}
-            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
-            <RefreshCw size={13} /> Refresh
-          </button>
-          <button
-            onClick={() => setFiltersOpen(!filtersOpen)}
-            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
-              activeCount > 0 ? "bg-orange-500 text-white border-orange-500" : "text-gray-600 border-gray-200 hover:border-orange-200"
-            }`}>
-            <SlidersHorizontal size={13} /> Filters
-            {activeCount > 0 && (
-              <span className="bg-white text-orange-500 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">{activeCount}</span>
+        <>
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <Select
+                value={ptdSelectedId}
+                onChange={setPtdSelectedId}
+                placeholder="Select a sheet…"
+                options={ptdSources.map((s) => ({ value: s.id, label: s.label }))}
+                className="min-w-[160px]"
+              />
+              <button onClick={() => setPtdShowAdd(!ptdShowAdd)}
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+                <Plus size={13} /> Add Sheet
+              </button>
+              {ptdSelectedId && (
+                <button onClick={handlePtdDelete} disabled={ptdDeleting}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => fetchData(filters)}
+                className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
+                <RefreshCw size={13} /> Refresh
+              </button>
+              <button
+                onClick={() => setFiltersOpen(!filtersOpen)}
+                className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
+                  activeCount > 0 ? "bg-orange-500 text-white border-orange-500" : "text-gray-600 border-gray-200 hover:border-orange-200"
+                }`}>
+                <SlidersHorizontal size={13} /> Filters
+                {activeCount > 0 && (
+                  <span className="bg-white text-orange-500 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">{activeCount}</span>
+                )}
+              </button>
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="flex items-center gap-2 text-xs font-semibold text-white px-4 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-orange-200 transition-all">
+                {syncing ? (
+                  <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Syncing…</>
+                ) : (
+                  <><RefreshCw size={13} /> Sync Now</>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Add sheet form */}
+          <AnimatePresence>
+            {ptdShowAdd && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }} className="overflow-hidden">
+                <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm flex flex-col gap-3">
+                  <div className="flex flex-wrap gap-3 items-end">
+                    <div className="flex flex-col gap-1 flex-1 min-w-[220px]">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Sheet link or ID</label>
+                      <input value={ptdNewLink} onChange={(e) => setPtdNewLink(e.target.value)}
+                        placeholder="https://docs.google.com/spreadsheets/d/…"
+                        className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
+                    </div>
+                    <div className="flex flex-col gap-1 min-w-[140px]">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Label</label>
+                      <input value={ptdNewLabel} onChange={(e) => setPtdNewLabel(e.target.value)}
+                        placeholder="e.g. FY26 Plant to Depot"
+                        className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
+                    </div>
+                    <button onClick={handlePtdAddSheet} disabled={ptdAdding}
+                      className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
+                      {ptdAdding ? "Adding…" : syncing ? "Syncing…" : "Add & Sync"}
+                    </button>
+                    <button onClick={() => setPtdShowAdd(false)} className="h-10 px-3 text-xs font-medium text-gray-400 hover:text-gray-600">Cancel</button>
+                  </div>
+                  {ptdAddError && <p className="text-xs text-red-600">{ptdAddError}</p>}
+                  <p className="text-[11px] text-gray-400">
+                    Share the sheet (Viewer) with the service account's email before syncing — Google Sheets access is per-document. Year is auto-detected from each month tab's title.
+                  </p>
+                </div>
+              </motion.div>
             )}
-          </button>
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="flex items-center gap-2 text-xs font-semibold text-white px-4 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-orange-200 transition-all">
-            {syncing ? (
-              <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Syncing…</>
-            ) : (
-              <><RefreshCw size={13} /> Sync Now</>
-            )}
-          </button>
-        </div>
+          </AnimatePresence>
+        </>
       )}
 
       {activeTab === "depot_to_distributor" && <DepotToDistributorTab />}

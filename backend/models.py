@@ -68,18 +68,19 @@ class UploadLog(Base):
 class PlantToDepotSale(Base):
     __tablename__ = "plant_to_depot_sales"
 
-    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    sale_year     = Column(Integer, nullable=False)
-    sale_month    = Column(Integer, nullable=False)
-    depot         = Column(String(50), nullable=False)
-    brand         = Column(String(20), nullable=False)
-    category      = Column(String(30), nullable=False)
-    qty           = Column(Numeric(12, 2))
-    rate          = Column(Numeric(12, 2))
-    amount        = Column(Numeric(14, 2), nullable=False)
-    sync_log_id   = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
-    created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at    = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="SET NULL"), nullable=True)
+    sale_year       = Column(Integer, nullable=False)
+    sale_month      = Column(Integer, nullable=False)
+    depot           = Column(String(50), nullable=False)
+    brand           = Column(String(20), nullable=False)
+    category        = Column(String(30), nullable=False)
+    qty             = Column(Numeric(12, 2))
+    rate            = Column(Numeric(12, 2))
+    amount          = Column(Numeric(14, 2), nullable=False)
+    sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class SheetSource(Base):
@@ -89,7 +90,7 @@ class SheetSource(Base):
     module        = Column(String(50), nullable=False)
     sheet_id      = Column(String(100), nullable=False)
     label         = Column(String(100), nullable=False)
-    calendar_year = Column(Integer, nullable=False)
+    calendar_year = Column(Integer, nullable=True)
     created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
 

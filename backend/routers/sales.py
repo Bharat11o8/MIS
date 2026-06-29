@@ -1,21 +1,25 @@
 """
 AutoForm MIS — Sales (Plant to Depot) Router
-Manual "Sync Now" against the team's existing Google Sheet, unified analytics,
-filter options, paginated list, sync history.
+Sheet-source registry (multi-sheet, one per fiscal year), manual "Sync Now"
+per registered sheet, unified cross-sheet analytics, filter options, paginated
+list, sync history.
 """
 import os
 import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
-from models import PlantToDepotSale, SyncLog, User
+from models import SheetSource, PlantToDepotSale, SyncLog, User
 from routers.auth import get_current_user
+from services.google_sheets import extract_sheet_id
 from services.sales_sync import parse_workbook
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
+MODULE = "sales_plant_to_depot"
 ALLOWED_ROLES = {"superadmin", "management", "sales_head"}
 DEPOTS = ["Janak Motors", "United Auto"]
 BRANDS = ["Autoform", "Autocruze", "Combined"]
@@ -27,7 +31,7 @@ def _require_access(current_user: User):
         raise HTTPException(status_code=403, detail="Not authorized to access Sales data")
 
 
-# ── Filter helper ─────────────────────────────────────────────────────────────
+# ── Filter helpers ─────────────────────────────────────────────────────────────
 def _apply_filters_sql(where_clauses: list, params: dict, filters: dict):
     if filters.get("year"):
         where_clauses.append("sale_year = :year")
@@ -63,7 +67,191 @@ def _parse_months_param(months: Optional[str]) -> list:
     return pairs
 
 
-# ── Sync ───────────────────────────────────────────────────────────────────────
+# ── Sheet registry ─────────────────────────────────────────────────────────────
+class SheetSourceIn(BaseModel):
+    sheet_url_or_id: str
+    label: str
+
+
+@router.post("/sheet-sources")
+def add_sheet_source(
+    body: SheetSourceIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(current_user)
+
+    sid = extract_sheet_id(body.sheet_url_or_id)
+    source = SheetSource(
+        id=uuid.uuid4(),
+        module=MODULE,
+        sheet_id=sid,
+        label=body.label.strip(),
+        calendar_year=None,
+        created_by=current_user.id,
+    )
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+    return {
+        "id": str(source.id), "sheet_id": source.sheet_id, "label": source.label,
+        "created_at": source.created_at.isoformat(),
+    }
+
+
+@router.get("/sheet-sources")
+def list_sheet_sources(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(current_user)
+
+    sources = db.query(SheetSource).filter(SheetSource.module == MODULE).order_by(SheetSource.created_at.desc()).all()
+    result = []
+    for s in sources:
+        last_log = (
+            db.query(SyncLog)
+            .filter(SyncLog.module == MODULE, SyncLog.source_label == s.sheet_id)
+            .order_by(SyncLog.synced_at.desc())
+            .first()
+        )
+        result.append({
+            "id": str(s.id), "sheet_id": s.sheet_id, "label": s.label,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "last_synced_at": last_log.synced_at.isoformat() if last_log and last_log.synced_at else None,
+            "last_sync_status": last_log.status if last_log else None,
+        })
+    return result
+
+
+@router.delete("/sheet-sources/{source_id}")
+def delete_sheet_source(
+    source_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(current_user)
+
+    source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Sheet source not found")
+    result = db.execute(
+        text("DELETE FROM plant_to_depot_sales WHERE sheet_source_id = :sid"),
+        {"sid": str(source.id)},
+    )
+    rows_deleted = result.rowcount
+    db.delete(source)
+    db.commit()
+    return {"deleted": True, "rows_deleted": rows_deleted}
+
+
+# ── Sync (per registered sheet) ────────────────────────────────────────────────
+@router.post("/sheet-sources/{source_id}/sync")
+def sync_sheet_source(
+    source_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(current_user)
+
+    source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Sheet source not found")
+
+    log = SyncLog(
+        id=uuid.uuid4(),
+        module=MODULE,
+        source_label=source.sheet_id,
+        status="Processing",
+        synced_by=current_user.id,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    try:
+        records, errors, skipped_tabs, _ = parse_workbook(source.sheet_id)
+    except Exception as e:
+        log.status = "Failed"
+        log.error_details = str(e)
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"Could not sync from Google Sheets: {e}")
+
+    # Replace all data belonging to this sheet source atomically.
+    result = db.execute(
+        text("DELETE FROM plant_to_depot_sales WHERE sheet_source_id = :sid"),
+        {"sid": str(source.id)},
+    )
+    deleted = result.rowcount
+    db.commit()
+
+    inserted = 0
+    updated = 0
+    failed = 0
+    row_errors = [e for e in errors if not e.startswith("INFO:")]
+
+    for rec in records:
+        try:
+            result = db.execute(text("""
+                INSERT INTO plant_to_depot_sales
+                    (id, sheet_source_id, sale_year, sale_month, depot, brand, category,
+                     qty, rate, amount, sync_log_id)
+                VALUES
+                    (:id, :sid, :sale_year, :sale_month, :depot, :brand, :category,
+                     :qty, :rate, :amount, :sync_log_id)
+                ON CONFLICT (sale_year, sale_month, depot, brand, category)
+                DO UPDATE SET
+                    qty             = EXCLUDED.qty,
+                    rate            = EXCLUDED.rate,
+                    amount          = EXCLUDED.amount,
+                    sheet_source_id = EXCLUDED.sheet_source_id,
+                    sync_log_id     = EXCLUDED.sync_log_id,
+                    updated_at      = NOW()
+                RETURNING (xmax = 0) AS inserted
+            """), {
+                "id": str(uuid.uuid4()), "sid": str(source.id),
+                "sale_year": rec["sale_year"], "sale_month": rec["sale_month"],
+                "depot": rec["depot"], "brand": rec["brand"], "category": rec["category"],
+                "qty": rec["qty"], "rate": rec["rate"], "amount": rec["amount"],
+                "sync_log_id": str(log.id),
+            })
+            was_inserted = result.scalar()
+            db.commit()
+            if was_inserted:
+                inserted += 1
+            else:
+                updated += 1
+        except Exception as e:
+            db.rollback()
+            failed += 1
+            row_errors.append(f"{rec['sale_year']}-{rec['sale_month']:02d} {rec['depot']}/{rec['brand']}/{rec['category']}: {e}")
+
+    log.rows_total = len(records)
+    log.rows_inserted = inserted
+    log.rows_updated = updated
+    log.rows_failed = failed
+    log.rows_deleted = deleted
+    log.status = "Done"
+    all_msgs = row_errors + ([f"Skipped unrecognized tab: {t}" for t in skipped_tabs] if skipped_tabs else [])
+    log.error_details = "\n".join(all_msgs) if all_msgs else None
+    db.commit()
+
+    return {
+        "sync_id": str(log.id),
+        "rows_total": len(records),
+        "rows_inserted": inserted,
+        "rows_updated": updated,
+        "rows_failed": failed,
+        "rows_deleted": deleted,
+        "skipped_tabs": skipped_tabs,
+        "errors": row_errors[:20],
+        "status": "Done",
+    }
+
+
+# ── Legacy sync (env-var sheet, kept for backward compat) ─────────────────────
+# Scoped to sheet_source_id IS NULL rows so it never touches data that was
+# synced through the new per-source endpoint (prevents cross-FY data loss).
 @router.post("/sync")
 def sync_now(
     db: Session = Depends(get_db),
@@ -77,7 +265,7 @@ def sync_now(
 
     log = SyncLog(
         id=uuid.uuid4(),
-        module="sales_plant_to_depot",
+        module=MODULE,
         source_label=sheet_id,
         status="Processing",
         synced_by=current_user.id,
@@ -101,15 +289,18 @@ def sync_now(
     row_errors = [e for e in errors if not e.startswith("INFO:")]
     info_msgs = [e for e in errors if e.startswith("INFO:")]
 
-    # ── Reconcile: the DB should mirror the sheet's current state, so a month
-    # removed entirely (tab deleted) or a row removed from a still-present
-    # month must disappear here too, not just stop being refreshed.
+    # Reconcile only legacy (unattributed) rows to avoid wiping data from
+    # sheets registered through the new per-source endpoint.
     covered_set = set(covered_months)
-    existing_months = db.execute(text("SELECT DISTINCT sale_year, sale_month FROM plant_to_depot_sales")).fetchall()
+    existing_months = db.execute(
+        text("SELECT DISTINCT sale_year, sale_month FROM plant_to_depot_sales WHERE sheet_source_id IS NULL")
+    ).fetchall()
     for r in existing_months:
         if (r.sale_year, r.sale_month) not in covered_set:
-            result = db.execute(text("DELETE FROM plant_to_depot_sales WHERE sale_year = :y AND sale_month = :m"),
-                                 {"y": r.sale_year, "m": r.sale_month})
+            result = db.execute(
+                text("DELETE FROM plant_to_depot_sales WHERE sale_year = :y AND sale_month = :m AND sheet_source_id IS NULL"),
+                {"y": r.sale_year, "m": r.sale_month},
+            )
             deleted += result.rowcount
     db.commit()
 
@@ -120,7 +311,7 @@ def sync_now(
         )
     for (y, m) in covered_set:
         existing_rows = db.execute(
-            text("SELECT depot, brand, category FROM plant_to_depot_sales WHERE sale_year = :y AND sale_month = :m"),
+            text("SELECT depot, brand, category FROM plant_to_depot_sales WHERE sale_year = :y AND sale_month = :m AND sheet_source_id IS NULL"),
             {"y": y, "m": m},
         ).fetchall()
         new_keys = new_keys_by_month.get((y, m), set())
@@ -128,7 +319,8 @@ def sync_now(
             if (row.depot, row.brand, row.category) not in new_keys:
                 db.execute(text("""
                     DELETE FROM plant_to_depot_sales
-                    WHERE sale_year = :y AND sale_month = :m AND depot = :d AND brand = :b AND category = :c
+                    WHERE sale_year = :y AND sale_month = :m AND depot = :d AND brand = :b
+                      AND category = :c AND sheet_source_id IS NULL
                 """), {"y": y, "m": m, "d": row.depot, "b": row.brand, "c": row.category})
                 deleted += 1
     db.commit()
@@ -330,21 +522,24 @@ def sales_list(
 # ── Sync history ──────────────────────────────────────────────────────────────
 @router.get("/sync-history")
 def sync_history(
+    sheet_source_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     _require_access(current_user)
 
-    logs = db.query(SyncLog).filter(SyncLog.module == "sales_plant_to_depot").order_by(SyncLog.synced_at.desc()).limit(50).all()
+    query = db.query(SyncLog).filter(SyncLog.module == MODULE)
+    if sheet_source_id:
+        source = db.query(SheetSource).filter(SheetSource.id == sheet_source_id, SheetSource.module == MODULE).first()
+        if source:
+            query = query.filter(SyncLog.source_label == source.sheet_id)
+    logs = query.order_by(SyncLog.synced_at.desc()).limit(50).all()
     return [
         {
             "id": str(l.id),
-            "rows_total": l.rows_total,
-            "rows_inserted": l.rows_inserted,
-            "rows_updated": l.rows_updated,
-            "rows_failed": l.rows_failed,
-            "rows_deleted": l.rows_deleted,
-            "status": l.status,
+            "rows_total": l.rows_total, "rows_inserted": l.rows_inserted,
+            "rows_updated": l.rows_updated, "rows_failed": l.rows_failed,
+            "rows_deleted": l.rows_deleted, "status": l.status,
             "synced_at": l.synced_at.isoformat() if l.synced_at else None,
         }
         for l in logs

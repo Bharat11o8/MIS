@@ -60,6 +60,27 @@ def add_sheet_source(
     }
 
 
+@router.delete("/sheet-sources/{source_id}")
+def delete_sheet_source(
+    source_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(current_user)
+
+    source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Sheet source not found")
+    # ON DELETE CASCADE — all distributor_sales rows for this quarter are removed.
+    rows_deleted = db.execute(
+        text("SELECT COUNT(*) FROM distributor_sales WHERE sheet_source_id = :sid"),
+        {"sid": str(source.id)},
+    ).scalar()
+    db.delete(source)
+    db.commit()
+    return {"deleted": True, "rows_deleted": rows_deleted}
+
+
 @router.get("/sheet-sources")
 def list_sheet_sources(
     db: Session = Depends(get_db),
