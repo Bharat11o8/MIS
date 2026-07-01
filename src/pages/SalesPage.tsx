@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, PieChart, Pie, Cell, Legend,
+  LineChart, Line, PieChart, Pie, Cell, Legend, LabelList,
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
@@ -33,10 +33,22 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface MonthOption { year: number; month: number; label: string; }
 interface FilterOptions { months: MonthOption[]; depots: string[]; brands: string[]; categories: string[]; }
+type TrendView = "monthly" | "quarterly" | "yearly";
 interface ActiveFilters {
-  year: number | null; months: number[]; depot: string; brand: string; category: string;
+  // monthly view
+  selectedMonths: string[];   // "YYYY-M" keys matching filterOptions.months
+  // quarterly view
+  fyStart: number | null;
+  quarter: number | null;
+  // yearly view
+  selectedFYs: number[];      // FY start years
+  // always-on
+  depot: string; brand: string; category: string;
 }
-const EMPTY_FILTERS: ActiveFilters = { year: null, months: [], depot: "", brand: "", category: "" };
+const EMPTY_FILTERS: ActiveFilters = {
+  selectedMonths: [], fyStart: null, quarter: null, selectedFYs: [],
+  depot: "", brand: "", category: "",
+};
 
 interface PtdSheetSource {
   id: string; sheet_id: string; label: string;
@@ -90,6 +102,7 @@ export default function SalesPage() {
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
   const [filters, setFilters] = useState<ActiveFilters>(EMPTY_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(true);
+  const [trendView, setTrendView] = useState<TrendView>("quarterly");
   const [analytics, setAnalytics] = useState<any | null>(null);
   const [rows, setRows] = useState<any[]>([]);
   const [totalRows, setTotalRows] = useState(0);
@@ -201,18 +214,38 @@ export default function SalesPage() {
   // ── Build query params ──────────────────────────────────────────────────────
   const buildParams = useCallback((f: ActiveFilters) => {
     const p = new URLSearchParams();
-    if (f.year !== null) {
-      const monthsInYear = (filterOptions?.months ?? []).filter((m) => m.year === f.year);
-      const selected = f.months.length === 0 ? monthsInYear : monthsInYear.filter((m) => f.months.includes(m.month));
-      if (selected.length) {
-        p.set("months", selected.map((m) => `${m.year}-${String(m.month).padStart(2, "0")}`).join(","));
+    const avail = new Set((filterOptions?.months ?? []).map(m => `${m.year}-${m.month}`));
+    const pad = (y: number, m: number) => `${y}-${String(m).padStart(2, "0")}`;
+
+    if (trendView === "monthly" && f.selectedMonths.length > 0) {
+      p.set("months", f.selectedMonths.map(s => { const [y, m] = s.split("-"); return pad(Number(y), Number(m)); }).join(","));
+    } else if (trendView === "quarterly" && f.fyStart !== null) {
+      const qMap: Record<number, [number, number][]> = {
+        1: [[f.fyStart, 4], [f.fyStart, 5], [f.fyStart, 6]],
+        2: [[f.fyStart, 7], [f.fyStart, 8], [f.fyStart, 9]],
+        3: [[f.fyStart, 10], [f.fyStart, 11], [f.fyStart, 12]],
+        4: [[f.fyStart + 1, 1], [f.fyStart + 1, 2], [f.fyStart + 1, 3]],
+      };
+      const fyAll: [number, number][] = [];
+      for (let m = 4; m <= 12; m++) fyAll.push([f.fyStart, m]);
+      for (let m = 1; m <= 3; m++) fyAll.push([f.fyStart + 1, m]);
+      const target = f.quarter !== null ? qMap[f.quarter] : fyAll;
+      const relevant = target.filter(([y, m]) => avail.has(`${y}-${m}`));
+      if (relevant.length) p.set("months", relevant.map(([y, m]) => pad(y, m)).join(","));
+    } else if (trendView === "yearly" && f.selectedFYs.length > 0) {
+      const strs: string[] = [];
+      for (const fy of f.selectedFYs) {
+        for (let m = 4; m <= 12; m++) if (avail.has(`${fy}-${m}`)) strs.push(pad(fy, m));
+        for (let m = 1; m <= 3; m++) if (avail.has(`${fy + 1}-${m}`)) strs.push(pad(fy + 1, m));
       }
+      if (strs.length) p.set("months", strs.join(","));
     }
+
     if (f.depot) p.set("depot", f.depot);
     if (f.brand) p.set("brand", f.brand);
     if (f.category) p.set("category", f.category);
     return p.toString();
-  }, [filterOptions]);
+  }, [filterOptions, trendView]);
 
   const fetchData = useCallback(async (f: ActiveFilters) => {
     setLoading(true);
@@ -235,18 +268,52 @@ export default function SalesPage() {
 
   const setFilter = (key: keyof ActiveFilters, value: any) => setFilters((prev) => ({ ...prev, [key]: value }));
   const clearAll = () => setFilters(EMPTY_FILTERS);
-  const activeCount = [filters.year !== null, filters.depot, filters.brand, filters.category].filter(Boolean).length;
 
-  const availableYears = useMemo(() => {
-    const years = Array.from(new Set((filterOptions?.months ?? []).map((m) => m.year)));
-    return years.sort((a, b) => b - a);
+  const timeActive = trendView === "monthly" ? filters.selectedMonths.length > 0
+    : trendView === "quarterly" ? (filters.fyStart !== null)
+    : filters.selectedFYs.length > 0;
+  const activeCount = [timeActive, filters.depot, filters.brand, filters.category].filter(Boolean).length;
+
+  const availableFYs = useMemo(() => {
+    const fyStarts = new Set((filterOptions?.months ?? []).map(m => m.month >= 4 ? m.year : m.year - 1));
+    return Array.from(fyStarts).sort((a, b) => b - a);
   }, [filterOptions]);
-  const monthsInSelectedYear = useMemo(() => {
-    if (filters.year === null) return [];
-    return (filterOptions?.months ?? []).filter((m) => m.year === filters.year).sort((a, b) => a.month - b.month);
-  }, [filterOptions, filters.year]);
-  const handleYearChange = (yearStr: string) => setFilters((prev) => ({ ...prev, year: yearStr === "" ? null : Number(yearStr), months: [] }));
-  const handleMonthsChange = (monthStrs: string[]) => setFilter("months", monthStrs.map(Number));
+
+  const trendData = useMemo(() => {
+    if (!analytics?.trends) return [];
+    if (trendView === "monthly") return analytics.trends;
+    if (trendView === "quarterly") {
+      const quarters: Record<string, { amount: number; fyStart: number; q: number }> = {};
+      for (const t of analytics.trends) {
+        const fyStart = t.month >= 4 ? t.year : t.year - 1;
+        const q = t.month >= 4 ? Math.floor((t.month - 4) / 3) + 1 : 4;
+        const key = `${fyStart}-${q}`;
+        if (!quarters[key]) quarters[key] = { amount: 0, fyStart, q };
+        quarters[key].amount += t.amount;
+      }
+      return Object.entries(quarters)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, v]) => ({ period: `Q${v.q} FY${String(v.fyStart + 1).slice(2)}`, amount: v.amount, year: v.fyStart, month: 0 }));
+    }
+    // yearly
+    const fys: Record<string, { amount: number; fyStart: number }> = {};
+    for (const t of analytics.trends) {
+      const fyStart = t.month >= 4 ? t.year : t.year - 1;
+      const key = `${fyStart}`;
+      if (!fys[key]) fys[key] = { amount: 0, fyStart };
+      fys[key].amount += t.amount;
+    }
+    return Object.entries(fys)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, v]) => ({ period: `FY ${v.fyStart}-${String(v.fyStart + 1).slice(2)}`, amount: v.amount, year: v.fyStart, month: 0 }));
+  }, [analytics?.trends, trendView]);
+
+  const handleTrendViewChange = (view: TrendView) => {
+    setTrendView(view);
+    setFilters(prev => ({ ...prev, selectedMonths: [], fyStart: null, quarter: null, selectedFYs: [] }));
+  };
+  const handleFYChange = (fyStr: string) => setFilters(prev => ({ ...prev, fyStart: fyStr === "" ? null : Number(fyStr), quarter: null }));
+  const handleQuarterChange = (qStr: string) => setFilters(prev => ({ ...prev, quarter: qStr === "" ? null : Number(qStr) }));
 
   // ── Sync Now ─────────────────────────────────────────────────────────────────
   const handleSync = async () => {
@@ -274,27 +341,73 @@ export default function SalesPage() {
   };
 
   // ── KPI cards ──────────────────────────────────────────────────────────────
-  const kpiCards = analytics ? [
-    {
-      id: "sales-total", label: "Total Sales", value: formatINR(analytics.kpis.total_amount),
-      icon: <IndianRupee size={18} />, color: "#3b82f6", bg: "#eff6ff",
-      sub: activeCount > 0 ? "Filtered result" : "All time",
-    },
-    {
-      id: "sales-mom", label: "MoM Growth",
-      value: analytics.kpis.mom_growth !== null ? `${analytics.kpis.mom_growth > 0 ? "+" : ""}${analytics.kpis.mom_growth}%` : "—",
-      icon: <TrendingUp size={18} />, color: analytics.kpis.mom_growth >= 0 ? "#22c55e" : "#ef4444",
-      bg: analytics.kpis.mom_growth >= 0 ? "#f0fdf4" : "#fef2f2", sub: "Last two months in range",
-    },
-    {
-      id: "sales-depot", label: "Top Depot", value: analytics.kpis.top_depot ?? "—",
-      icon: <MapPin size={18} />, color: "#f46617", bg: "#fff7ed", sub: "By total sales value",
-    },
-    {
-      id: "sales-category", label: "Top Category", value: analytics.kpis.top_category ?? "—",
-      icon: <Boxes size={18} />, color: "#a855f7", bg: "#faf5ff", sub: "By total sales value",
-    },
-  ] : [];
+  const timeLabelSub = (() => {
+    if (trendView === "monthly" && filters.selectedMonths.length > 0) {
+      if (filters.selectedMonths.length === 1) {
+        const [y, m] = filters.selectedMonths[0].split("-");
+        return `${MONTH_NAMES[Number(m) - 1]} ${y}`;
+      }
+      return `${filters.selectedMonths.length} months`;
+    }
+    if (trendView === "quarterly" && filters.fyStart !== null) {
+      return filters.quarter !== null
+        ? `Q${filters.quarter} FY${filters.fyStart}-${String(filters.fyStart + 1).slice(2)}`
+        : `FY ${filters.fyStart}-${String(filters.fyStart + 1).slice(2)}`;
+    }
+    if (trendView === "yearly" && filters.selectedFYs.length > 0) {
+      if (filters.selectedFYs.length === 1)
+        return `FY ${filters.selectedFYs[0]}-${String(filters.selectedFYs[0] + 1).slice(2)}`;
+      return `${filters.selectedFYs.length} FYs`;
+    }
+    return "All time";
+  })();
+
+  const fmtGrowth = (g: number | null) => g !== null ? `${g > 0 ? "+" : ""}${g}%` : "—";
+  const depotMap = Object.fromEntries((analytics?.depots ?? []).map((d: any) => [d.depot as string, d.amount as number]));
+
+  const growthG = analytics ? (
+    trendView === "monthly" ? analytics.kpis.mom_growth
+    : trendView === "quarterly" ? analytics.kpis.qoq_growth
+    : analytics.kpis.yoy_fy_growth
+  ) : null;
+  const growthPeriod = analytics ? (
+    trendView === "monthly" ? analytics.kpis.mom_period
+    : trendView === "quarterly" ? analytics.kpis.qoq_period
+    : analytics.kpis.yoy_fy_period
+  ) : null;
+  const growthLabel = trendView === "monthly" ? "MoM Growth" : trendView === "quarterly" ? "QoQ Growth" : "YoY Growth";
+
+  const kpiCards = analytics ? (() => {
+    const total = analytics.kpis.total_amount;
+    const janak = depotMap["Janak Motors"] ?? 0;
+    const united = depotMap["United Auto"] ?? 0;
+    const pct = (v: number) => total > 0 ? `${((v / total) * 100).toFixed(1)}% of total` : "—";
+    return [
+      {
+        id: "sales-total", label: "Total Sales", value: formatINR(total),
+        icon: <IndianRupee size={18} />, color: "#3b82f6", bg: "#eff6ff",
+        sub: timeLabelSub, valueColor: "#111827",
+      },
+      {
+        id: "sales-growth", label: growthLabel, value: fmtGrowth(growthG),
+        icon: <TrendingUp size={18} />,
+        color: growthG == null ? "#94a3b8" : growthG >= 0 ? "#22c55e" : "#ef4444",
+        bg: growthG == null ? "#f8fafc" : growthG >= 0 ? "#f0fdf4" : "#fef2f2",
+        sub: growthPeriod ?? "—",
+        valueColor: growthG == null ? "#94a3b8" : growthG >= 0 ? "#22c55e" : "#ef4444",
+      },
+      {
+        id: "depot-janak", label: "Janak Motors", value: formatINR(janak),
+        icon: <MapPin size={18} />, color: DEPOT_COLORS["Janak Motors"], bg: "#eff6ff",
+        sub: pct(janak), valueColor: "#111827",
+      },
+      {
+        id: "depot-united", label: "United Auto", value: formatINR(united),
+        icon: <MapPin size={18} />, color: DEPOT_COLORS["United Auto"], bg: "#fff7ed",
+        sub: pct(united), valueColor: "#111827",
+      },
+    ];
+  })() : [];
 
   return (
     <div className="p-6 flex flex-col gap-5">
@@ -476,26 +589,76 @@ export default function SalesPage() {
             transition={{ duration: 0.2 }} className="overflow-hidden">
             <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
               <div className="flex flex-wrap gap-4 items-end">
+                {/* View toggle — always first */}
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Year</label>
-                  <Select
-                    value={filters.year !== null ? String(filters.year) : ""}
-                    onChange={handleYearChange}
-                    options={[{ value: "", label: "All Years" }, ...availableYears.map((y) => ({ value: String(y), label: String(y) }))]}
-                    className="min-w-[110px]"
-                  />
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">View</label>
+                  <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+                    {(["monthly", "quarterly", "yearly"] as TrendView[]).map(v => (
+                      <button key={v} onClick={() => handleTrendViewChange(v)}
+                        className={`text-xs font-semibold px-2.5 py-1.5 rounded-md transition-all capitalize ${
+                          trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                        }`}>
+                        {v.charAt(0).toUpperCase() + v.slice(1)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Month</label>
-                  <MultiSelect
-                    values={filters.months.map(String)}
-                    onChange={handleMonthsChange}
-                    options={monthsInSelectedYear.map((m) => ({ value: String(m.month), label: MONTH_NAMES[m.month - 1] }))}
-                    placeholder="All Months"
-                    disabled={filters.year === null}
-                    className="min-w-[130px]"
-                  />
-                </div>
+
+                {/* Time filter — changes with view */}
+                {trendView === "monthly" && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Month</label>
+                    <MultiSelect
+                      values={filters.selectedMonths}
+                      onChange={(vals) => setFilter("selectedMonths", vals)}
+                      options={(filterOptions?.months ?? []).map(m => ({ value: `${m.year}-${m.month}`, label: `${MONTH_NAMES[m.month - 1]} ${m.year}` }))}
+                      placeholder="All months"
+                      className="min-w-[160px]"
+                    />
+                  </div>
+                )}
+                {trendView === "quarterly" && (
+                  <>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Financial Year</label>
+                      <Select
+                        value={filters.fyStart !== null ? String(filters.fyStart) : ""}
+                        onChange={handleFYChange}
+                        options={[{ value: "", label: "All FYs" }, ...availableFYs.map(fy => ({ value: String(fy), label: `FY ${fy}-${String(fy + 1).slice(2)}` }))]}
+                        className="min-w-[130px]"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Quarter</label>
+                      <Select
+                        value={filters.quarter !== null ? String(filters.quarter) : ""}
+                        onChange={handleQuarterChange}
+                        disabled={filters.fyStart === null}
+                        options={[
+                          { value: "", label: "All Quarters" },
+                          { value: "1", label: "Q1 · Apr–Jun" },
+                          { value: "2", label: "Q2 · Jul–Sep" },
+                          { value: "3", label: "Q3 · Oct–Dec" },
+                          { value: "4", label: "Q4 · Jan–Mar" },
+                        ]}
+                        className="min-w-[130px]"
+                      />
+                    </div>
+                  </>
+                )}
+                {trendView === "yearly" && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Financial Year</label>
+                    <MultiSelect
+                      values={filters.selectedFYs.map(String)}
+                      onChange={(vals) => setFilter("selectedFYs", vals.map(Number))}
+                      options={availableFYs.map(fy => ({ value: String(fy), label: `FY ${fy}-${String(fy + 1).slice(2)}` }))}
+                      placeholder="All years"
+                      className="min-w-[160px]"
+                    />
+                  </div>
+                )}
+
                 <div className="w-px h-10 bg-gray-100 hidden xl:block" />
                 <FilterSelect label="Depot" value={filters.depot} onChange={(v) => setFilter("depot", v)} options={filterOptions?.depots ?? []} />
                 <FilterSelect label="Brand" value={filters.brand} onChange={(v) => setFilter("brand", v)} options={filterOptions?.brands ?? []} labels={BRAND_FILTER_LABELS} />
@@ -523,16 +686,18 @@ export default function SalesPage() {
         <>
           {/* KPI Cards */}
           <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-            {kpiCards.map((kpi) => (
+            {kpiCards.map((kpi: any) => (
               <motion.div key={kpi.id} variants={item} id={kpi.id} className="kpi-card">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>
-                  {kpi.icon}
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: kpi.bg, color: kpi.color }}>
+                    {kpi.icon}
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-gray-600">{kpi.label}</p>
+                    <p className="text-[11px] text-gray-400">{kpi.sub}</p>
+                  </div>
                 </div>
-                <div className="mt-3">
-                  <p className="text-2xl font-black text-gray-900">{kpi.value}</p>
-                  <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
-                  <p className="text-[11px] text-gray-400">{kpi.sub}</p>
-                </div>
+                <p className="text-2xl font-black mt-3" style={{ color: kpi.valueColor ?? "#111827" }}>{kpi.value}</p>
               </motion.div>
             ))}
           </motion.div>
@@ -543,17 +708,23 @@ export default function SalesPage() {
               <div className="flex items-center gap-2 mb-5">
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><TrendingUp size={16} /></div>
                 <div>
-                  <h3 className="text-sm font-bold text-gray-800">Monthly Sales Trend</h3>
-                  <p className="text-[11px] text-gray-400">Total sales value per month — filtered result</p>
+                  <h3 className="text-sm font-bold text-gray-800">
+                    {trendView === "monthly" ? "Monthly" : trendView === "quarterly" ? "Quarterly" : "Yearly"} Sales Trend
+                  </h3>
+                  <p className="text-[11px] text-gray-400">
+                    {trendView === "monthly" ? "By month" : trendView === "quarterly" ? "By quarter (Indian FY)" : "By financial year"} — filtered result
+                  </p>
                 </div>
               </div>
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={analytics.trends}>
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={trendData} margin={{ top: 36, right: 20, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                   <XAxis dataKey="period" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
-                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
-                  <Line type="monotone" dataKey="amount" stroke="#f46617" strokeWidth={2.5} dot={{ fill: "#f46617", r: 4 }} activeDot={{ r: 6 }} name="Sales" />
+                  <Tooltip formatter={(v: number) => [formatINR(v), "Sales"]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Line type="monotone" dataKey="amount" stroke="#f46617" strokeWidth={2.5} dot={{ fill: "#f46617", r: 4 }} activeDot={{ r: 6 }} name="Sales">
+                    <LabelList dataKey="amount" position="top" offset={12} formatter={(v: number) => formatCr(v)} style={{ fontSize: 11, fill: "#64748b", fontWeight: 700 }} />
+                  </Line>
                 </LineChart>
               </ResponsiveContainer>
             </motion.div>
@@ -572,7 +743,11 @@ export default function SalesPage() {
                     {analytics.categories.map((c: any) => <Cell key={c.category} fill={CATEGORY_COLORS[c.category] ?? "#94a3b8"} />)}
                   </Pie>
                   <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
-                  <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{v}</span>} />
+                  <Legend iconType="circle" iconSize={8} formatter={(v, entry: any) => (
+                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                      {v} · {formatCr(entry.payload?.amount ?? 0)}
+                    </span>
+                  )} />
                 </PieChart>
               </ResponsiveContainer>
             </motion.div>
@@ -589,13 +764,14 @@ export default function SalesPage() {
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={analytics.depots} layout="vertical" barSize={28}>
+                <BarChart data={analytics.depots} layout="vertical" barSize={28} margin={{ right: 64 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
                   <YAxis dataKey="depot" type="category" tick={{ fontSize: 11, fill: "#64748b" }} width={100} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Tooltip formatter={(v: number) => [formatINR(v), "Sales"]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
                   <Bar dataKey="amount" radius={[0, 6, 6, 0]} name="Sales">
                     {analytics.depots.map((d: any) => <Cell key={d.depot} fill={DEPOT_COLORS[d.depot] ?? "#94a3b8"} />)}
+                    <LabelList dataKey="amount" position="right" formatter={(v: number) => formatCr(v)} style={{ fontSize: 11, fill: "#64748b", fontWeight: 600 }} />
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>

@@ -24,6 +24,7 @@ ALLOWED_ROLES = {"superadmin", "management", "sales_head"}
 DEPOTS = ["Janak Motors", "United Auto"]
 BRANDS = ["Autoform", "Autocruze", "Combined"]
 CATEGORIES = ["Seat Cover", "Accessories", "Mats", "Boot & Cabin Mat", "Electronics"]
+_MN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
 def _require_access(current_user: User):
@@ -449,17 +450,88 @@ def sales_analytics(
     """), params).fetchall()
 
     mom_growth = None
+    mom_period = None
     if len(trend_rows) >= 2:
-        prev, curr = trend_rows[-2].amount, trend_rows[-1].amount
-        if prev:
-            mom_growth = round((float(curr) - float(prev)) / float(prev) * 100, 1)
+        pr, cr = trend_rows[-2], trend_rows[-1]
+        if pr.amount and float(pr.amount) > 0:
+            mom_growth = round((float(cr.amount) - float(pr.amount)) / float(pr.amount) * 100, 1)
+        mom_period = f"{_MN[pr.sale_month - 1]} → {_MN[cr.sale_month - 1]}"
+
+    # Non-time filters for YoY / QoQ (so they always compare full-period data)
+    nt_where = ["1=1"]
+    nt_params: dict = {}
+    if depot:
+        nt_where.append("depot = :depot"); nt_params["depot"] = depot
+    if brand:
+        nt_where.append("brand = :brand"); nt_params["brand"] = brand
+    if category:
+        nt_where.append("category = :category"); nt_params["category"] = category
+    nt_sql = " AND ".join(nt_where)
+
+    # YoY: compare latest month in current view to same month prior year
+    yoy_growth = None
+    yoy_period = None
+    if trend_rows:
+        latest = trend_rows[-1]
+        ly = db.execute(text(f"""
+            SELECT COALESCE(SUM(amount), 0) FROM plant_to_depot_sales
+            WHERE {nt_sql} AND sale_year = :y AND sale_month = :m
+        """), {**nt_params, "y": latest.sale_year - 1, "m": latest.sale_month}).scalar()
+        if float(ly) > 0:
+            yoy_growth = round((float(latest.amount) - float(ly)) / float(ly) * 100, 1)
+        yoy_period = f"{_MN[latest.sale_month - 1]} {latest.sale_year - 1} → {_MN[latest.sale_month - 1]} {latest.sale_year}"
+
+    # QoQ: aggregate all available data into Indian FY quarters, compare last two
+    def _fyq(y: int, m: int):
+        return (y, (m - 4) // 3 + 1) if m >= 4 else (y - 1, 4)
+
+    all_trend = db.execute(text(f"""
+        SELECT sale_year, sale_month, SUM(amount) AS amount
+        FROM plant_to_depot_sales WHERE {nt_sql}
+        GROUP BY sale_year, sale_month ORDER BY sale_year, sale_month
+    """), nt_params).fetchall()
+
+    q_totals: dict = {}
+    for r in all_trend:
+        qk = _fyq(r.sale_year, r.sale_month)
+        q_totals[qk] = q_totals.get(qk, 0.0) + float(r.amount)
+
+    qoq_growth = None
+    qoq_period = None
+    sqs = sorted(q_totals)
+    if len(sqs) >= 2:
+        p_qk, c_qk = sqs[-2], sqs[-1]
+        p_amt, c_amt = q_totals[p_qk], q_totals[c_qk]
+        if p_amt > 0:
+            qoq_growth = round((c_amt - p_amt) / p_amt * 100, 1)
+        qn = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4"}
+        qoq_period = f"{qn[p_qk[1]]} FY{str(p_qk[0] + 1)[-2:]} → {qn[c_qk[1]]} FY{str(c_qk[0] + 1)[-2:]}"
+
+    # YoY at FY level (compare two most recent complete FYs in full dataset)
+    yoy_fy_growth = None
+    yoy_fy_period = None
+    fy_totals: dict = {}
+    for r in all_trend:
+        fy_s = r.sale_year if r.sale_month >= 4 else r.sale_year - 1
+        fy_totals[fy_s] = fy_totals.get(fy_s, 0.0) + float(r.amount)
+    sorted_fys = sorted(fy_totals)
+    if len(sorted_fys) >= 2:
+        p_fy, c_fy = sorted_fys[-2], sorted_fys[-1]
+        if fy_totals[p_fy] > 0:
+            yoy_fy_growth = round((fy_totals[c_fy] - fy_totals[p_fy]) / fy_totals[p_fy] * 100, 1)
+        yoy_fy_period = f"FY{str(p_fy + 1)[-2:]} → FY{str(c_fy + 1)[-2:]}"
 
     return {
         "kpis": {
             "total_amount": float(total_amount or 0),
             "mom_growth": mom_growth,
-            "top_depot": depot_rows[0].depot if depot_rows else None,
-            "top_category": category_rows[0].category if category_rows else None,
+            "mom_period": mom_period,
+            "yoy_growth": yoy_growth,
+            "yoy_period": yoy_period,
+            "qoq_growth": qoq_growth,
+            "qoq_period": qoq_period,
+            "yoy_fy_growth": yoy_fy_growth,
+            "yoy_fy_period": yoy_fy_period,
         },
         "trends": [
             {"year": r.sale_year, "month": r.sale_month, "amount": float(r.amount)} for r in trend_rows
