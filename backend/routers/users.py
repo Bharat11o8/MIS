@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from database import get_db
-from models import User
+from models import User, UserModuleAccess, UserSheetSourceAccess, SheetSource
 from routers.auth import get_current_user, get_password_hash
+from services.permissions import VALID_MODULES, get_user_modules, get_user_sheet_source_ids
 import uuid
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -21,6 +22,14 @@ class CreateUserRequest(BaseModel):
     password: str
     role: str
     department: Optional[str] = None
+
+class UserAccessIn(BaseModel):
+    modules: list[str]
+    finance_company_ids: list[str] = []
+
+class UserAccessOut(BaseModel):
+    modules: list[str]
+    finance_company_ids: list[str]
 
 class UpdateProfileRequest(BaseModel):
     name: Optional[str] = None
@@ -120,6 +129,12 @@ def list_users(
     admin: User = Depends(require_superadmin),
 ):
     users = db.query(User).order_by(User.created_at.desc()).all()
+
+    grants = db.query(UserModuleAccess.user_id, UserModuleAccess.module).all()
+    by_user: dict = {}
+    for uid, m in grants:
+        by_user.setdefault(str(uid), []).append(m)
+
     return [
         {
             "id": str(u.id),
@@ -130,9 +145,67 @@ def list_users(
             "is_active": u.is_active,
             "must_change_password": bool(u.must_change_password),
             "created_at": u.created_at.isoformat() if u.created_at else None,
+            "modules": sorted(VALID_MODULES) if u.role == "superadmin" else by_user.get(str(u.id), []),
         }
         for u in users
     ]
+
+
+# ── Access management (module + Finance company grants) ──────────────────────
+@router.get("/{user_id}/access", response_model=UserAccessOut)
+def get_user_access(
+    user_id: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_superadmin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserAccessOut(
+        modules=get_user_modules(db, user),
+        finance_company_ids=get_user_sheet_source_ids(db, user, module="finance"),
+    )
+
+
+@router.put("/{user_id}/access", response_model=UserAccessOut)
+def set_user_access(
+    user_id: str,
+    body: UserAccessIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_superadmin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    bad_modules = set(body.modules) - VALID_MODULES
+    if bad_modules:
+        raise HTTPException(status_code=400, detail=f"Unknown module(s): {', '.join(bad_modules)}")
+
+    valid_ids = set()
+    if body.finance_company_ids:
+        valid_ids = {
+            str(r.id) for r in db.query(SheetSource.id).filter(
+                SheetSource.module == "finance", SheetSource.id.in_(body.finance_company_ids)
+            ).all()
+        }
+        bad_ids = set(body.finance_company_ids) - valid_ids
+        if bad_ids:
+            raise HTTPException(status_code=400, detail=f"Unknown finance company id(s): {', '.join(bad_ids)}")
+
+    db.query(UserModuleAccess).filter(UserModuleAccess.user_id == user.id).delete()
+    for m in set(body.modules):
+        db.add(UserModuleAccess(user_id=user.id, module=m, granted_by=admin.id))
+
+    db.query(UserSheetSourceAccess).filter(UserSheetSourceAccess.user_id == user.id).delete()
+    for sid in valid_ids:
+        db.add(UserSheetSourceAccess(user_id=user.id, sheet_source_id=sid, granted_by=admin.id))
+
+    db.commit()
+    return UserAccessOut(
+        modules=get_user_modules(db, user),
+        finance_company_ids=get_user_sheet_source_ids(db, user, module="finance"),
+    )
 
 
 # ── Toggle active ────────────────────────────────────────────────────────────

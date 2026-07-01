@@ -15,6 +15,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from database import get_db
 from models import User
+from services.permissions import get_user_modules
 import os
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -112,7 +113,22 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             "role": user.role,
             "department": user.department,
             "must_change_password": bool(user.must_change_password),
+            "modules": get_user_modules(db, user),
         },
+    }
+
+
+# ── Current session ───────────────────────────────────────────────────────────
+@router.get("/me")
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return {
+        "id": str(current_user.id),
+        "name": current_user.name,
+        "email": current_user.email,
+        "role": current_user.role,
+        "department": current_user.department,
+        "must_change_password": bool(current_user.must_change_password),
+        "modules": get_user_modules(db, current_user),
     }
 
 

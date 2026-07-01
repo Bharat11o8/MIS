@@ -15,16 +15,16 @@ from models import SheetSource, DistributorSale, SyncLog, User
 from routers.auth import get_current_user
 from services.google_sheets import extract_sheet_id
 from services.distributor_sales_sync import parse_distributor_sheet
+from services.permissions import require_module
 
 router = APIRouter(prefix="/distributor-sales", tags=["Distributor Sales"])
 
 MODULE = "sales_depot_to_distributor"
-ALLOWED_ROLES = {"superadmin", "management", "sales_head"}
+MODULE_KEY = "sales"
 
 
-def _require_access(current_user: User):
-    if current_user.role not in ALLOWED_ROLES:
-        raise HTTPException(status_code=403, detail="Not authorized to access Sales data")
+def _require_access(db: Session, current_user: User):
+    require_module(db, current_user, MODULE_KEY)
 
 
 class SheetSourceIn(BaseModel):
@@ -40,7 +40,7 @@ def add_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     sheet_id = extract_sheet_id(body.sheet_url_or_id)
     source = SheetSource(
@@ -66,7 +66,7 @@ def delete_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
     if not source:
@@ -86,7 +86,7 @@ def list_sheet_sources(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     sources = db.query(SheetSource).filter(SheetSource.module == MODULE).order_by(SheetSource.created_at.desc()).all()
     result = []
@@ -113,7 +113,7 @@ def sync_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
     if not source:
@@ -199,7 +199,7 @@ def filter_options(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     where = "1=1"
     params: dict = {}
@@ -222,7 +222,7 @@ def distributor_analytics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     source = db.query(SheetSource).filter(SheetSource.id == sheet_source_id, SheetSource.module == MODULE).first()
     if not source:
@@ -319,7 +319,7 @@ def distributor_list(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     where_clauses = ["sheet_source_id = :sid"]
     params: dict = {"sid": sheet_source_id}
@@ -363,7 +363,7 @@ def sync_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     query = db.query(SyncLog).filter(SyncLog.module == MODULE)
     if sheet_source_id:

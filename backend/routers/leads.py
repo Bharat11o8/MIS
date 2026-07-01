@@ -11,9 +11,12 @@ from database import get_db
 from models import Lead, UploadLog, User
 from routers.auth import get_current_user
 from services.lead_parser import parse_leads_file
+from services.permissions import require_module
 import uuid
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
+
+MODULE_KEY = "leads"
 
 
 # ── User scope helper ─────────────────────────────────────────────────────────
@@ -115,9 +118,7 @@ async def upload_leads(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    allowed_roles = {"superadmin", "management", "sales_head", "leads_head", "sales_rep"}
-    if current_user.role not in allowed_roles:
-        raise HTTPException(status_code=403, detail="Not authorized to upload leads")
+    require_module(db, current_user, MODULE_KEY)
 
     filename: str = file.filename or "upload"
     if not filename.lower().endswith((".xlsx", ".xls", ".csv")):
@@ -173,6 +174,8 @@ def filter_options(
     current_user: User = Depends(get_current_user),
 ):
     """Return distinct values for all filterable fields."""
+    require_module(db, current_user, MODULE_KEY)
+
     scope_clauses: list = ["1=1"]
     scope_params: dict = {}
     apply_user_scope_sql(scope_clauses, scope_params, current_user)
@@ -225,6 +228,8 @@ def leads_analytics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_module(db, current_user, MODULE_KEY)
+
     filters = {
         "date_from": date_from, "date_to": date_to, "months": parse_months_param(months),
         "source": source, "asm": asm,
@@ -343,6 +348,8 @@ def leads_list(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_module(db, current_user, MODULE_KEY)
+
     filters = {
         "date_from": date_from, "date_to": date_to, "months": parse_months_param(months),
         "source": source, "asm": asm,
@@ -385,6 +392,8 @@ def upload_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    require_module(db, current_user, MODULE_KEY)
+
     q = db.query(UploadLog).filter(UploadLog.module == "leads")
     if current_user.role not in {"superadmin", "management"}:
         q = q.filter(UploadLog.uploaded_by == current_user.id)

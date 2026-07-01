@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  UserPlus, Search, ShieldCheck, UserCheck, UserX, KeyRound,
+  UserPlus, Search, ShieldCheck, UserCheck, UserX, KeyRound, Settings,
   X, Eye, EyeOff, RefreshCw as Shuffle, Copy, Check, AlertCircle, Users as UsersIcon,
 } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
 import { ROLE_LABELS, ROLE_COLORS, ALL_ROLES } from "@/lib/roles";
+import { ALL_MODULES, MODULE_LABELS, ModuleKey } from "@/lib/modules";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -18,6 +19,12 @@ interface AppUser {
   is_active: boolean;
   must_change_password: boolean;
   created_at: string | null;
+  modules: string[];
+}
+
+interface FinanceCompany {
+  id: string;
+  label: string;
 }
 
 const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
@@ -42,6 +49,7 @@ export default function UsersPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [justCreated, setJustCreated] = useState<{ email: string; password: string } | null>(null);
+  const [accessUser, setAccessUser] = useState<AppUser | null>(null);
 
   const isSuperadmin = me?.role === "superadmin";
 
@@ -186,7 +194,7 @@ export default function UsersPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-y border-gray-50 bg-gray-50/50">
-                {["User", "Role", "Department", "Status", "Password", "Created", ""].map((h) => (
+                {["User", "Role", "Department", "Access", "Status", "Password", "Created", ""].map((h) => (
                   <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-3 first:pl-6 last:pr-6">
                     {h}
                   </th>
@@ -195,9 +203,9 @@ export default function UsersPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading ? (
-                <tr><td colSpan={7} className="text-center py-8 text-sm text-gray-400">Loading users…</td></tr>
+                <tr><td colSpan={8} className="text-center py-8 text-sm text-gray-400">Loading users…</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-8 text-sm text-gray-400">No users match the current filters.</td></tr>
+                <tr><td colSpan={8} className="text-center py-8 text-sm text-gray-400">No users match the current filters.</td></tr>
               ) : filtered.map((u) => {
                 const isSelf = u.id === me?.id;
                 return (
@@ -220,6 +228,21 @@ export default function UsersPage() {
                     </td>
                     <td className="px-4 py-3.5 text-xs text-gray-600">{u.department ?? <span className="text-gray-300">—</span>}</td>
                     <td className="px-4 py-3.5">
+                      {u.role === "superadmin" ? (
+                        <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">All</span>
+                      ) : u.modules.length === 0 ? (
+                        <span className="text-[10px] text-gray-300">None</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {u.modules.map((m) => (
+                            <span key={m} className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">
+                              {MODULE_LABELS[m as ModuleKey] ?? m}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5">
                       <span className={`badge ${u.is_active ? "badge-green" : "badge-red"}`}>
                         {u.is_active ? "Active" : "Inactive"}
                       </span>
@@ -235,18 +258,28 @@ export default function UsersPage() {
                       {u.created_at ? new Date(u.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—"}
                     </td>
                     <td className="px-4 py-3.5 pr-6 text-right">
-                      <button
-                        onClick={() => toggleActive(u)}
-                        disabled={isSelf || pendingToggle === u.id}
-                        title={isSelf ? "You can't deactivate yourself" : u.is_active ? "Deactivate" : "Activate"}
-                        className={`text-[11px] font-bold px-3 py-1.5 rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-                          u.is_active
-                            ? "text-red-500 border-red-200 hover:bg-red-50"
-                            : "text-green-600 border-green-200 hover:bg-green-50"
-                        }`}
-                      >
-                        {pendingToggle === u.id ? "…" : u.is_active ? "Deactivate" : "Activate"}
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => setAccessUser(u)}
+                          disabled={u.role === "superadmin"}
+                          title={u.role === "superadmin" ? "Superadmin already has full access" : "Manage module access"}
+                          className="w-8 h-8 rounded-xl border border-gray-200 text-gray-400 hover:text-orange-500 hover:border-orange-200 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <Settings size={14} />
+                        </button>
+                        <button
+                          onClick={() => toggleActive(u)}
+                          disabled={isSelf || pendingToggle === u.id}
+                          title={isSelf ? "You can't deactivate yourself" : u.is_active ? "Deactivate" : "Activate"}
+                          className={`text-[11px] font-bold px-3 py-1.5 rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                            u.is_active
+                              ? "text-red-500 border-red-200 hover:bg-red-50"
+                              : "text-green-600 border-green-200 hover:bg-green-50"
+                          }`}
+                        >
+                          {pendingToggle === u.id ? "…" : u.is_active ? "Deactivate" : "Activate"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -269,7 +302,211 @@ export default function UsersPage() {
           />
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {accessUser && (
+          <ManageAccessModal
+            headers={headers}
+            targetUser={accessUser}
+            onClose={() => setAccessUser(null)}
+            onSaved={(modules) => {
+              setUsers((prev) => prev.map((x) => (x.id === accessUser.id ? { ...x, modules } : x)));
+              setAccessUser(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+// ── Shared module/company access checkboxes ───────────────────────────────────
+function AccessFields({
+  headers, modules, setModules, financeCompanyIds, setFinanceCompanyIds,
+}: {
+  headers: Record<string, string>;
+  modules: ModuleKey[];
+  setModules: (m: ModuleKey[]) => void;
+  financeCompanyIds: string[];
+  setFinanceCompanyIds: (ids: string[]) => void;
+}) {
+  const [companies, setCompanies] = useState<FinanceCompany[] | null>(null);
+
+  useEffect(() => {
+    if (!modules.includes("finance") || companies !== null) return;
+    fetch(`${API_URL}/finance/sheet-sources`, { headers })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setCompanies(data.map((s: any) => ({ id: s.id, label: s.label }))))
+      .catch(() => setCompanies([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modules]);
+
+  const toggleModule = (m: ModuleKey) => {
+    if (modules.includes(m)) setModules(modules.filter((x) => x !== m));
+    else setModules([...modules, m]);
+  };
+
+  const toggleCompany = (id: string) => {
+    if (financeCompanyIds.includes(id)) setFinanceCompanyIds(financeCompanyIds.filter((x) => x !== id));
+    else setFinanceCompanyIds([...financeCompanyIds, id]);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Module Access</label>
+      <div className="flex flex-wrap gap-2">
+        {ALL_MODULES.map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => toggleModule(m)}
+            className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all ${
+              modules.includes(m)
+                ? "text-orange-600 bg-orange-50 border-orange-200"
+                : "text-gray-400 border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            {MODULE_LABELS[m]}
+          </button>
+        ))}
+      </div>
+
+      {modules.includes("finance") && (
+        <div className="mt-1 flex flex-col gap-2 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Finance — Company Access</p>
+          {companies === null ? (
+            <p className="text-xs text-gray-400">Loading companies…</p>
+          ) : companies.length === 0 ? (
+            <p className="text-xs text-gray-400">No Finance companies registered yet. Add one from the Finance page first.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {companies.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => toggleCompany(c.id)}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-xl border transition-all ${
+                    financeCompanyIds.includes(c.id)
+                      ? "text-orange-600 bg-orange-50 border-orange-200"
+                      : "text-gray-400 border-gray-200 hover:border-gray-300"
+                  }`}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Manage Access Modal (existing user) ───────────────────────────────────────
+function ManageAccessModal({
+  headers, targetUser, onClose, onSaved,
+}: {
+  headers: Record<string, string>;
+  targetUser: AppUser;
+  onClose: () => void;
+  onSaved: (modules: string[]) => void;
+}) {
+  const [modules, setModules] = useState<ModuleKey[]>([]);
+  const [financeCompanyIds, setFinanceCompanyIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch(`${API_URL}/users/${targetUser.id}/access`, { headers })
+      .then((r) => (r.ok ? r.json() : { modules: [], finance_company_ids: [] }))
+      .then((data) => {
+        setModules(data.modules ?? []);
+        setFinanceCompanyIds(data.finance_company_ids ?? []);
+      })
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetUser.id]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch(`${API_URL}/users/${targetUser.id}/access`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ modules, finance_company_ids: financeCompanyIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || "Failed to update access.");
+      } else {
+        onSaved(data.modules ?? modules);
+      }
+    } catch {
+      setError("Cannot connect to server.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 12 }}
+        transition={{ duration: 0.2 }}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-5"
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-black text-gray-900">Manage Access</h2>
+            <p className="text-xs text-gray-400">{targetUser.name} · {targetUser.email}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-300 hover:text-gray-500"><X size={18} /></button>
+        </div>
+
+        {loading ? (
+          <p className="text-xs text-gray-400">Loading current access…</p>
+        ) : (
+          <AccessFields
+            headers={headers}
+            modules={modules}
+            setModules={setModules}
+            financeCompanyIds={financeCompanyIds}
+            setFinanceCompanyIds={setFinanceCompanyIds}
+          />
+        )}
+
+        {error && (
+          <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs text-red-600 bg-red-50 border border-red-100">
+            <AlertCircle size={13} className="shrink-0" /> {error}
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={handleSave} disabled={loading || saving}
+            className="flex-1 h-11 rounded-xl text-sm font-bold text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "linear-gradient(135deg,#f46617,#d85512)", boxShadow: "0 4px 16px rgba(244,102,23,0.3)" }}
+          >
+            {saving ? "Saving…" : "Save Access"}
+          </button>
+          <button
+            type="button" onClick={onClose}
+            className="h-11 px-5 rounded-xl text-sm font-medium text-gray-500 border border-gray-200 hover:border-gray-300 hover:text-gray-700 transition-all"
+          >
+            Cancel
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -321,6 +558,8 @@ function CreateUserModal({
   const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState<UserRole>("staff");
   const [department, setDepartment] = useState("");
+  const [modules, setModules] = useState<ModuleKey[]>([]);
+  const [financeCompanyIds, setFinanceCompanyIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -346,9 +585,19 @@ function CreateUserModal({
       const data = await res.json();
       if (!res.ok) {
         setError(data.detail || "Failed to create user.");
-      } else {
-        onCreated(data, password);
+        return;
       }
+      let grantedModules: string[] = [];
+      if (role !== "superadmin" && (modules.length > 0 || financeCompanyIds.length > 0)) {
+        const accessRes = await fetch(`${API_URL}/users/${data.id}/access`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...headers },
+          body: JSON.stringify({ modules, finance_company_ids: financeCompanyIds }),
+        });
+        const accessData = await accessRes.json().catch(() => ({}));
+        grantedModules = accessData.modules ?? [];
+      }
+      onCreated({ ...data, modules: grantedModules }, password);
     } catch {
       setError("Cannot connect to server.");
     } finally {
@@ -441,6 +690,18 @@ function CreateUserModal({
               className="h-11 px-4 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
             />
           </div>
+
+          {role === "superadmin" ? (
+            <p className="text-[11px] text-gray-400 -mt-1">Superadmin automatically has access to every module.</p>
+          ) : (
+            <AccessFields
+              headers={headers}
+              modules={modules}
+              setModules={setModules}
+              financeCompanyIds={financeCompanyIds}
+              setFinanceCompanyIds={setFinanceCompanyIds}
+            />
+          )}
 
           {error && (
             <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs text-red-600 bg-red-50 border border-red-100">

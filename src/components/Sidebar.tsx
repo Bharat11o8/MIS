@@ -7,8 +7,10 @@ import {
   LogOut,
   UserCircle,
   UserCog,
+  Wallet,
 } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
+import { ModuleKey } from "@/lib/modules";
 import { cn } from "@/lib/utils";
 
 const logoSrc = "/autoform-logo.png";
@@ -19,7 +21,7 @@ interface NavItem {
   icon: React.ReactNode;
   path: string;
   section?: string;
-  roles: UserRole[];
+  moduleKey?: ModuleKey; // omitted = always visible to any authenticated user
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -28,7 +30,6 @@ const NAV_ITEMS: NavItem[] = [
     label: "Overview",
     icon: <LayoutDashboard size={16} />,
     path: "/dashboard",
-    roles: ["superadmin", "management", "sales_head", "leads_head", "staff"],
   },
   {
     id: "sales",
@@ -36,21 +37,28 @@ const NAV_ITEMS: NavItem[] = [
     icon: <TrendingUp size={16} />,
     path: "/dashboard/sales",
     section: "MODULES",
-    roles: ["superadmin", "management", "sales_head"],
+    moduleKey: "sales",
   },
   {
     id: "leads",
     label: "Lead Analytics",
     icon: <BarChart2 size={16} />,
     path: "/dashboard/leads",
-    roles: ["superadmin", "management", "leads_head", "sales_rep"],
+    moduleKey: "leads",
   },
   {
     id: "leads-upload",
     label: "Upload Data",
     icon: <Upload size={16} />,
     path: "/dashboard/leads/upload",
-    roles: ["superadmin", "management", "leads_head", "sales_rep"],
+    moduleKey: "leads",
+  },
+  {
+    id: "finance",
+    label: "Finance",
+    icon: <Wallet size={16} />,
+    path: "/dashboard/finance",
+    moduleKey: "finance",
   },
   {
     id: "users",
@@ -58,7 +66,6 @@ const NAV_ITEMS: NavItem[] = [
     icon: <UserCog size={16} />,
     path: "/dashboard/users",
     section: "ADMIN",
-    roles: ["superadmin"],
   },
 ];
 
@@ -67,9 +74,12 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const visibleItems = NAV_ITEMS.filter((item) =>
-    user ? item.roles.includes(user.role) : false
-  );
+  const visibleItems = NAV_ITEMS.filter((item) => {
+    if (!user) return false;
+    if (item.id === "users") return user.role === "superadmin";
+    if (!item.moduleKey) return true;
+    return user.role === "superadmin" || (user.modules ?? []).includes(item.moduleKey);
+  });
 
   const handleLogout = () => {
     logout();

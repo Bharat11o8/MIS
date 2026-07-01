@@ -16,20 +16,20 @@ from models import SheetSource, PlantToDepotSale, SyncLog, User
 from routers.auth import get_current_user
 from services.google_sheets import extract_sheet_id
 from services.sales_sync import parse_workbook
+from services.permissions import require_module
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
 MODULE = "sales_plant_to_depot"
-ALLOWED_ROLES = {"superadmin", "management", "sales_head"}
+MODULE_KEY = "sales"
 DEPOTS = ["Janak Motors", "United Auto"]
 BRANDS = ["Autoform", "Autocruze", "Combined"]
 CATEGORIES = ["Seat Cover", "Accessories", "Mats", "Boot & Cabin Mat", "Electronics"]
 _MN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def _require_access(current_user: User):
-    if current_user.role not in ALLOWED_ROLES:
-        raise HTTPException(status_code=403, detail="Not authorized to access Sales data")
+def _require_access(db: Session, current_user: User):
+    require_module(db, current_user, MODULE_KEY)
 
 
 # ── Filter helpers ─────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ def add_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     sid = extract_sheet_id(body.sheet_url_or_id)
     source = SheetSource(
@@ -105,7 +105,7 @@ def list_sheet_sources(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     sources = db.query(SheetSource).filter(SheetSource.module == MODULE).order_by(SheetSource.created_at.desc()).all()
     result = []
@@ -131,7 +131,7 @@ def delete_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
     if not source:
@@ -153,7 +153,7 @@ def sync_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE).first()
     if not source:
@@ -258,7 +258,7 @@ def sync_now(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     sheet_id = os.getenv("SALES_SHEET_ID")
     if not sheet_id:
@@ -384,7 +384,7 @@ def filter_options(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     months = db.execute(text("""
         SELECT DISTINCT sale_year AS year, sale_month AS month,
@@ -413,7 +413,7 @@ def sales_analytics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     filters = {"year": year, "months": _parse_months_param(months), "depot": depot, "brand": brand, "category": category}
     where_clauses = ["1=1"]
@@ -555,7 +555,7 @@ def sales_list(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     filters = {"year": year, "months": _parse_months_param(months), "depot": depot, "brand": brand, "category": category}
     where_clauses = ["1=1"]
@@ -598,7 +598,7 @@ def sync_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(current_user)
+    _require_access(db, current_user)
 
     query = db.query(SyncLog).filter(SyncLog.module == MODULE)
     if sheet_source_id:

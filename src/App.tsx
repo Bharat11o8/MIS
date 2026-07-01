@@ -6,6 +6,7 @@ import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
 import DashboardLayout from "@/layouts/DashboardLayout";
 import OverviewPage from "@/pages/OverviewPage";
 import SalesPage from "@/pages/SalesPage";
+import FinancePage from "@/pages/FinancePage";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadsUploadPage from "@/pages/LeadsUploadPage";
 import ExportPage from "@/pages/ExportPage";
@@ -69,6 +70,7 @@ function AppRoutes() {
       >
         <Route index element={<OverviewPage />} />
         <Route path="sales" element={<SalesPage />} />
+        <Route path="finance" element={<FinancePage />} />
         <Route path="leads" element={<LeadsPage />} />
         <Route path="leads/upload" element={<LeadsUploadPage />} />
         <Route path="export" element={<ExportPage />} />

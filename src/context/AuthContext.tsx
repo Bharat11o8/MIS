@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from "react";
+import React, { createContext, useContext, useState, useEffect } from "react";
 
 export type UserRole =
   | "superadmin"
@@ -15,6 +15,7 @@ export interface User {
   role: UserRole;
   department?: string;
   must_change_password?: boolean;
+  modules: string[];
 }
 
 interface AuthContextType {
@@ -112,6 +113,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem("mis_user", JSON.stringify(updated));
     }
   };
+
+  // Re-validate against the server on mount so a superadmin's later module-access
+  // changes take effect on next load, instead of requiring the affected user to log out.
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API_URL}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => {
+        if (!res.ok) throw new Error("session invalid");
+        return res.json();
+      })
+      .then((me) => {
+        setUser((prev) => {
+          const updated = { ...(prev ?? {}), ...me } as User;
+          localStorage.setItem("mis_user", JSON.stringify(updated));
+          return updated;
+        });
+      })
+      .catch(() => {
+        setUser(null);
+        setToken(null);
+        setMustChangePassword(false);
+        localStorage.removeItem("mis_user");
+        localStorage.removeItem("mis_token");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <AuthContext.Provider

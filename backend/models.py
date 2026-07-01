@@ -2,7 +2,7 @@
 AutoForm MIS — Updated SQLAlchemy ORM Models (Phase 3)
 """
 import uuid
-from sqlalchemy import Column, String, Boolean, Integer, Date, Text, ForeignKey, Numeric
+from sqlalchemy import Column, String, Boolean, Integer, Date, Text, ForeignKey, Numeric, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy import TIMESTAMP
@@ -111,6 +111,68 @@ class DistributorSale(Base):
     sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
     created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class UserModuleAccess(Base):
+    __tablename__ = "user_module_access"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    module     = Column(String(50), nullable=False)
+    granted_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    granted_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class UserSheetSourceAccess(Base):
+    __tablename__ = "user_sheet_source_access"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id         = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    sheet_source_id = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    granted_by      = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    granted_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class BalanceSheetLine(Base):
+    __tablename__ = "balance_sheet_lines"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    tab_title       = Column(String(100), nullable=False)
+    section         = Column(String(30), nullable=False)
+    entity_type     = Column(String(20), nullable=False)
+    item_no         = Column(Integer, nullable=True)
+    line_key        = Column(String(80), nullable=False)
+    line_label      = Column(String(150), nullable=False)
+    parent_key      = Column(String(80), nullable=True)
+    period_end_date = Column(Date, nullable=False)
+    amount          = Column(Numeric(16, 2), nullable=False)
+    percent         = Column(Float, nullable=True)
+    sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ProfitLossLine(Base):
+    __tablename__ = "profit_loss_lines"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id   = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    tab_title         = Column(String(100), nullable=False)
+    section           = Column(String(30), nullable=False)
+    entity_type       = Column(String(20), nullable=False)
+    item_no           = Column(Integer, nullable=True)
+    line_key          = Column(String(80), nullable=False)
+    line_label        = Column(String(150), nullable=False)
+    parent_key        = Column(String(80), nullable=True)
+    period_start_date = Column(Date, nullable=False)
+    period_end_date   = Column(Date, nullable=False)
+    period_type       = Column(String(10), nullable=False)
+    amount            = Column(Numeric(16, 2), nullable=False)
+    percent           = Column(Float, nullable=True)
+    sync_log_id       = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at        = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at        = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class SyncLog(Base):
