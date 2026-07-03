@@ -1,36 +1,33 @@
 import { useEffect, useMemo, useState } from "react";
-import { Landmark, Building2, TrendingUp, TrendingDown } from "lucide-react";
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from "recharts";
 import { useAuth } from "@/context/AuthContext";
-import Select from "@/components/ui/Select";
-import { bucketStockSeries, TrendView } from "./aggregate";
+import { TrendView, buildColorMap } from "./aggregate";
+import type { BsAnalytics, LineItem } from "./balance-sheet/types";
+import HeroKpiRow from "./balance-sheet/HeroKpiRow";
+import BalanceTrendChart from "./balance-sheet/BalanceTrendChart";
+import PeriodPicker from "./shared/PeriodPicker";
+import CompositionDonuts from "./balance-sheet/CompositionDonuts";
+import MirroredCompositionBars from "./balance-sheet/MirroredCompositionBars";
+import SectionTreemaps from "./balance-sheet/SectionTreemaps";
+import TopMovers from "./balance-sheet/TopMovers";
+import PeriodComparisonPanel from "./balance-sheet/PeriodComparisonPanel";
+import LineItemTable from "./balance-sheet/LineItemTable";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-function formatINR(n: number) {
-  return "₹" + Math.round(n).toLocaleString("en-IN");
-}
-function formatCr(n: number) {
-  return `₹${(n / 1e7).toFixed(1)}Cr`;
-}
-function deltaColor(v: number | null) {
-  if (v === null) return "#94a3b8";
-  return v >= 0 ? "#22c55e" : "#ef4444";
+function subtractOneYear(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y - 1, m - 1, d));
+  return dt.toISOString().slice(0, 10);
 }
 
-interface SeriesPoint { period_end_date: string; amount: number; percent: number | null; }
-interface LineItem { line_key: string; line_label: string; item_no: number | null; entity_type: string; series: SeriesPoint[]; }
-interface Section { line_items: LineItem[]; total: { line_key: string | null; series: SeriesPoint[] }; }
-interface BsAnalytics {
-  kpis: {
-    sources_total_latest: number | null; application_total_latest: number | null;
-    mom_delta_pct: number | null; mom_period: string | null;
-    qoq_delta_pct: number | null; qoq_period: string | null;
-    yoy_delta_pct: number | null; yoy_period: string | null;
-  };
-  sections: { sources_of_funds: Section; application_of_funds: Section };
+// Canonical, chart-independent ordering (the sheet's own item_no) used to
+// assign colors — so a color depends on where an item sits in the sheet, not
+// on which chart's own top-N/sort-by-amount logic happens to render it.
+function canonicalOrder(lineItems: LineItem[]): string[] {
+  return lineItems
+    .filter((i) => i.entity_type === "line_item")
+    .sort((a, b) => (a.item_no ?? 0) - (b.item_no ?? 0))
+    .map((i) => i.line_key);
 }
 
 export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: string }) {
@@ -39,6 +36,9 @@ export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: str
   const [data, setData] = useState<BsAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
   const [trendView, setTrendView] = useState<TrendView>("monthly");
+  const [snapshotPeriod, setSnapshotPeriod] = useState<string>("");
+  const [compareA, setCompareA] = useState<string>("");
+  const [compareB, setCompareB] = useState<string>("");
 
   useEffect(() => {
     if (!sheetSourceId) { setData(null); return; }
@@ -51,117 +51,103 @@ export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: str
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetSourceId, token]);
 
-  const trendData = useMemo(() => {
+  const periods = useMemo(() => {
     if (!data) return [];
-    const sources = bucketStockSeries(data.sections.sources_of_funds.total.series, trendView);
-    const application = bucketStockSeries(data.sections.application_of_funds.total.series, trendView);
-    const appByPeriod = new Map(application.map((b) => [b.period, b.amount]));
-    return sources.map((b) => ({ period: b.period, "Sources of Funds": b.amount, "Application of Funds": appByPeriod.get(b.period) ?? b.amount }));
-  }, [data, trendView]);
+    const set = new Set<string>();
+    data.sections.sources_of_funds.total.series.forEach((p) => set.add(p.period_end_date));
+    data.sections.application_of_funds.total.series.forEach((p) => set.add(p.period_end_date));
+    return Array.from(set).sort();
+  }, [data]);
+
+  useEffect(() => {
+    if (periods.length === 0) return;
+    const latest = periods[periods.length - 1];
+    setSnapshotPeriod((cur) => (cur && periods.includes(cur) ? cur : latest));
+    setCompareB((cur) => (cur && periods.includes(cur) ? cur : latest));
+    setCompareA((cur) => {
+      if (cur && periods.includes(cur)) return cur;
+      const target = subtractOneYear(latest);
+      const candidate = [...periods].reverse().find((p) => p <= target);
+      return candidate ?? periods[0];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periods]);
+
+  const sourcesColorMap = useMemo(
+    () => buildColorMap(canonicalOrder(data?.sections.sources_of_funds.line_items ?? [])),
+    [data],
+  );
+  const applicationColorMap = useMemo(
+    () => buildColorMap(canonicalOrder(data?.sections.application_of_funds.line_items ?? [])),
+    [data],
+  );
 
   if (!sheetSourceId) return null;
   if (loading) return <div className="flex items-center justify-center py-10 text-sm text-gray-400"><div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin mr-2" /> Loading…</div>;
   if (!data) return <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">No Balance Sheet data yet. Sync this company's sheet.</div>;
 
-  const { kpis } = data;
-  const kpiCards = [
-    { id: "bs-sources", label: "Total Sources of Funds", value: kpis.sources_total_latest !== null ? formatINR(kpis.sources_total_latest) : "—", icon: <Landmark size={18} />, color: "#3b82f6", bg: "#eff6ff" },
-    { id: "bs-application", label: "Total Application of Funds", value: kpis.application_total_latest !== null ? formatINR(kpis.application_total_latest) : "—", icon: <Building2 size={18} />, color: "#a855f7", bg: "#faf5ff" },
-    { id: "bs-mom", label: "MoM Change", value: kpis.mom_delta_pct !== null ? `${kpis.mom_delta_pct > 0 ? "+" : ""}${kpis.mom_delta_pct}%` : "—", icon: kpis.mom_delta_pct !== null && kpis.mom_delta_pct < 0 ? <TrendingDown size={18} /> : <TrendingUp size={18} />, color: deltaColor(kpis.mom_delta_pct), bg: "#f0fdf4", sub: kpis.mom_period },
-    { id: "bs-yoy", label: "YoY Change", value: kpis.yoy_delta_pct !== null ? `${kpis.yoy_delta_pct > 0 ? "+" : ""}${kpis.yoy_delta_pct}%` : "—", icon: kpis.yoy_delta_pct !== null && kpis.yoy_delta_pct < 0 ? <TrendingDown size={18} /> : <TrendingUp size={18} />, color: deltaColor(kpis.yoy_delta_pct), bg: "#fff7ed", sub: kpis.yoy_period },
-  ];
+  const { kpis, sections } = data;
+  const sourcesItems = sections.sources_of_funds.line_items;
+  const applicationItems = sections.application_of_funds.line_items;
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpiCards.map((kpi) => (
-          <div key={kpi.id} className="kpi-card">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>{kpi.icon}</div>
-            <div className="mt-3">
-              <p className="text-2xl font-black text-gray-900">{kpi.value}</p>
-              <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
-              {kpi.sub && <p className="text-[10px] text-gray-400 mt-0.5">{kpi.sub}</p>}
-            </div>
+    <div className="flex flex-col gap-8">
+      <section className="flex flex-col gap-4">
+        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Overview</h2>
+        <HeroKpiRow kpis={kpis} sourcesSeries={sections.sources_of_funds.total.series} applicationSeries={sections.application_of_funds.total.series} />
+        <BalanceTrendChart
+          sourcesSeries={sections.sources_of_funds.total.series}
+          applicationSeries={sections.application_of_funds.total.series}
+          trendView={trendView}
+          setTrendView={setTrendView}
+        />
+      </section>
+
+      <section className="flex flex-col gap-4">
+        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Composition</h2>
+        {snapshotPeriod && periods.length > 0 && (
+          <div className="flex items-center justify-end">
+            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Snapshot" />
           </div>
-        ))}
-      </div>
+        )}
+        {snapshotPeriod && (
+          <>
+            <CompositionDonuts sourcesItems={sourcesItems} applicationItems={applicationItems} pickedPeriod={snapshotPeriod} sourcesColorMap={sourcesColorMap} applicationColorMap={applicationColorMap} />
+            <MirroredCompositionBars
+              sourcesItems={sourcesItems}
+              applicationItems={applicationItems}
+              pickedPeriod={snapshotPeriod}
+              sourcesTotal={kpis.sources_total_latest}
+              applicationTotal={kpis.application_total_latest}
+              sourcesColorMap={sourcesColorMap}
+              applicationColorMap={applicationColorMap}
+            />
+            <SectionTreemaps sourcesItems={sourcesItems} applicationItems={applicationItems} pickedPeriod={snapshotPeriod} sourcesColorMap={sourcesColorMap} applicationColorMap={applicationColorMap} />
+          </>
+        )}
+      </section>
 
-      <div className="card-premium p-6">
-        <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-          <div>
-            <h3 className="text-sm font-bold text-gray-800">Balance Sheet Trend</h3>
-            <p className="text-[11px] text-gray-400">Point-in-time value at the end of each period — never summed</p>
-          </div>
-          <div className="flex items-center bg-gray-100 rounded-xl p-1">
-            {(["monthly", "quarterly", "yearly"] as TrendView[]).map((v) => (
-              <button key={v} onClick={() => setTrendView(v)}
-                className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition-all ${trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
-                {v}
-              </button>
-            ))}
-          </div>
-        </div>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={trendData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-            <XAxis dataKey="period" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
-            <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
-            <Line type="monotone" dataKey="Sources of Funds" stroke="#3b82f6" strokeWidth={2.5} dot={{ fill: "#3b82f6", r: 4 }} />
-            <Line type="monotone" dataKey="Application of Funds" stroke="#a855f7" strokeWidth={2.5} dot={{ fill: "#a855f7", r: 4 }} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      <section className="flex flex-col gap-4">
+        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Movers &amp; Comparison</h2>
+        <TopMovers sourcesItems={sourcesItems} applicationItems={applicationItems} />
+        {compareA && compareB && (
+          <PeriodComparisonPanel
+            sourcesItems={sourcesItems}
+            applicationItems={applicationItems}
+            periods={periods}
+            compareA={compareA}
+            compareB={compareB}
+            setCompareA={setCompareA}
+            setCompareB={setCompareB}
+          />
+        )}
+      </section>
 
-      <SectionTable title="Sources of Funds" section={data.sections.sources_of_funds} trendView={trendView} />
-      <SectionTable title="Application of Funds" section={data.sections.application_of_funds} trendView={trendView} />
-    </div>
-  );
-}
-
-function SectionTable({ title, section, trendView }: { title: string; section: Section; trendView: TrendView }) {
-  const totalBuckets = bucketStockSeries(section.total.series, trendView);
-  const periods = totalBuckets.map((b) => b.period);
-  const rows = section.line_items.map((item) => {
-    const buckets = bucketStockSeries(item.series, trendView);
-    const byPeriod = new Map(buckets.map((b) => [b.period, b.amount]));
-    return { ...item, values: periods.map((p) => byPeriod.get(p) ?? null) };
-  });
-  const totalByPeriod = new Map(totalBuckets.map((b) => [b.period, b.amount]));
-
-  return (
-    <div className="card-premium overflow-hidden">
-      <div className="p-6 pb-4">
-        <h3 className="text-sm font-bold text-gray-800">{title}</h3>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50/50">
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2">Item</th>
-              {periods.map((p) => (
-                <th key={p} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 whitespace-nowrap">{p}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {rows.map((row) => (
-              <tr key={row.line_key} className={row.entity_type === "detail" ? "text-gray-400" : ""}>
-                <td className={`px-6 py-2.5 text-xs ${row.entity_type === "detail" ? "pl-10 text-gray-400" : "font-medium text-gray-700"}`}>{row.line_label}</td>
-                {row.values.map((v, i) => (
-                  <td key={i} className="px-3 py-2.5 text-xs text-gray-600 text-right whitespace-nowrap">{v !== null ? formatINR(v) : "—"}</td>
-                ))}
-              </tr>
-            ))}
-            <tr className="bg-orange-50/40 font-bold">
-              <td className="px-6 py-2.5 text-xs text-gray-800">Total</td>
-              {periods.map((p) => (
-                <td key={p} className="px-3 py-2.5 text-xs text-gray-900 text-right whitespace-nowrap">{formatINR(totalByPeriod.get(p) ?? 0)}</td>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <section className="flex flex-col gap-4">
+        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Detail</h2>
+        <LineItemTable title="Sources of Funds" section={sections.sources_of_funds} trendView={trendView} />
+        <LineItemTable title="Application of Funds" section={sections.application_of_funds} trendView={trendView} />
+      </section>
     </div>
   );
 }

@@ -32,9 +32,22 @@ def _fyq(y: int, m: int):
     return (y, (m - 4) // 3 + 1) if m >= 4 else (y - 1, 4)
 
 
+def _signed_delta_pct(curr: float, prev):
+    """% change is only meaningful when the base is strictly positive — a
+    negative divided by a negative silently flips the sign (e.g. prev=-100 ->
+    curr=-200, an algebraic decrease, naively computes as +100%). See
+    aggregate.ts::computeDelta on the frontend for the identical rule."""
+    if prev is None or prev <= 0:
+        return None
+    return round((curr - prev) / prev * 100, 1)
+
+
 def _growth_kpis(monthly: list) -> dict:
     """MoM/QoQ/YoY/YoY-FY growth off a flat [{year, month, amount}] series — same
-    Indian-FY-quarter math as sales.py's analytics, generalized off any series."""
+    Indian-FY-quarter math as sales.py's analytics, generalized off any series.
+    NOTE: unlike _signed_delta_pct, this doesn't guard against a negative base —
+    out of scope for the Balance Sheet correctness pass (P&L only), see finance
+    module memory / _signed_delta_pct for the fix pattern if this needs it later."""
     monthly = sorted(monthly, key=lambda x: (x["year"], x["month"]))
     out = {
         "mom_growth": None, "mom_period": None,
@@ -343,7 +356,7 @@ def sync_sheet_source(
 # ── Analytics ──────────────────────────────────────────────────────────────────
 def _balance_sheet_analytics(db: Session, sheet_source_id: str) -> dict:
     rows = db.execute(text("""
-        SELECT section, entity_type, item_no, line_key, line_label, period_end_date, amount, percent
+        SELECT section, entity_type, item_no, line_key, line_label, parent_key, period_end_date, amount, percent
         FROM balance_sheet_lines WHERE sheet_source_id = :sid
         ORDER BY period_end_date
     """), {"sid": sheet_source_id}).fetchall()
@@ -363,7 +376,7 @@ def _balance_sheet_analytics(db: Session, sheet_source_id: str) -> dict:
         else:
             item = sec["line_items"].setdefault(r.line_key, {
                 "line_key": r.line_key, "line_label": r.line_label, "item_no": r.item_no,
-                "entity_type": r.entity_type, "series": [],
+                "entity_type": r.entity_type, "parent_key": r.parent_key, "series": [],
             })
             item["series"].append(point)
 
@@ -384,8 +397,7 @@ def _balance_sheet_analytics(db: Session, sheet_source_id: str) -> dict:
 
         if len(total_series) >= 2:
             prev, curr = total_series[-2], total_series[-1]
-            if prev["amount"]:
-                kpis["mom_delta_pct"] = round((curr["amount"] - prev["amount"]) / prev["amount"] * 100, 1)
+            kpis["mom_delta_pct"] = _signed_delta_pct(curr["amount"], prev["amount"])
             kpis["mom_period"] = f"{prev['period_end_date']} → {curr['period_end_date']}"
 
         # QoQ (stock rule): last available value within each Indian FY quarter bucket
@@ -400,8 +412,7 @@ def _balance_sheet_analytics(db: Session, sheet_source_id: str) -> dict:
         if len(sqs) >= 2:
             p_qk, c_qk = sqs[-2], sqs[-1]
             p_amt, c_amt = q_latest[p_qk]["amount"], q_latest[c_qk]["amount"]
-            if p_amt:
-                kpis["qoq_delta_pct"] = round((c_amt - p_amt) / p_amt * 100, 1)
+            kpis["qoq_delta_pct"] = _signed_delta_pct(c_amt, p_amt)
             kpis["qoq_period"] = f"{qn[p_qk[1]]} FY{str(p_qk[0] + 1)[-2:]} → {qn[c_qk[1]]} FY{str(c_qk[0] + 1)[-2:]}"
 
         # YoY (stock rule): latest date vs same month one calendar year earlier
@@ -413,8 +424,8 @@ def _balance_sheet_analytics(db: Session, sheet_source_id: str) -> dict:
              and date.fromisoformat(p["period_end_date"]).month == latest_d.month),
             None,
         )
-        if prior_year_point and prior_year_point["amount"]:
-            kpis["yoy_delta_pct"] = round((latest["amount"] - prior_year_point["amount"]) / prior_year_point["amount"] * 100, 1)
+        if prior_year_point:
+            kpis["yoy_delta_pct"] = _signed_delta_pct(latest["amount"], prior_year_point["amount"])
             kpis["yoy_period"] = f"{prior_year_point['period_end_date']} → {latest['period_end_date']}"
 
     return {"kpis": kpis, "sections": sections}
@@ -422,7 +433,7 @@ def _balance_sheet_analytics(db: Session, sheet_source_id: str) -> dict:
 
 def _profit_loss_analytics(db: Session, sheet_source_id: str) -> dict:
     rows = db.execute(text("""
-        SELECT section, entity_type, item_no, line_key, line_label,
+        SELECT section, entity_type, item_no, line_key, line_label, parent_key,
                period_start_date, period_end_date, period_type, amount, percent
         FROM profit_loss_lines WHERE sheet_source_id = :sid
         ORDER BY period_end_date
@@ -434,7 +445,7 @@ def _profit_loss_analytics(db: Session, sheet_source_id: str) -> dict:
     }
     by_key: dict = {}
     fy_to_date = []
-    monthly_sales, monthly_nett = [], []
+    monthly_sales, monthly_gross, monthly_nett = [], [], []
 
     for r in rows:
         point = {
@@ -447,13 +458,15 @@ def _profit_loss_analytics(db: Session, sheet_source_id: str) -> dict:
 
         entry = by_key.setdefault(r.line_key, {
             "line_key": r.line_key, "line_label": r.line_label, "item_no": r.item_no,
-            "section": r.section, "entity_type": r.entity_type, "series": [],
+            "section": r.section, "entity_type": r.entity_type, "parent_key": r.parent_key, "series": [],
         })
         entry["series"].append(point)
 
         label_norm = r.line_label.upper().rstrip(":").strip()
         if label_norm == "SALES ACCOUNTS":
             monthly_sales.append({"year": r.period_end_date.year, "month": r.period_end_date.month, "amount": float(r.amount)})
+        if label_norm == "GROSS PROFIT":
+            monthly_gross.append({"year": r.period_end_date.year, "month": r.period_end_date.month, "amount": float(r.amount)})
         if label_norm == "NETT PROFIT":
             monthly_nett.append({"year": r.period_end_date.year, "month": r.period_end_date.month, "amount": float(r.amount)})
 
@@ -477,6 +490,7 @@ def _profit_loss_analytics(db: Session, sheet_source_id: str) -> dict:
 
     kpis = {
         "sales_accounts_total": round(sum(m["amount"] for m in monthly_sales), 2) if monthly_sales else 0.0,
+        "gross_profit_total": round(sum(m["amount"] for m in monthly_gross), 2) if monthly_gross else 0.0,
         "nett_profit_total": round(sum(m["amount"] for m in monthly_nett), 2) if monthly_nett else 0.0,
         **_growth_kpis(monthly_sales),
     }
