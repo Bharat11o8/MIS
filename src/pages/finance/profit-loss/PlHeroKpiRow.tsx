@@ -1,5 +1,5 @@
 import { IndianRupee, Coins, PiggyBank, TrendingUp, TrendingDown } from "lucide-react";
-import { formatINR, formatPct, deltaColor, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR } from "../format";
+import { formatINR, formatCompact, formatPct, deltaColor, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR } from "../format";
 import type { PlAnalytics } from "./types";
 
 const NEUTRAL_CARD_BG = "#F5F0E8"; // sand wash — direction is carried by icon/text color instead
@@ -20,34 +20,36 @@ function marginLine(name: string, total: number, sales: number): string | undefi
 export default function PlHeroKpiRow({ kpis }: { kpis: PlAnalytics["kpis"] }) {
   const sales = kpis.sales_accounts_total;
 
+  // Headline money values are compact (₹20.5Cr) — the exact rupee figure
+  // lives in the hover title, not the headline.
   const cards = [
     {
-      id: "pl-sales", label: "Total Sales", value: formatINR(sales),
+      id: "pl-sales", label: "Total Sales", value: formatCompact(sales), exact: formatINR(sales),
       icon: <IndianRupee size={18} />, color: REVENUE_COLOR, bg: REVENUE_BG,
-      sub: "All synced months", big: false,
+      sub: "All synced months", big: true,
     },
     {
-      id: "pl-gross", label: "Gross Profit", value: formatINR(kpis.gross_profit_total),
+      id: "pl-gross", label: "Gross Profit", value: formatCompact(kpis.gross_profit_total), exact: formatINR(kpis.gross_profit_total),
       icon: <Coins size={18} />, color: GROSS_PROFIT_COLOR, bg: GROSS_BG,
-      sub: marginLine("GP", kpis.gross_profit_total, sales), big: false,
+      sub: marginLine("GP", kpis.gross_profit_total, sales), big: true,
     },
     {
-      id: "pl-nett", label: "Nett Profit", value: formatINR(kpis.nett_profit_total),
+      id: "pl-nett", label: "Nett Profit", value: formatCompact(kpis.nett_profit_total), exact: formatINR(kpis.nett_profit_total),
       icon: <PiggyBank size={18} />, color: NETT_PROFIT_COLOR, bg: NETT_BG,
-      sub: marginLine("NP", kpis.nett_profit_total, sales), big: false,
+      sub: marginLine("NP", kpis.nett_profit_total, sales), big: true,
     },
     {
-      id: "pl-mom", label: "MoM Sales Growth", value: formatPct(kpis.mom_growth),
+      id: "pl-mom", label: "MoM Sales Growth", value: formatPct(kpis.mom_growth), exact: undefined,
       icon: <DeltaIcon v={kpis.mom_growth} />, color: deltaColor(kpis.mom_growth), bg: NEUTRAL_CARD_BG,
       sub: kpis.mom_period, big: true,
     },
     {
-      id: "pl-qoq", label: "QoQ Sales Growth", value: formatPct(kpis.qoq_growth),
+      id: "pl-qoq", label: "QoQ Sales Growth", value: formatPct(kpis.qoq_growth), exact: undefined,
       icon: <DeltaIcon v={kpis.qoq_growth} />, color: deltaColor(kpis.qoq_growth), bg: NEUTRAL_CARD_BG,
       sub: kpis.qoq_period, big: true,
     },
     {
-      id: "pl-yoy-fy", label: "YoY Sales Growth (FY)", value: formatPct(kpis.yoy_fy_growth),
+      id: "pl-yoy-fy", label: "YoY Sales Growth (FY)", value: formatPct(kpis.yoy_fy_growth), exact: undefined,
       icon: <DeltaIcon v={kpis.yoy_fy_growth} />, color: deltaColor(kpis.yoy_fy_growth), bg: NEUTRAL_CARD_BG,
       sub: kpis.yoy_fy_period, big: true,
     },
@@ -60,7 +62,7 @@ export default function PlHeroKpiRow({ kpis }: { kpis: PlAnalytics["kpis"] }) {
           <div className="absolute top-0 left-0 right-0 h-[3px]" style={{ background: kpi.color }} />
           <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>{kpi.icon}</div>
           <div className="mt-3 min-w-0">
-            <p className={`font-black text-gray-900 tabular-nums ${kpi.big ? "text-2xl" : "text-xl"}`}>{kpi.value}</p>
+            <p className={`font-black text-gray-900 tabular-nums ${kpi.big ? "text-2xl" : "text-xl"}`} title={kpi.exact}>{kpi.value}</p>
             <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
             {kpi.sub && <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
           </div>

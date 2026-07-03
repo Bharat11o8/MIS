@@ -11,11 +11,10 @@ interface RevenueProfitTrendChartProps {
   salesSeries: SeriesPoint[];
   grossSeries: SeriesPoint[];
   nettSeries: SeriesPoint[];
-  trendView: TrendView;
-  setTrendView: (v: TrendView) => void;
+  trendView: TrendView; // controlled by the page-level control bar
 }
 
-export default function RevenueProfitTrendChart({ salesSeries, grossSeries, nettSeries, trendView, setTrendView }: RevenueProfitTrendChartProps) {
+export default function RevenueProfitTrendChart({ salesSeries, grossSeries, nettSeries, trendView }: RevenueProfitTrendChartProps) {
   const trendData = useMemo(() => {
     const sales = bucketFlowSeries(salesSeries, trendView);
     const gross = bucketFlowSeries(grossSeries, trendView);
@@ -34,19 +33,9 @@ export default function RevenueProfitTrendChart({ salesSeries, grossSeries, nett
 
   return (
     <div className="card-premium p-6">
-      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-        <div>
-          <h3 className="text-sm font-bold text-gray-800">Revenue &amp; Profit Trend</h3>
-          <p className="text-[11px] text-gray-400">Summed within each period — a flow figure, unlike the Balance Sheet</p>
-        </div>
-        <div className="flex items-center bg-gray-100 rounded-xl p-1">
-          {(["monthly", "quarterly", "yearly"] as TrendView[]).map((v) => (
-            <button key={v} onClick={() => setTrendView(v)}
-              className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition-all ${trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
-              {v}
-            </button>
-          ))}
-        </div>
+      <div className="mb-5">
+        <h3 className="text-sm font-bold text-gray-800">Revenue &amp; Profit Trend</h3>
+        <p className="text-[11px] text-gray-400">Summed within each period — a flow figure, unlike the Balance Sheet</p>
       </div>
       {trendData.length < 2 ? (
         <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">Not enough history yet — sync more periods to see a trend.</div>

@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { TrendView } from "./aggregate";
 import type { PlAnalytics } from "./profit-loss/types";
-import { findSalesItem } from "./profit-loss/plMath";
+import { findSalesItem, indirectExpenseBreakdown } from "./profit-loss/plMath";
 import PeriodPicker from "./shared/PeriodPicker";
 import PlHeroKpiRow from "./profit-loss/PlHeroKpiRow";
 import RevenueProfitTrendChart from "./profit-loss/RevenueProfitTrendChart";
 import MarginTrendChart from "./profit-loss/MarginTrendChart";
-import ProfitBridgeWaterfall from "./profit-loss/ProfitBridgeWaterfall";
+import ProfitBridgePanel from "./profit-loss/ProfitBridgePanel";
 import IndirectExpenseBreakdown from "./profit-loss/IndirectExpenseBreakdown";
 import PlTopMovers from "./profit-loss/PlTopMovers";
 import PlPeriodComparisonPanel from "./profit-loss/PlPeriodComparisonPanel";
@@ -77,39 +77,64 @@ export default function ProfitLossView({ sheetSourceId }: { sheetSourceId: strin
 
   const { sections, headline } = data;
   const salesSeries = findSalesItem(sections.trading_account)?.series ?? [];
+  // Mirrors IndirectExpenseBreakdown's own render gate so the bridge can take
+  // the full row when the breakdown hides itself.
+  const breakdownVisible = snapshotPeriod
+    ? (() => {
+        const b = indirectExpenseBreakdown(data, snapshotPeriod);
+        return !!b && b.reconciles && b.slices.some((s) => s.amount > 0);
+      })()
+    : false;
 
   return (
     <div className="flex flex-col gap-8">
+      {/* One control bar drives every time-dependent card: the trend buckets
+          for the charts/tables and the snapshot month for the bridge. */}
+      <div className="sticky top-3 z-20">
+        <div className="bg-white/95 backdrop-blur border border-gray-100 rounded-2xl shadow-sm px-4 py-2.5 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Trend</span>
+            <div className="flex items-center bg-gray-100 rounded-xl p-1">
+              {(["monthly", "quarterly", "yearly"] as TrendView[]).map((v) => (
+                <button key={v} onClick={() => setTrendView(v)}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition-all ${trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+          {snapshotPeriod && periods.length > 0 && (
+            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Month" />
+          )}
+        </div>
+      </div>
+
       <section className="flex flex-col gap-4">
         <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Overview</h2>
         <PlHeroKpiRow kpis={data.kpis} />
-        <RevenueProfitTrendChart
-          salesSeries={salesSeries}
-          grossSeries={headline.gross_profit.series}
-          nettSeries={headline.nett_profit.series}
-          trendView={trendView}
-          setTrendView={setTrendView}
-        />
-        <MarginTrendChart
-          salesSeries={salesSeries}
-          grossSeries={headline.gross_profit.series}
-          nettSeries={headline.nett_profit.series}
-          trendView={trendView}
-        />
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <RevenueProfitTrendChart
+            salesSeries={salesSeries}
+            grossSeries={headline.gross_profit.series}
+            nettSeries={headline.nett_profit.series}
+            trendView={trendView}
+          />
+          <MarginTrendChart
+            salesSeries={salesSeries}
+            grossSeries={headline.gross_profit.series}
+            nettSeries={headline.nett_profit.series}
+            trendView={trendView}
+          />
+        </div>
       </section>
 
       <section className="flex flex-col gap-4">
         <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Profit Bridge</h2>
-        {snapshotPeriod && periods.length > 0 && (
-          <div className="flex items-center justify-end">
-            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Month" />
-          </div>
-        )}
         {snapshotPeriod && (
-          <>
-            <ProfitBridgeWaterfall data={data} pickedPeriod={snapshotPeriod} />
+          <div className={`grid grid-cols-1 gap-4 ${breakdownVisible ? "xl:grid-cols-2" : ""}`}>
+            <ProfitBridgePanel data={data} pickedPeriod={snapshotPeriod} />
             <IndirectExpenseBreakdown data={data} pickedPeriod={snapshotPeriod} />
-          </>
+          </div>
         )}
       </section>
 

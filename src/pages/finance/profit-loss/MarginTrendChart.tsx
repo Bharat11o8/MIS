@@ -36,9 +36,9 @@ export default function MarginTrendChart({ salesSeries, grossSeries, nettSeries,
         <p className="text-[11px] text-gray-400">Gross &amp; Nett Profit as a share of Sales — each period's profit ÷ that period's sales, never an average of monthly margins</p>
       </div>
       {trendData.length < 2 ? (
-        <div className="h-[180px] flex items-center justify-center text-sm text-gray-400">Not enough history yet — sync more periods to see a trend.</div>
+        <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">Not enough history yet — sync more periods to see a trend.</div>
       ) : (
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={260}>
           <LineChart data={trendData}>
             <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
             <XAxis dataKey="period" tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} axisLine={false} tickLine={false} />
