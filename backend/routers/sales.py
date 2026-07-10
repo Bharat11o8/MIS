@@ -5,12 +5,14 @@ per registered sheet, unified cross-sheet analytics, filter options, paginated
 list, sync history.
 """
 import os
+import re
 import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from database import get_db
 from models import SheetSource, PlantToDepotSale, SyncLog, User
 from routers.auth import get_current_user
@@ -68,10 +70,59 @@ def _parse_months_param(months: Optional[str]) -> list:
     return pairs
 
 
+# ── Period selector (Monthly / Quarterly / Yearly chip tokens) ─────────────────
+# Same token grammar as Depot-to-Distributor's period selector (YYYY-MM,
+# YYYY-Qn, YYYY where YYYY is FY-start-year) so both tabs' selectors behave
+# identically — but resolution here is pure calendar math, no DB lookup: unlike
+# D2D (one sheet = one quarter, needs a sheet_sources join), a Plant-to-Depot
+# sheet is a whole FY's worth of month tabs and every row already carries its
+# own sale_year/sale_month directly.
+_MONTH_TOKEN_RE = re.compile(r"^(\d{4})-(\d{2})$")
+_QUARTER_TOKEN_RE = re.compile(r"^(\d{4})-Q([1-4])$")
+_YEAR_TOKEN_RE = re.compile(r"^(\d{4})$")
+
+
+def _quarter_months(fy: int, qn: int) -> list:
+    m3 = {1: [4, 5, 6], 2: [7, 8, 9], 3: [10, 11, 12], 4: [1, 2, 3]}[qn]
+    yrs = [fy + 1] * 3 if qn == 4 else [fy] * 3
+    return list(zip(yrs, m3))
+
+
+def _fy_months(fy: int) -> list:
+    return [(fy, m) for m in range(4, 13)] + [(fy + 1, m) for m in range(1, 4)]
+
+
+def _resolve_period(mode: str, token: str) -> dict:
+    if mode == "monthly":
+        m = _MONTH_TOKEN_RE.match(token)
+        if not m:
+            raise HTTPException(status_code=400, detail=f"Invalid month token: {token!r} (expected YYYY-MM)")
+        y, mo = int(m.group(1)), int(m.group(2))
+        return {"key": token, "label": f"{_MN[mo - 1]} {y}", "months": [(y, mo)]}
+    if mode == "quarterly":
+        m = _QUARTER_TOKEN_RE.match(token)
+        if not m:
+            raise HTTPException(status_code=400, detail=f"Invalid quarter token: {token!r} (expected YYYY-Qn)")
+        fy, qn = int(m.group(1)), int(m.group(2))
+        return {"key": token, "label": f"Q{qn} FY{(fy + 1) % 100:02d}", "months": _quarter_months(fy, qn)}
+    if mode == "yearly":
+        m = _YEAR_TOKEN_RE.match(token)
+        if not m:
+            raise HTTPException(status_code=400, detail=f"Invalid year token: {token!r} (expected YYYY)")
+        fy = int(m.group(1))
+        return {"key": token, "label": f"FY{str(fy)[-2:]}-{str(fy + 1)[-2:]}", "months": _fy_months(fy)}
+    raise HTTPException(status_code=400, detail="mode must be one of monthly, quarterly, yearly")
+
+
 # ── Sheet registry ─────────────────────────────────────────────────────────────
+# One Google Sheet = one fiscal year here (a tab per month, year auto-detected
+# per tab by parse_workbook) — unlike Depot-to-Distributor, where one sheet is
+# one quarter. So the structured identity that fits this data shape is a single
+# Fiscal Year picker, not a Quarter+Year pair. This replaces the old free-text
+# label (no calendar identity, nothing stopping a duplicate or mistyped FY).
 class SheetSourceIn(BaseModel):
     sheet_url_or_id: str
-    label: str
+    fy_start_year: int
 
 
 @router.post("/sheet-sources")
@@ -82,20 +133,29 @@ def add_sheet_source(
 ):
     _require_access(db, current_user)
 
+    # Label is derived, not typed — "FY26 Plant to Depot" — using this file's
+    # own start_year+1 FY-suffix convention (see fyRangeLabel/_fy_months usage
+    # above), so it can never drift from what the sheet actually covers.
+    label = f"FY{(body.fy_start_year + 1) % 100:02d} Plant to Depot"
     sid = extract_sheet_id(body.sheet_url_or_id)
     source = SheetSource(
         id=uuid.uuid4(),
         module=MODULE,
         sheet_id=sid,
-        label=body.label.strip(),
-        calendar_year=None,
+        label=label,
+        calendar_year=body.fy_start_year,
         created_by=current_user.id,
     )
     db.add(source)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"{label} is already registered")
     db.refresh(source)
     return {
         "id": str(source.id), "sheet_id": source.sheet_id, "label": source.label,
+        "calendar_year": source.calendar_year,
         "created_at": source.created_at.isoformat(),
     }
 
@@ -118,6 +178,7 @@ def list_sheet_sources(
         )
         result.append({
             "id": str(s.id), "sheet_id": s.sheet_id, "label": s.label,
+            "calendar_year": s.calendar_year,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "last_synced_at": last_log.synced_at.isoformat() if last_log and last_log.synced_at else None,
             "last_sync_status": last_log.status if last_log else None,
@@ -402,20 +463,15 @@ def filter_options(
     }
 
 
-# ── Analytics ──────────────────────────────────────────────────────────────────
-@router.get("/analytics")
-def sales_analytics(
-    year: Optional[int] = None,
-    months: Optional[str] = None,
-    depot: Optional[str] = None,
-    brand: Optional[str] = None,
-    category: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    _require_access(db, current_user)
-
-    filters = {"year": year, "months": _parse_months_param(months), "depot": depot, "brand": brand, "category": category}
+# ── Period analytics ─────────────────────────────────────────────────────────
+# Replaces the old single-filter /analytics + rotating MoM/QoQ/YoY growth card
+# with the same selector-driven model Depot-to-Distributor uses: pick a mode
+# and 1+ periods, get back a per-period comparison row for the top-of-dashboard
+# cards plus one blended breakdown (trend/depot/category/brand) summed across
+# the whole selection for everything below. No target field here, so no dedup
+# hazard — amount sums safely no matter how the selected periods overlap.
+def _period_breakdown(db: Session, months: list, depot: Optional[str], brand: Optional[str], category: Optional[str]) -> dict:
+    filters = {"months": months, "depot": depot, "brand": brand, "category": category}
     where_clauses = ["1=1"]
     params: dict = {}
     _apply_filters_sql(where_clauses, params, filters)
@@ -449,97 +505,49 @@ def sales_analytics(
         GROUP BY brand ORDER BY amount DESC
     """), params).fetchall()
 
-    mom_growth = None
-    mom_period = None
-    if len(trend_rows) >= 2:
-        pr, cr = trend_rows[-2], trend_rows[-1]
-        if pr.amount and float(pr.amount) > 0:
-            mom_growth = round((float(cr.amount) - float(pr.amount)) / float(pr.amount) * 100, 1)
-        mom_period = f"{_MN[pr.sale_month - 1]} → {_MN[cr.sale_month - 1]}"
-
-    # Non-time filters for YoY / QoQ (so they always compare full-period data)
-    nt_where = ["1=1"]
-    nt_params: dict = {}
-    if depot:
-        nt_where.append("depot = :depot"); nt_params["depot"] = depot
-    if brand:
-        nt_where.append("brand = :brand"); nt_params["brand"] = brand
-    if category:
-        nt_where.append("category = :category"); nt_params["category"] = category
-    nt_sql = " AND ".join(nt_where)
-
-    # YoY: compare latest month in current view to same month prior year
-    yoy_growth = None
-    yoy_period = None
-    if trend_rows:
-        latest = trend_rows[-1]
-        ly = db.execute(text(f"""
-            SELECT COALESCE(SUM(amount), 0) FROM plant_to_depot_sales
-            WHERE {nt_sql} AND sale_year = :y AND sale_month = :m
-        """), {**nt_params, "y": latest.sale_year - 1, "m": latest.sale_month}).scalar()
-        if float(ly) > 0:
-            yoy_growth = round((float(latest.amount) - float(ly)) / float(ly) * 100, 1)
-        yoy_period = f"{_MN[latest.sale_month - 1]} {latest.sale_year - 1} → {_MN[latest.sale_month - 1]} {latest.sale_year}"
-
-    # QoQ: aggregate all available data into Indian FY quarters, compare last two
-    def _fyq(y: int, m: int):
-        return (y, (m - 4) // 3 + 1) if m >= 4 else (y - 1, 4)
-
-    all_trend = db.execute(text(f"""
-        SELECT sale_year, sale_month, SUM(amount) AS amount
-        FROM plant_to_depot_sales WHERE {nt_sql}
-        GROUP BY sale_year, sale_month ORDER BY sale_year, sale_month
-    """), nt_params).fetchall()
-
-    q_totals: dict = {}
-    for r in all_trend:
-        qk = _fyq(r.sale_year, r.sale_month)
-        q_totals[qk] = q_totals.get(qk, 0.0) + float(r.amount)
-
-    qoq_growth = None
-    qoq_period = None
-    sqs = sorted(q_totals)
-    if len(sqs) >= 2:
-        p_qk, c_qk = sqs[-2], sqs[-1]
-        p_amt, c_amt = q_totals[p_qk], q_totals[c_qk]
-        if p_amt > 0:
-            qoq_growth = round((c_amt - p_amt) / p_amt * 100, 1)
-        qn = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4"}
-        qoq_period = f"{qn[p_qk[1]]} FY{str(p_qk[0] + 1)[-2:]} → {qn[c_qk[1]]} FY{str(c_qk[0] + 1)[-2:]}"
-
-    # YoY at FY level (compare two most recent complete FYs in full dataset)
-    yoy_fy_growth = None
-    yoy_fy_period = None
-    fy_totals: dict = {}
-    for r in all_trend:
-        fy_s = r.sale_year if r.sale_month >= 4 else r.sale_year - 1
-        fy_totals[fy_s] = fy_totals.get(fy_s, 0.0) + float(r.amount)
-    sorted_fys = sorted(fy_totals)
-    if len(sorted_fys) >= 2:
-        p_fy, c_fy = sorted_fys[-2], sorted_fys[-1]
-        if fy_totals[p_fy] > 0:
-            yoy_fy_growth = round((fy_totals[c_fy] - fy_totals[p_fy]) / fy_totals[p_fy] * 100, 1)
-        yoy_fy_period = f"FY{str(p_fy + 1)[-2:]} → FY{str(c_fy + 1)[-2:]}"
+    depot_category_rows = db.execute(text(f"""
+        SELECT depot, category, SUM(amount) AS amount
+        FROM plant_to_depot_sales WHERE {where_sql}
+        GROUP BY depot, category ORDER BY depot, category
+    """), params).fetchall()
 
     return {
-        "kpis": {
-            "total_amount": float(total_amount or 0),
-            "mom_growth": mom_growth,
-            "mom_period": mom_period,
-            "yoy_growth": yoy_growth,
-            "yoy_period": yoy_period,
-            "qoq_growth": qoq_growth,
-            "qoq_period": qoq_period,
-            "yoy_fy_growth": yoy_fy_growth,
-            "yoy_fy_period": yoy_fy_period,
-        },
-        "trends": [
-            {"year": r.sale_year, "month": r.sale_month, "amount": float(r.amount)} for r in trend_rows
-        ],
+        "kpis": {"total_amount": float(total_amount or 0)},
+        "trends": [{"year": r.sale_year, "month": r.sale_month, "amount": float(r.amount)} for r in trend_rows],
         "depots": [{"depot": r.depot, "amount": float(r.amount)} for r in depot_rows],
         "categories": [{"category": r.category, "amount": float(r.amount)} for r in category_rows],
         "brands": [{"brand": r.brand, "amount": float(r.amount)} for r in brand_rows],
+        "depot_category": [{"depot": r.depot, "category": r.category, "amount": float(r.amount)} for r in depot_category_rows],
     }
+
+
+@router.get("/period-analytics")
+def period_analytics(
+    mode: str = Query(...),
+    periods: str = Query(..., description="Comma-separated tokens; shape depends on mode"),
+    depot: Optional[str] = None,
+    brand: Optional[str] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(db, current_user)
+
+    tokens = [t.strip() for t in periods.split(",") if t.strip()]
+    if not tokens:
+        raise HTTPException(status_code=400, detail="Provide at least 1 period")
+
+    resolved = [_resolve_period(mode, t) for t in tokens]
+
+    period_rows = []
+    for p in resolved:
+        breakdown = _period_breakdown(db, p["months"], depot, brand, category)
+        period_rows.append({"key": p["key"], "label": p["label"], "amount": breakdown["kpis"]["total_amount"]})
+
+    all_months = sorted({ym for p in resolved for ym in p["months"]})
+    blended = _period_breakdown(db, all_months, depot, brand, category)
+
+    return {"mode": mode, "periods": period_rows, **blended}
 
 
 # ── Paginated list ────────────────────────────────────────────────────────────

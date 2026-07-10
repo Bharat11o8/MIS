@@ -147,13 +147,13 @@ export default function UsersPage() {
       <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
         {kpis.map((kpi) => (
           <motion.div key={kpi.id} variants={item} id={kpi.id} className="kpi-card">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>
-              {kpi.icon}
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: kpi.bg, color: kpi.color }}>
+                {kpi.icon}
+              </div>
+              <p className="text-xs font-bold text-gray-600">{kpi.label}</p>
             </div>
-            <div className="mt-3">
-              <p className="text-2xl font-black text-gray-900">{loading ? "—" : kpi.value}</p>
-              <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
-            </div>
+            <p className="text-2xl font-black text-gray-900 mt-3">{loading ? "—" : kpi.value}</p>
           </motion.div>
         ))}
       </motion.div>

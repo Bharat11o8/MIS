@@ -42,9 +42,11 @@ const item = {
 function SkeletonCard() {
   return (
     <div className="kpi-card animate-pulse">
-      <div className="w-10 h-10 rounded-xl bg-gray-100 mb-3" />
-      <div className="h-7 w-24 bg-gray-100 rounded mb-2" />
-      <div className="h-3 w-16 bg-gray-100 rounded" />
+      <div className="flex items-center gap-2.5">
+        <div className="w-9 h-9 rounded-xl bg-gray-100 shrink-0" />
+        <div className="h-3 w-16 bg-gray-100 rounded" />
+      </div>
+      <div className="h-7 w-24 bg-gray-100 rounded mt-3" />
     </div>
   );
 }
@@ -174,17 +176,17 @@ export default function OverviewPage() {
           ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
           : kpis.map((kpi) => (
               <motion.div key={kpi.id} variants={item} className="kpi-card">
-                <div className="flex items-start justify-between">
+                <div className="flex items-center gap-2.5">
                   <div
-                    className="w-10 h-10 rounded-xl flex items-center justify-center"
+                    className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
                     style={{ background: kpi.bg, color: kpi.color }}
                   >
                     {kpi.icon}
                   </div>
+                  <p className="text-xs font-bold text-gray-600">{kpi.label}</p>
                 </div>
                 <div className="mt-3">
                   <p className="text-2xl font-black text-gray-900">{kpi.value}</p>
-                  <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
                   <p className="text-[11px] text-gray-400 mt-0.5">{kpi.sub}</p>
                 </div>
               </motion.div>

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   IndianRupee, TrendingUp, MapPin, Boxes, RefreshCw, SlidersHorizontal, X,
-  CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp, History, Plus, Trash2,
+  CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp, History, Plus, Trash2, BarChart3,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -10,8 +10,8 @@ import {
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
-import MultiSelect from "@/components/ui/MultiSelect";
 import DepotToDistributorTab from "@/pages/DepotToDistributorTab";
+import { formatINR, formatCr, formatDate } from "@/lib/format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -33,25 +33,11 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface MonthOption { year: number; month: number; label: string; }
 interface FilterOptions { months: MonthOption[]; depots: string[]; brands: string[]; categories: string[]; }
-type TrendView = "monthly" | "quarterly" | "yearly";
-interface ActiveFilters {
-  // monthly view
-  selectedMonths: string[];   // "YYYY-M" keys matching filterOptions.months
-  // quarterly view
-  fyStart: number | null;
-  quarter: number | null;
-  // yearly view
-  selectedFYs: number[];      // FY start years
-  // always-on
-  depot: string; brand: string; category: string;
-}
-const EMPTY_FILTERS: ActiveFilters = {
-  selectedMonths: [], fyStart: null, quarter: null, selectedFYs: [],
-  depot: "", brand: "", category: "",
-};
+type PeriodMode = "monthly" | "quarterly" | "yearly";
+interface PeriodRow { key: string; label: string; amount: number; }
 
 interface PtdSheetSource {
-  id: string; sheet_id: string; label: string;
+  id: string; sheet_id: string; label: string; calendar_year: number | null;
   created_at: string | null; last_synced_at: string | null; last_sync_status: string | null;
 }
 interface SyncResult {
@@ -63,16 +49,79 @@ interface SyncHistoryItem {
   rows_failed: number; rows_deleted: number; status: string; synced_at: string;
 }
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  });
+// Indian FY: Apr–Mar. Same fyStart/quarter math used everywhere else on this
+// page (trendData grouping, availableFYs, period-token defaults).
+function currentFYStart(): number {
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = today.getMonth() + 1;
+  return m >= 4 ? y : y - 1;
 }
-function formatINR(n: number) {
-  return "₹" + Math.round(n).toLocaleString("en-IN");
+function currentFYQuarter(): number {
+  const m = new Date().getMonth() + 1;
+  return m >= 4 ? Math.floor((m - 4) / 3) + 1 : 4;
 }
-function formatCr(n: number) {
-  return `₹${(n / 1e7).toFixed(1)}Cr`;
+function monthFyStart(year: number, month: number): number {
+  return month >= 4 ? year : year - 1;
+}
+
+// The one canonical full-FY-range label — "FY26-27" — used everywhere a whole
+// financial year is shown (dropdowns, KPI subtitles, chart axes). Quarter
+// labels ("Q1 FY27") stay separate since a single-year suffix reads fine there.
+function fyRangeLabel(fyStart: number): string {
+  return `FY${String(fyStart).slice(2)}-${String(fyStart + 1).slice(2)}`;
+}
+// FY start-year options for the Plant-to-Depot sheet registration picker.
+const PTD_YEAR_OPTIONS = Array.from({ length: 5 }, (_, i) => currentFYStart() - 2 + i)
+  .map((y) => ({ value: String(y), label: fyRangeLabel(y) }));
+
+function chipClass(active: boolean) {
+  return `text-xs font-semibold px-3 py-1.5 rounded-full border transition-all ${
+    active ? "bg-orange-500 text-white border-orange-500" : "text-gray-600 border-gray-200 hover:border-orange-200"
+  }`;
+}
+
+// Switching modes (or first load) should land on "today's" period for that
+// mode — not an empty selection the user then has to fill in by hand. Yearly
+// always means the current financial year, regardless of what data happens to
+// be synced for it.
+function defaultTokensFor(view: PeriodMode): { years: Set<number>; months: Set<string>; quarters: Set<string> } {
+  const fy = currentFYStart();
+  const today = new Date();
+  const cy = today.getFullYear(), cm = today.getMonth() + 1;
+  if (view === "monthly") {
+    return { years: new Set(), months: new Set([`${cy}-${String(cm).padStart(2, "0")}`]), quarters: new Set() };
+  }
+  if (view === "quarterly") {
+    return { years: new Set([fy]), months: new Set(), quarters: new Set([`${fy}-Q${currentFYQuarter()}`]) };
+  }
+  return { years: new Set([fy]), months: new Set(), quarters: new Set() };
+}
+
+// Client-side mirror of the backend's _quarter_months/_fy_months — expands a
+// selected period token into raw (year, month) pairs so the detail table
+// (/sales/list) can be filtered independently of the analytics endpoint.
+function expandToken(mode: PeriodMode, token: string): [number, number][] {
+  if (mode === "monthly") {
+    const [y, m] = token.split("-");
+    return [[Number(y), Number(m)]];
+  }
+  if (mode === "quarterly") {
+    const [fyStr, qStr] = token.split("-Q");
+    const fy = Number(fyStr);
+    const qMap: Record<string, [number, number][]> = {
+      "1": [[fy, 4], [fy, 5], [fy, 6]],
+      "2": [[fy, 7], [fy, 8], [fy, 9]],
+      "3": [[fy, 10], [fy, 11], [fy, 12]],
+      "4": [[fy + 1, 1], [fy + 1, 2], [fy + 1, 3]],
+    };
+    return qMap[qStr] ?? [];
+  }
+  const fy = Number(token);
+  const out: [number, number][] = [];
+  for (let m = 4; m <= 12; m++) out.push([fy, m]);
+  for (let m = 1; m <= 3; m++) out.push([fy + 1, m]);
+  return out;
 }
 
 const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
@@ -100,9 +149,10 @@ export default function SalesPage() {
   const [activeTab, setActiveTab] = useState<"plant_to_depot" | "depot_to_distributor">("plant_to_depot");
 
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
-  const [filters, setFilters] = useState<ActiveFilters>(EMPTY_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(true);
-  const [trendView, setTrendView] = useState<TrendView>("quarterly");
+  const [depotFilter, setDepotFilter] = useState("");
+  const [brandFilter, setBrandFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
   const [analytics, setAnalytics] = useState<any | null>(null);
   const [rows, setRows] = useState<any[]>([]);
   const [totalRows, setTotalRows] = useState(0);
@@ -119,10 +169,16 @@ export default function SalesPage() {
   const [ptdSelectedId, setPtdSelectedId] = useState<string>("");
   const [ptdShowAdd, setPtdShowAdd] = useState(false);
   const [ptdNewLink, setPtdNewLink] = useState("");
-  const [ptdNewLabel, setPtdNewLabel] = useState("");
+  const [ptdNewYear, setPtdNewYear] = useState(String(currentFYStart()));
   const [ptdAdding, setPtdAdding] = useState(false);
   const [ptdAddError, setPtdAddError] = useState<string | null>(null);
   const [ptdDeleting, setPtdDeleting] = useState(false);
+
+  // ── Period selector (Monthly / Quarterly / Yearly, multi-select chips) ──────
+  const [mode, setMode] = useState<PeriodMode>("quarterly");
+  const [selectedYears, setSelectedYears] = useState<Set<number>>(() => defaultTokensFor("quarterly").years);
+  const [selectedMonthTokens, setSelectedMonthTokens] = useState<Set<string>>(() => defaultTokensFor("quarterly").months);
+  const [selectedQuarterTokens, setSelectedQuarterTokens] = useState<Set<string>>(() => defaultTokensFor("quarterly").quarters);
 
   const loadPtdSources = useCallback(async () => {
     try {
@@ -135,19 +191,71 @@ export default function SalesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const switchMode = (m: PeriodMode) => {
+    setMode(m);
+    const d = defaultTokensFor(m);
+    setSelectedYears(d.years);
+    setSelectedMonthTokens(d.months);
+    setSelectedQuarterTokens(d.quarters);
+  };
+  const toggleYear = (y: number) => setSelectedYears((prev) => {
+    const next = new Set(prev); next.has(y) ? next.delete(y) : next.add(y); return next;
+  });
+  const toggleMonthToken = (t: string) => setSelectedMonthTokens((prev) => {
+    const next = new Set(prev); next.has(t) ? next.delete(t) : next.add(t); return next;
+  });
+  const toggleQuarterToken = (t: string) => setSelectedQuarterTokens((prev) => {
+    const next = new Set(prev); next.has(t) ? next.delete(t) : next.add(t); return next;
+  });
+
+  const periodTokens = useMemo(() => {
+    if (mode === "monthly") return Array.from(selectedMonthTokens);
+    if (mode === "quarterly") return Array.from(selectedQuarterTokens);
+    return Array.from(selectedYears).map(String);
+  }, [mode, selectedMonthTokens, selectedQuarterTokens, selectedYears]);
+  const periodTokensKey = periodTokens.join(",");
+
+  const availableFYs = useMemo(() => {
+    const fyStarts = new Set((filterOptions?.months ?? []).map((m) => monthFyStart(m.year, m.month)));
+    fyStarts.add(currentFYStart());
+    return Array.from(fyStarts).sort((a, b) => b - a);
+  }, [filterOptions]);
+
+  const monthChipOptions = useMemo(() => {
+    const map = new Map<string, { year: number; month: number }>();
+    for (const m of filterOptions?.months ?? []) map.set(`${m.year}-${m.month}`, { year: m.year, month: m.month });
+    const today = new Date();
+    map.set(`${today.getFullYear()}-${today.getMonth() + 1}`, { year: today.getFullYear(), month: today.getMonth() + 1 });
+    const all = Array.from(map.values());
+    const filtered = selectedYears.size === 0 ? all : all.filter((m) => selectedYears.has(monthFyStart(m.year, m.month)));
+    return filtered.sort((a, b) => a.year - b.year || a.month - b.month);
+  }, [filterOptions, selectedYears]);
+
+  // Quarters have no per-quarter sheet identity in Plant-to-Depot (one sheet
+  // is a whole FY) — so chips are synthesized (all 4 per selected year), not
+  // gated by data availability the way months/years are.
+  const quarterChipOptions = useMemo(() => {
+    const fys = selectedYears.size > 0 ? Array.from(selectedYears) : availableFYs;
+    const out: { token: string; label: string }[] = [];
+    for (const fy of [...fys].sort((a, b) => b - a)) {
+      for (let q = 1; q <= 4; q++) out.push({ token: `${fy}-Q${q}`, label: `Q${q} FY${String(fy + 1).slice(2)}` });
+    }
+    return out;
+  }, [selectedYears, availableFYs]);
+
   const handlePtdAddSheet = async () => {
-    if (!ptdNewLink.trim() || !ptdNewLabel.trim()) return;
+    if (!ptdNewLink.trim() || !ptdNewYear.trim()) return;
     setPtdAdding(true);
     setPtdAddError(null);
     try {
       const res = await fetch(`${API_URL}/sales/sheet-sources`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ sheet_url_or_id: ptdNewLink.trim(), label: ptdNewLabel.trim() }),
+        body: JSON.stringify({ sheet_url_or_id: ptdNewLink.trim(), fy_start_year: Number(ptdNewYear) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not add sheet");
-      setPtdNewLink(""); setPtdNewLabel(""); setPtdShowAdd(false);
+      setPtdNewLink(""); setPtdShowAdd(false);
       await loadPtdSources();
       setPtdSelectedId(data.id);
       // Auto-sync on first add — use data.id directly since state hasn't flushed yet
@@ -160,7 +268,12 @@ export default function SalesPage() {
         setSyncResult(syncData);
         loadHistory(data.id);
         loadPtdSources();
-        fetchData(filters);
+        // Jump the dashboard to the newly added FY — same "show what you just
+        // added" behavior Depot-to-Distributor's period selector uses.
+        setMode("yearly");
+        setSelectedYears(new Set([Number(ptdNewYear)]));
+        setSelectedMonthTokens(new Set());
+        setSelectedQuarterTokens(new Set());
       } catch (syncErr: any) {
         setSyncResult({
           sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 1, rows_deleted: 0,
@@ -189,7 +302,7 @@ export default function SalesPage() {
       await fetch(`${API_URL}/sales/sheet-sources/${ptdSelectedId}`, { method: "DELETE", headers });
       setPtdSelectedId("");
       await loadPtdSources();
-      fetchData(filters);
+      refreshDashboard();
     } catch { /* ignore */ } finally {
       setPtdDeleting(false);
     }
@@ -211,78 +324,70 @@ export default function SalesPage() {
     } catch { /* ignore */ }
   }, [token]);
 
-  // ── Build query params ──────────────────────────────────────────────────────
-  const buildParams = useCallback((f: ActiveFilters) => {
-    const p = new URLSearchParams();
-    const avail = new Set((filterOptions?.months ?? []).map(m => `${m.year}-${m.month}`));
-    const pad = (y: number, m: number) => `${y}-${String(m).padStart(2, "0")}`;
-
-    if (trendView === "monthly" && f.selectedMonths.length > 0) {
-      p.set("months", f.selectedMonths.map(s => { const [y, m] = s.split("-"); return pad(Number(y), Number(m)); }).join(","));
-    } else if (trendView === "quarterly" && f.fyStart !== null) {
-      const qMap: Record<number, [number, number][]> = {
-        1: [[f.fyStart, 4], [f.fyStart, 5], [f.fyStart, 6]],
-        2: [[f.fyStart, 7], [f.fyStart, 8], [f.fyStart, 9]],
-        3: [[f.fyStart, 10], [f.fyStart, 11], [f.fyStart, 12]],
-        4: [[f.fyStart + 1, 1], [f.fyStart + 1, 2], [f.fyStart + 1, 3]],
-      };
-      const fyAll: [number, number][] = [];
-      for (let m = 4; m <= 12; m++) fyAll.push([f.fyStart, m]);
-      for (let m = 1; m <= 3; m++) fyAll.push([f.fyStart + 1, m]);
-      const target = f.quarter !== null ? qMap[f.quarter] : fyAll;
-      const relevant = target.filter(([y, m]) => avail.has(`${y}-${m}`));
-      if (relevant.length) p.set("months", relevant.map(([y, m]) => pad(y, m)).join(","));
-    } else if (trendView === "yearly" && f.selectedFYs.length > 0) {
-      const strs: string[] = [];
-      for (const fy of f.selectedFYs) {
-        for (let m = 4; m <= 12; m++) if (avail.has(`${fy}-${m}`)) strs.push(pad(fy, m));
-        for (let m = 1; m <= 3; m++) if (avail.has(`${fy + 1}-${m}`)) strs.push(pad(fy + 1, m));
-      }
-      if (strs.length) p.set("months", strs.join(","));
-    }
-
-    if (f.depot) p.set("depot", f.depot);
-    if (f.brand) p.set("brand", f.brand);
-    if (f.category) p.set("category", f.category);
-    return p.toString();
-  }, [filterOptions, trendView]);
-
-  const fetchData = useCallback(async (f: ActiveFilters) => {
+  // ── Load analytics + detail list ─────────────────────────────────────────────
+  const loadPeriodAnalytics = useCallback(async (m: PeriodMode, tokens: string[]) => {
+    if (tokens.length === 0) { setAnalytics(null); setLoading(false); return; }
     setLoading(true);
-    const qs = buildParams(f);
     try {
-      const [aRes, lRes] = await Promise.all([
-        fetch(`${API_URL}/sales/analytics${qs ? "?" + qs : ""}`, { headers }),
-        fetch(`${API_URL}/sales/list?per_page=20${qs ? "&" + qs : ""}`, { headers }),
-      ]);
-      const [aData, lData] = await Promise.all([aRes.json(), lRes.json()]);
-      aData.trends = (aData.trends ?? []).map((t: any) => ({ ...t, period: `${MONTH_NAMES[t.month - 1]} ${String(t.year).slice(2)}` }));
-      setAnalytics(aData);
-      setRows(lData.data || []);
-      setTotalRows(lData.total || 0);
-    } catch (e) { console.error(e); }
+      const p = new URLSearchParams();
+      p.set("mode", m);
+      p.set("periods", tokens.join(","));
+      if (depotFilter) p.set("depot", depotFilter);
+      if (brandFilter) p.set("brand", brandFilter);
+      if (categoryFilter) p.set("category", categoryFilter);
+      const res = await fetch(`${API_URL}/sales/period-analytics?${p.toString()}`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        data.trends = (data.trends ?? []).map((t: any) => ({ ...t, period: `${MONTH_NAMES[t.month - 1]} ${String(t.year).slice(2)}` }));
+        setAnalytics(data);
+      } else {
+        setAnalytics(null);
+      }
+    } catch (e) { console.error(e); setAnalytics(null); }
     finally { setLoading(false); }
-  }, [token, buildParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, depotFilter, brandFilter, categoryFilter]);
 
-  useEffect(() => { fetchData(filters); }, [filters, fetchData]);
+  // Flattens the selected period tokens into raw months client-side (mirroring
+  // the backend's own token expansion) so the detail table can be filtered
+  // independently of the analytics endpoint's own aggregation.
+  const loadList = useCallback(async (m: PeriodMode, tokens: string[]) => {
+    if (tokens.length === 0) { setRows([]); setTotalRows(0); return; }
+    const monthsSet = new Set<string>();
+    for (const t of tokens) for (const [y, mo] of expandToken(m, t)) monthsSet.add(`${y}-${String(mo).padStart(2, "0")}`);
+    const p = new URLSearchParams();
+    p.set("months", Array.from(monthsSet).join(","));
+    p.set("per_page", "20");
+    if (depotFilter) p.set("depot", depotFilter);
+    if (brandFilter) p.set("brand", brandFilter);
+    if (categoryFilter) p.set("category", categoryFilter);
+    try {
+      const res = await fetch(`${API_URL}/sales/list?${p.toString()}`, { headers });
+      const data = await res.json();
+      setRows(data.data || []);
+      setTotalRows(data.total || 0);
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, depotFilter, brandFilter, categoryFilter]);
 
-  const setFilter = (key: keyof ActiveFilters, value: any) => setFilters((prev) => ({ ...prev, [key]: value }));
-  const clearAll = () => setFilters(EMPTY_FILTERS);
+  useEffect(() => {
+    loadPeriodAnalytics(mode, periodTokens);
+    loadList(mode, periodTokens);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, periodTokensKey, loadPeriodAnalytics, loadList]);
 
-  const timeActive = trendView === "monthly" ? filters.selectedMonths.length > 0
-    : trendView === "quarterly" ? (filters.fyStart !== null)
-    : filters.selectedFYs.length > 0;
-  const activeCount = [timeActive, filters.depot, filters.brand, filters.category].filter(Boolean).length;
+  const refreshDashboard = useCallback(() => {
+    loadPeriodAnalytics(mode, periodTokens);
+    loadList(mode, periodTokens);
+  }, [loadPeriodAnalytics, loadList, mode, periodTokens]);
 
-  const availableFYs = useMemo(() => {
-    const fyStarts = new Set((filterOptions?.months ?? []).map(m => m.month >= 4 ? m.year : m.year - 1));
-    return Array.from(fyStarts).sort((a, b) => b - a);
-  }, [filterOptions]);
+  const clearAll = () => { setDepotFilter(""); setBrandFilter(""); setCategoryFilter(""); };
+  const activeCount = [depotFilter, brandFilter, categoryFilter].filter(Boolean).length;
 
   const trendData = useMemo(() => {
     if (!analytics?.trends) return [];
-    if (trendView === "monthly") return analytics.trends;
-    if (trendView === "quarterly") {
+    if (mode === "monthly") return analytics.trends;
+    if (mode === "quarterly") {
       const quarters: Record<string, { amount: number; fyStart: number; q: number }> = {};
       for (const t of analytics.trends) {
         const fyStart = t.month >= 4 ? t.year : t.year - 1;
@@ -305,15 +410,8 @@ export default function SalesPage() {
     }
     return Object.entries(fys)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, v]) => ({ period: `FY ${v.fyStart}-${String(v.fyStart + 1).slice(2)}`, amount: v.amount, year: v.fyStart, month: 0 }));
-  }, [analytics?.trends, trendView]);
-
-  const handleTrendViewChange = (view: TrendView) => {
-    setTrendView(view);
-    setFilters(prev => ({ ...prev, selectedMonths: [], fyStart: null, quarter: null, selectedFYs: [] }));
-  };
-  const handleFYChange = (fyStr: string) => setFilters(prev => ({ ...prev, fyStart: fyStr === "" ? null : Number(fyStr), quarter: null }));
-  const handleQuarterChange = (qStr: string) => setFilters(prev => ({ ...prev, quarter: qStr === "" ? null : Number(qStr) }));
+      .map(([, v]) => ({ period: fyRangeLabel(v.fyStart), amount: v.amount, year: v.fyStart, month: 0 }));
+  }, [analytics?.trends, mode]);
 
   // ── Sync Now ─────────────────────────────────────────────────────────────────
   const handleSync = async () => {
@@ -329,7 +427,7 @@ export default function SalesPage() {
       setSyncResult(data);
       loadHistory(ptdSelectedId || undefined);
       loadPtdSources();
-      fetchData(filters);
+      refreshDashboard();
     } catch (err: any) {
       setSyncResult({
         sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 1, rows_deleted: 0,
@@ -341,41 +439,31 @@ export default function SalesPage() {
   };
 
   // ── KPI cards ──────────────────────────────────────────────────────────────
-  const timeLabelSub = (() => {
-    if (trendView === "monthly" && filters.selectedMonths.length > 0) {
-      if (filters.selectedMonths.length === 1) {
-        const [y, m] = filters.selectedMonths[0].split("-");
-        return `${MONTH_NAMES[Number(m) - 1]} ${y}`;
-      }
-      return `${filters.selectedMonths.length} months`;
-    }
-    if (trendView === "quarterly" && filters.fyStart !== null) {
-      return filters.quarter !== null
-        ? `Q${filters.quarter} FY${filters.fyStart}-${String(filters.fyStart + 1).slice(2)}`
-        : `FY ${filters.fyStart}-${String(filters.fyStart + 1).slice(2)}`;
-    }
-    if (trendView === "yearly" && filters.selectedFYs.length > 0) {
-      if (filters.selectedFYs.length === 1)
-        return `FY ${filters.selectedFYs[0]}-${String(filters.selectedFYs[0] + 1).slice(2)}`;
-      return `${filters.selectedFYs.length} FYs`;
-    }
-    return "All time";
-  })();
+  const periodsLabel = analytics?.periods?.length
+    ? (analytics.periods.length === 1 ? analytics.periods[0].label : `${analytics.periods.length} periods`)
+    : "Select a period";
 
-  const fmtGrowth = (g: number | null) => g !== null ? `${g > 0 ? "+" : ""}${g}%` : "—";
   const depotMap = Object.fromEntries((analytics?.depots ?? []).map((d: any) => [d.depot as string, d.amount as number]));
 
-  const growthG = analytics ? (
-    trendView === "monthly" ? analytics.kpis.mom_growth
-    : trendView === "quarterly" ? analytics.kpis.qoq_growth
-    : analytics.kpis.yoy_fy_growth
-  ) : null;
-  const growthPeriod = analytics ? (
-    trendView === "monthly" ? analytics.kpis.mom_period
-    : trendView === "quarterly" ? analytics.kpis.qoq_period
-    : analytics.kpis.yoy_fy_period
-  ) : null;
-  const growthLabel = trendView === "monthly" ? "MoM Growth" : trendView === "quarterly" ? "QoQ Growth" : "YoY Growth";
+  // One row per depot, one key per category — feeds the stacked "what did each
+  // depot buy" bar chart below (composition, not just the total each already
+  // shown in Depot Comparison).
+  const depotCategoryData = useMemo(() => {
+    if (!analytics?.depot_category) return [];
+    const byDepot = new Map<string, Record<string, any>>();
+    for (const r of analytics.depot_category as { depot: string; category: string; amount: number }[]) {
+      if (!byDepot.has(r.depot)) byDepot.set(r.depot, { depot: r.depot });
+      byDepot.get(r.depot)![r.category] = r.amount;
+    }
+    return Array.from(byDepot.values());
+  }, [analytics]);
+  const depotCategoryKeys = useMemo(() => {
+    if (!analytics?.depot_category) return [];
+    return Array.from(new Set((analytics.depot_category as { category: string }[]).map((r) => r.category)));
+  }, [analytics]);
+  const categoryTotalMap: Record<string, number> = Object.fromEntries(
+    (analytics?.categories ?? []).map((c: any) => [c.category as string, c.amount as number])
+  );
 
   const kpiCards = analytics ? (() => {
     const total = analytics.kpis.total_amount;
@@ -384,25 +472,17 @@ export default function SalesPage() {
     const pct = (v: number) => total > 0 ? `${((v / total) * 100).toFixed(1)}% of total` : "—";
     return [
       {
-        id: "sales-total", label: "Total Sales", value: formatINR(total),
+        id: "sales-total", label: "Total Sales", value: formatCr(total),
         icon: <IndianRupee size={18} />, color: "#3b82f6", bg: "#eff6ff",
-        sub: timeLabelSub, valueColor: "#111827",
+        sub: periodsLabel, valueColor: "#111827",
       },
       {
-        id: "sales-growth", label: growthLabel, value: fmtGrowth(growthG),
-        icon: <TrendingUp size={18} />,
-        color: growthG == null ? "#94a3b8" : growthG >= 0 ? "#22c55e" : "#ef4444",
-        bg: growthG == null ? "#f8fafc" : growthG >= 0 ? "#f0fdf4" : "#fef2f2",
-        sub: growthPeriod ?? "—",
-        valueColor: growthG == null ? "#94a3b8" : growthG >= 0 ? "#22c55e" : "#ef4444",
-      },
-      {
-        id: "depot-janak", label: "Janak Motors", value: formatINR(janak),
+        id: "depot-janak", label: "Janak Motors", value: formatCr(janak),
         icon: <MapPin size={18} />, color: DEPOT_COLORS["Janak Motors"], bg: "#eff6ff",
         sub: pct(janak), valueColor: "#111827",
       },
       {
-        id: "depot-united", label: "United Auto", value: formatINR(united),
+        id: "depot-united", label: "United Auto", value: formatCr(united),
         icon: <MapPin size={18} />, color: DEPOT_COLORS["United Auto"], bg: "#fff7ed",
         sub: pct(united), valueColor: "#111827",
       },
@@ -424,7 +504,7 @@ export default function SalesPage() {
             <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
               {activeTab === "plant_to_depot" ? (
                 <>
-                  {analytics ? `${formatINR(analytics.kpis.total_amount)} total` : "Loading…"}
+                  {analytics ? `${formatCr(analytics.kpis.total_amount)} total` : "Loading…"}
                   {activeCount > 0 && <span className="text-orange-500"> · {activeCount} filter{activeCount > 1 ? "s" : ""} active</span>}
                 </>
               ) : "ASM / Distributor targets and attainment"}
@@ -471,7 +551,7 @@ export default function SalesPage() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <button onClick={() => fetchData(filters)}
+              <button onClick={refreshDashboard}
                 className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
                 <RefreshCw size={13} /> Refresh
               </button>
@@ -511,11 +591,14 @@ export default function SalesPage() {
                         placeholder="https://docs.google.com/spreadsheets/d/…"
                         className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
                     </div>
-                    <div className="flex flex-col gap-1 min-w-[140px]">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Label</label>
-                      <input value={ptdNewLabel} onChange={(e) => setPtdNewLabel(e.target.value)}
-                        placeholder="e.g. FY26 Plant to Depot"
-                        className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
+                    <div className="flex flex-col gap-1 min-w-[130px]">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Fiscal Year</label>
+                      <Select
+                        value={ptdNewYear}
+                        onChange={setPtdNewYear}
+                        placeholder="Select…"
+                        options={PTD_YEAR_OPTIONS}
+                      />
                     </div>
                     <button onClick={handlePtdAddSheet} disabled={ptdAdding}
                       className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
@@ -582,87 +665,69 @@ export default function SalesPage() {
         )}
       </AnimatePresence>
 
-      {/* Filter panel */}
+      {/* Period selector — the primary navigation: pick a mode, then any
+          combination of periods (including across years) to view and compare. */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm flex flex-col gap-3">
+        <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-xl w-fit">
+          {(["monthly", "quarterly", "yearly"] as PeriodMode[]).map((m) => (
+            <button key={m} onClick={() => switchMode(m)}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg capitalize transition-all ${
+                mode === m ? "bg-white text-orange-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              {m}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Year{mode === "yearly" ? " (this is your selection)" : ""}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {availableFYs.map((fy) => (
+              <button key={fy} onClick={() => toggleYear(fy)} className={chipClass(selectedYears.has(fy))}>{fyRangeLabel(fy)}</button>
+            ))}
+          </div>
+        </div>
+
+        {mode === "monthly" && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Month{selectedMonthTokens.size !== 1 ? "s" : ""} (pick any, need not be consecutive)</p>
+            <div className="flex flex-wrap gap-1.5">
+              {monthChipOptions.map((m) => {
+                const t = `${m.year}-${String(m.month).padStart(2, "0")}`;
+                return (
+                  <button key={t} onClick={() => toggleMonthToken(t)} className={chipClass(selectedMonthTokens.has(t))}>
+                    {MONTH_NAMES[m.month - 1]} {m.year}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {mode === "quarterly" && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Quarter{selectedQuarterTokens.size !== 1 ? "s" : ""}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {quarterChipOptions.map((q) => (
+                <button key={q.token} onClick={() => toggleQuarterToken(q.token)} className={chipClass(selectedQuarterTokens.has(q.token))}>
+                  {q.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Filter panel — Depot/Brand/Category, orthogonal to period selection */}
       <AnimatePresence>
         {filtersOpen && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.2 }} className="overflow-hidden">
             <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
               <div className="flex flex-wrap gap-4 items-end">
-                {/* View toggle — always first */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">View</label>
-                  <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
-                    {(["monthly", "quarterly", "yearly"] as TrendView[]).map(v => (
-                      <button key={v} onClick={() => handleTrendViewChange(v)}
-                        className={`text-xs font-semibold px-2.5 py-1.5 rounded-md transition-all capitalize ${
-                          trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
-                        }`}>
-                        {v.charAt(0).toUpperCase() + v.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Time filter — changes with view */}
-                {trendView === "monthly" && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Month</label>
-                    <MultiSelect
-                      values={filters.selectedMonths}
-                      onChange={(vals) => setFilter("selectedMonths", vals)}
-                      options={(filterOptions?.months ?? []).map(m => ({ value: `${m.year}-${m.month}`, label: `${MONTH_NAMES[m.month - 1]} ${m.year}` }))}
-                      placeholder="All months"
-                      className="min-w-[160px]"
-                    />
-                  </div>
-                )}
-                {trendView === "quarterly" && (
-                  <>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Financial Year</label>
-                      <Select
-                        value={filters.fyStart !== null ? String(filters.fyStart) : ""}
-                        onChange={handleFYChange}
-                        options={[{ value: "", label: "All FYs" }, ...availableFYs.map(fy => ({ value: String(fy), label: `FY ${fy}-${String(fy + 1).slice(2)}` }))]}
-                        className="min-w-[130px]"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Quarter</label>
-                      <Select
-                        value={filters.quarter !== null ? String(filters.quarter) : ""}
-                        onChange={handleQuarterChange}
-                        disabled={filters.fyStart === null}
-                        options={[
-                          { value: "", label: "All Quarters" },
-                          { value: "1", label: "Q1 · Apr–Jun" },
-                          { value: "2", label: "Q2 · Jul–Sep" },
-                          { value: "3", label: "Q3 · Oct–Dec" },
-                          { value: "4", label: "Q4 · Jan–Mar" },
-                        ]}
-                        className="min-w-[130px]"
-                      />
-                    </div>
-                  </>
-                )}
-                {trendView === "yearly" && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Financial Year</label>
-                    <MultiSelect
-                      values={filters.selectedFYs.map(String)}
-                      onChange={(vals) => setFilter("selectedFYs", vals.map(Number))}
-                      options={availableFYs.map(fy => ({ value: String(fy), label: `FY ${fy}-${String(fy + 1).slice(2)}` }))}
-                      placeholder="All years"
-                      className="min-w-[160px]"
-                    />
-                  </div>
-                )}
-
-                <div className="w-px h-10 bg-gray-100 hidden xl:block" />
-                <FilterSelect label="Depot" value={filters.depot} onChange={(v) => setFilter("depot", v)} options={filterOptions?.depots ?? []} />
-                <FilterSelect label="Brand" value={filters.brand} onChange={(v) => setFilter("brand", v)} options={filterOptions?.brands ?? []} labels={BRAND_FILTER_LABELS} />
-                <FilterSelect label="Category" value={filters.category} onChange={(v) => setFilter("category", v)} options={filterOptions?.categories ?? []} />
+                <FilterSelect label="Depot" value={depotFilter} onChange={setDepotFilter} options={filterOptions?.depots ?? []} />
+                <FilterSelect label="Brand" value={brandFilter} onChange={setBrandFilter} options={filterOptions?.brands ?? []} labels={BRAND_FILTER_LABELS} />
+                <FilterSelect label="Category" value={categoryFilter} onChange={setCategoryFilter} options={filterOptions?.categories ?? []} />
                 {activeCount > 0 && (
                   <button onClick={clearAll}
                     className="flex items-center gap-1 text-xs font-semibold text-red-500 hover:text-red-600 px-3 py-2 rounded-xl border border-red-200 hover:bg-red-50 transition-all self-end">
@@ -675,6 +740,12 @@ export default function SalesPage() {
         )}
       </AnimatePresence>
 
+      {periodTokens.length === 0 && !loading && (
+        <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
+          Select at least one {mode === "monthly" ? "month" : mode === "quarterly" ? "quarter" : "year"} above to view analytics.
+        </div>
+      )}
+
       {loading && (
         <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-400">
           <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />
@@ -684,8 +755,40 @@ export default function SalesPage() {
 
       {analytics && !loading && (
         <>
+          {/* Period comparison — the mechanism for cross-period comparison: one
+              bar/card per selected period. Degrades gracefully to a single card
+              when only one period is selected. */}
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="card-premium p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500"><BarChart3 size={16} /></div>
+              <div>
+                <h3 className="text-sm font-bold text-gray-800">Period Comparison</h3>
+                <p className="text-[11px] text-gray-400">Sales for every period selected above</p>
+              </div>
+            </div>
+            {analytics.periods.length > 1 && (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={analytics.periods.map((p: PeriodRow) => ({ name: p.label, Sales: p.amount }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
+                  <Tooltip formatter={(v: number) => formatCr(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Bar dataKey="Sales" fill="#f46617" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+            <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 ${analytics.periods.length > 1 ? "mt-4" : ""}`}>
+              {analytics.periods.map((p: PeriodRow) => (
+                <div key={p.key} className="rounded-xl border border-gray-100 p-3">
+                  <p className="text-xs font-bold text-gray-700 truncate">{p.label}</p>
+                  <p className="text-lg font-black mt-1 text-gray-900">{formatCr(p.amount)}</p>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
           {/* KPI Cards */}
-          <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {kpiCards.map((kpi: any) => (
               <motion.div key={kpi.id} variants={item} id={kpi.id} className="kpi-card">
                 <div className="flex items-center gap-2.5">
@@ -709,10 +812,10 @@ export default function SalesPage() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><TrendingUp size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">
-                    {trendView === "monthly" ? "Monthly" : trendView === "quarterly" ? "Quarterly" : "Yearly"} Sales Trend
+                    {mode === "monthly" ? "Monthly" : mode === "quarterly" ? "Quarterly" : "Yearly"} Sales Trend
                   </h3>
                   <p className="text-[11px] text-gray-400">
-                    {trendView === "monthly" ? "By month" : trendView === "quarterly" ? "By quarter (Indian FY)" : "By financial year"} — filtered result
+                    {mode === "monthly" ? "By month" : mode === "quarterly" ? "By quarter (Indian FY)" : "By financial year"} — selected periods
                   </p>
                 </div>
               </div>
@@ -721,7 +824,7 @@ export default function SalesPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                   <XAxis dataKey="period" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
-                  <Tooltip formatter={(v: number) => [formatINR(v), "Sales"]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Tooltip formatter={(v: number) => [formatCr(v), "Sales"]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
                   <Line type="monotone" dataKey="amount" stroke="#f46617" strokeWidth={2.5} dot={{ fill: "#f46617", r: 4 }} activeDot={{ r: 6 }} name="Sales">
                     <LabelList dataKey="amount" position="top" offset={12} formatter={(v: number) => formatCr(v)} style={{ fontSize: 11, fill: "#64748b", fontWeight: 700 }} />
                   </Line>
@@ -742,7 +845,7 @@ export default function SalesPage() {
                   <Pie data={analytics.categories} cx="50%" cy="45%" innerRadius={50} outerRadius={75} paddingAngle={4} dataKey="amount" nameKey="category">
                     {analytics.categories.map((c: any) => <Cell key={c.category} fill={CATEGORY_COLORS[c.category] ?? "#94a3b8"} />)}
                   </Pie>
-                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Tooltip formatter={(v: number) => formatCr(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
                   <Legend iconType="circle" iconSize={8} formatter={(v, entry: any) => (
                     <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
                       {v} · {formatCr(entry.payload?.amount ?? 0)}
@@ -768,7 +871,7 @@ export default function SalesPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
                   <YAxis dataKey="depot" type="category" tick={{ fontSize: 11, fill: "#64748b" }} width={100} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(v: number) => [formatINR(v), "Sales"]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Tooltip formatter={(v: number) => [formatCr(v), "Sales"]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
                   <Bar dataKey="amount" radius={[0, 6, 6, 0]} name="Sales">
                     {analytics.depots.map((d: any) => <Cell key={d.depot} fill={DEPOT_COLORS[d.depot] ?? "#94a3b8"} />)}
                     <LabelList dataKey="amount" position="right" formatter={(v: number) => formatCr(v)} style={{ fontSize: 11, fill: "#64748b", fontWeight: 600 }} />
@@ -793,7 +896,7 @@ export default function SalesPage() {
                     <div key={b.brand}>
                       <div className="flex justify-between text-xs mb-1">
                         <span className="font-medium text-gray-700">{BRAND_SPLIT_LABELS[b.brand] ?? b.brand}</span>
-                        <span className="text-gray-400">{formatINR(b.amount)} · {pct}%</span>
+                        <span className="text-gray-400">{formatCr(b.amount)} · {pct}%</span>
                       </div>
                       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div className="h-full rounded-full bg-gradient-to-r from-orange-400 to-orange-500" style={{ width: `${pct}%` }} />
@@ -804,6 +907,36 @@ export default function SalesPage() {
               </div>
             </motion.div>
           </motion.div>
+
+          {/* What each depot bought — category composition per depot, not just totals */}
+          {depotCategoryData.length > 0 && (
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="card-premium p-6">
+              <div className="flex items-center gap-2 mb-5">
+                <div className="w-8 h-8 rounded-xl bg-green-50 flex items-center justify-center text-green-600"><Boxes size={16} /></div>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-800">What Each Depot Bought</h3>
+                  <p className="text-[11px] text-gray-400">Category composition per depot</p>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={Math.max(160, depotCategoryData.length * 90)}>
+                <BarChart data={depotCategoryData} layout="vertical" barSize={28} margin={{ right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
+                  <YAxis dataKey="depot" type="category" tick={{ fontSize: 11, fill: "#64748b" }} width={100} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v: number, name: string) => [formatCr(v), name]} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Legend iconType="circle" iconSize={8} formatter={(v) => (
+                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                      {v} · {formatCr(categoryTotalMap[v] ?? 0)}
+                    </span>
+                  )} />
+                  {depotCategoryKeys.map((cat, i) => (
+                    <Bar key={cat} dataKey={cat} stackId="a" fill={CATEGORY_COLORS[cat] ?? "#94a3b8"} name={cat}
+                      radius={i === depotCategoryKeys.length - 1 ? [0, 6, 6, 0] : undefined} />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </motion.div>
+          )}
 
           {/* Detail table */}
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="card-premium overflow-hidden">

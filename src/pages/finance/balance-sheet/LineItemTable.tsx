@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { ChevronRight, ChevronDown } from "lucide-react";
 import { bucketStockSeries, computeDelta, TrendView, DeltaCalc } from "../aggregate";
 import { formatINR, formatSignedINR } from "../format";
 import type { Section, LineItem } from "./types";
@@ -12,6 +13,13 @@ const DETAIL_ROW_COLOR = "#cbd5e1";
 const TOTAL_ROW_COLOR = "#f97316";
 const SUCCESS_RGB = "78, 125, 87"; // #4E7D57
 const DANGER_RGB = "181, 72, 58"; // #B5483A
+
+// Opaque backgrounds for the frozen first column — sticky cells scroll over
+// the heatmap-tinted value cells, so they can't be transparent/translucent.
+const STICKY_BG = "#ffffff";
+const STICKY_HEADER_BG = "#fafafa";
+const STICKY_TOTAL_BG = "#fffcf8"; // orange-50/40 flattened onto white
+const STICKY_EDGE_SHADOW = "1px 0 0 #f1f5f9";
 
 // Tints by the raw delta's sign, never the percentage's — a suppressed % (base
 // was zero/negative) still gets a fixed medium tint so it's visibly colored
@@ -32,6 +40,7 @@ function heatmapTitle(d: DeltaCalc): string | undefined {
 interface RowEntry {
   item: LineItem;
   depth: number;
+  childCount: number; // > 0 only on parents whose details can be toggled
   values: (number | null)[];
 }
 
@@ -42,6 +51,8 @@ interface LineItemTableProps {
 }
 
 export default function LineItemTable({ title, section, trendView }: LineItemTableProps) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
   const { periods, totalByPeriod, rows } = useMemo(() => {
     const totalBuckets = bucketStockSeries(section.total.series, trendView);
     const periods = totalBuckets.map((b) => b.period);
@@ -59,28 +70,48 @@ export default function LineItemTable({ title, section, trendView }: LineItemTab
       detailsByParent.get(key)!.push(item);
     }
 
-    const ordered: { item: LineItem; depth: number }[] = [];
+    const ordered: { item: LineItem; depth: number; childCount: number }[] = [];
     const consumed = new Set<string>();
     for (const item of topLevel) {
-      ordered.push({ item, depth: 0 });
       const children = detailsByParent.get(item.line_key);
+      ordered.push({ item, depth: 0, childCount: children?.length ?? 0 });
       if (children) {
         consumed.add(item.line_key);
-        children.forEach((c) => ordered.push({ item: c, depth: 1 }));
+        children.forEach((c) => ordered.push({ item: c, depth: 1, childCount: 0 }));
       }
     }
+    // Orphaned details (no parent row in this table) can't be toggled from
+    // anywhere, so they stay permanently visible.
     for (const [key, children] of detailsByParent.entries()) {
-      if (!consumed.has(key)) children.forEach((c) => ordered.push({ item: c, depth: 1 }));
+      if (!consumed.has(key)) children.forEach((c) => ordered.push({ item: c, depth: 1, childCount: 0 }));
     }
 
-    const rows: RowEntry[] = ordered.map(({ item, depth }) => {
+    const rows: RowEntry[] = ordered.map(({ item, depth, childCount }) => {
       const buckets = bucketStockSeries(item.series, trendView);
       const byPeriod = new Map(buckets.map((b) => [b.period, b.amount]));
-      return { item, depth, values: periods.map((p) => byPeriod.get(p) ?? null) };
+      return { item, depth, childCount, values: periods.map((p) => byPeriod.get(p) ?? null) };
     });
 
     return { periods, totalByPeriod, rows };
   }, [section, trendView]);
+
+  // Details are collapsed by default — a toggleable child row only renders
+  // once its parent has been expanded.
+  const parentKeys = useMemo(() => new Set(rows.filter((r) => r.childCount > 0).map((r) => r.item.line_key)), [rows]);
+  const visibleRows = rows.filter((r) => {
+    if (r.depth === 0) return true;
+    const parent = r.item.parent_key;
+    if (!parent || !parentKeys.has(parent)) return true; // orphan detail
+    return expanded.has(parent);
+  });
+
+  const toggle = (key: string) => {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   return (
     <div className="card-premium overflow-hidden">
@@ -91,7 +122,7 @@ export default function LineItemTable({ title, section, trendView }: LineItemTab
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50/50">
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2">Item</th>
+              <th className="sticky left-0 z-10 text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2" style={{ background: STICKY_HEADER_BG, boxShadow: STICKY_EDGE_SHADOW }}>Item</th>
               {periods.map((p) => (
                 <th key={p} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 whitespace-nowrap">{p}</th>
               ))}
@@ -99,9 +130,22 @@ export default function LineItemTable({ title, section, trendView }: LineItemTab
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
-            {rows.map((row) => (
+            {visibleRows.map((row) => (
               <tr key={row.item.line_key} className={row.depth > 0 ? "text-gray-400" : ""}>
-                <td className={`px-6 py-2.5 text-xs whitespace-nowrap ${row.depth > 0 ? "pl-10 text-gray-400" : "font-medium text-gray-700"}`}>{row.item.line_label}</td>
+                <td
+                  className={`sticky left-0 z-[1] px-6 py-2.5 text-xs whitespace-nowrap ${row.depth > 0 ? "pl-10 text-gray-400" : "font-medium text-gray-700"}`}
+                  style={{ background: STICKY_BG, boxShadow: STICKY_EDGE_SHADOW }}
+                >
+                  {row.childCount > 0 ? (
+                    <button onClick={() => toggle(row.item.line_key)} className="flex items-center gap-1 hover:text-orange-500 transition-colors">
+                      {expanded.has(row.item.line_key) ? <ChevronDown size={12} className="shrink-0 text-gray-300" /> : <ChevronRight size={12} className="shrink-0 text-gray-300" />}
+                      {row.item.line_label}
+                      <span className="text-[9px] font-bold text-gray-300">({row.childCount})</span>
+                    </button>
+                  ) : (
+                    row.item.line_label
+                  )}
+                </td>
                 {row.values.map((v, i) => {
                   const prev = i > 0 ? row.values[i - 1] : null;
                   const d = computeDelta(v, prev);
@@ -117,7 +161,7 @@ export default function LineItemTable({ title, section, trendView }: LineItemTab
               </tr>
             ))}
             <tr className="bg-orange-50/40 font-bold">
-              <td className="px-6 py-2.5 text-xs text-gray-800">Total</td>
+              <td className="sticky left-0 z-[1] px-6 py-2.5 text-xs text-gray-800" style={{ background: STICKY_TOTAL_BG, boxShadow: STICKY_EDGE_SHADOW }}>Total</td>
               {periods.map((p) => (
                 <td key={p} className="px-3 py-2.5 text-xs text-gray-900 text-right whitespace-nowrap">{formatINR(totalByPeriod.get(p) ?? 0)}</td>
               ))}

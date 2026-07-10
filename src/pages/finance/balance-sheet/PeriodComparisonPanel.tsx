@@ -30,6 +30,48 @@ function buildRows(items: LineItem[], section: Row["section"], a: string, b: str
   return rows;
 }
 
+// Indian FY: April–March. The FY "start year" of 2026-02-28 is 2025.
+function fyStartYear(dateStr: string): number {
+  const [y, m] = dateStr.split("-").map(Number);
+  return m >= 4 ? y : y - 1;
+}
+
+// One-click "From" presets, all relative to the currently picked "To" period.
+// A preset resolves to null (and its chip disappears) when the data doesn't
+// reach back far enough.
+function resolvePreset(preset: string, periods: string[], compareB: string): string | null {
+  const idxB = periods.indexOf(compareB);
+  if (idxB === -1) return null;
+  let candidate: string | null = null;
+  switch (preset) {
+    case "last_month":
+      candidate = idxB > 0 ? periods[idxB - 1] : null;
+      break;
+    case "last_year": {
+      const [y, m] = compareB.split("-").map(Number);
+      const prefix = `${y - 1}-${String(m).padStart(2, "0")}`;
+      candidate = periods.find((p) => p.startsWith(prefix)) ?? null;
+      break;
+    }
+    case "fy_start":
+      candidate = periods.find((p) => fyStartYear(p) === fyStartYear(compareB)) ?? null;
+      break;
+    case "last_fy_end": {
+      const prior = periods.filter((p) => fyStartYear(p) === fyStartYear(compareB) - 1);
+      candidate = prior.length ? prior[prior.length - 1] : null;
+      break;
+    }
+  }
+  return candidate !== null && candidate !== compareB ? candidate : null;
+}
+
+const PRESETS: [string, string][] = [
+  ["last_month", "vs last month"],
+  ["last_year", "vs last year"],
+  ["fy_start", "vs FY start"],
+  ["last_fy_end", "vs last FY end"],
+];
+
 interface PeriodComparisonPanelProps {
   sourcesItems: LineItem[];
   applicationItems: LineItem[];
@@ -61,6 +103,22 @@ export default function PeriodComparisonPanel({ sourcesItems, applicationItems, 
           <PeriodPicker periods={periods} value={compareA} onChange={setCompareA} label="From" />
           <PeriodPicker periods={periods} value={compareB} onChange={setCompareB} label="To" />
         </div>
+      </div>
+      <div className="px-6 pb-4 flex items-center gap-2 flex-wrap">
+        {PRESETS.map(([preset, label]) => {
+          const target = resolvePreset(preset, periods, compareB);
+          if (!target) return null;
+          const active = compareA === target;
+          return (
+            <button
+              key={preset}
+              onClick={() => setCompareA(target)}
+              className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${active ? "border-orange-200 text-orange-500 bg-orange-50/60" : "border-gray-200 text-gray-500 hover:text-orange-500 hover:border-orange-200"}`}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   IndianRupee, Target, TrendingUp, Users, RefreshCw, Plus, ChevronDown, ChevronUp,
-  CheckCircle2, XCircle, Clock, History, SlidersHorizontal, X, Trash2,
+  CheckCircle2, XCircle, Clock, History, Trash2, Percent, Gauge, BarChart3,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
@@ -10,52 +10,54 @@ import {
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
+import { formatINR, formatCr, formatCompact, formatDate } from "@/lib/format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-function formatINR(n: number) {
-  return "₹" + Math.round(n).toLocaleString("en-IN");
-}
-function formatCr(n: number) {
-  return `₹${(n / 1e7).toFixed(1)}Cr`;
-}
 function pctColor(pct: number | null) {
   if (pct === null) return "#94a3b8";
   if (pct >= 100) return "#22c55e";
   if (pct >= 70) return "#f59e0b";
   return "#ef4444";
 }
-// The target is quarterly, not monthly — comparing one month's achieved against
-// the full quarterly target always reads low, so red/orange/green thresholds
-// are meaningless (and misleading) once a single month is selected. Use the
-// brand accent instead of grey so it still reads as "a real number" rather
-// than a disabled/empty state.
-function pctColorScoped(pct: number | null, monthFilter: MonthFilter) {
-  return monthFilter !== "ALL" ? "#f46617" : pctColor(pct);
-}
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  });
+// A partial period (a single selected month, or a quarter that isn't fully
+// registered) can't be meaningfully judged against a full quarterly target —
+// red/amber/green thresholds would misleadingly read low. Use the brand accent
+// instead of grey so it still reads as "a real number" rather than disabled.
+function pctColorScoped(pct: number | null, isPartial: boolean) {
+  return isPartial ? "#f46617" : pctColor(pct);
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface SheetSourceItem {
-  id: string; sheet_id: string; label: string; calendar_year: number;
+  id: string; sheet_id: string; label: string; calendar_year: number; quarter: string | null;
   created_at: string; last_synced_at: string | null; last_sync_status: string | null;
 }
-interface MonthlyAmount { month: number; sam: number; ev: number; }
+const QUARTERS = ["Q1", "Q2", "Q3", "Q4"] as const;
+
+type PeriodMode = "monthly" | "quarterly" | "yearly";
+type CategoryFilter = "ALL" | "SAM" | "EV";
+
+interface MonthlyAmount { year: number; month: number; sam: number; ev: number; }
+interface YearMonth { year: number; month: number; }
 interface DistributorRow {
   distributor: string; area_head: string | null; target: number | null;
   monthly: MonthlyAmount[]; achieved: number; attainment_pct: number | null;
 }
 interface AreaHeadGroup {
-  area_head: string; target: number; achieved: number; attainment_pct: number | null;
+  area_head: string; target: number | null; achieved: number; attainment_pct: number | null;
   monthly: MonthlyAmount[];
   distributors: DistributorRow[];
 }
-interface Analytics {
+interface PeriodRow {
+  key: string; label: string; is_partial: boolean;
+  target: number; achieved: number; attainment_pct: number | null;
+}
+interface PeriodAnalytics {
+  mode: PeriodMode;
+  is_partial: boolean;
+  periods: PeriodRow[];
   kpis: { total_target: number; total_achieved: number; attainment_pct: number | null; top_area_head: string | null };
   area_heads: AreaHeadGroup[];
   depot_direct: DistributorRow[];
@@ -64,8 +66,11 @@ interface Analytics {
     achieved_total: number; attainment_pct: number | null; monthly: MonthlyAmount[];
   };
 }
-type CategoryFilter = "ALL" | "SAM" | "EV";
-type MonthFilter = number | "ALL";
+interface AvailablePeriods {
+  months: YearMonth[];
+  quarters: { year: number; quarter: string; label: string; sheet_source_id: string }[];
+  years: number[];
+}
 interface SyncResult {
   sync_id: string; rows_total: number; rows_inserted: number; rows_updated: number;
   rows_failed: number; rows_deleted: number; errors: string[]; status: string;
@@ -75,19 +80,18 @@ interface SyncHistoryItem {
   rows_failed: number; rows_deleted: number; status: string; synced_at: string;
 }
 
-function allMonths(analytics: Analytics): number[] {
-  const months = new Set<number>();
-  for (const g of analytics.area_heads) for (const d of g.distributors) for (const m of d.monthly) months.add(m.month);
-  for (const d of analytics.depot_direct) for (const m of d.monthly) months.add(m.month);
-  return Array.from(months).sort((a, b) => a - b);
+function allMonths(analytics: PeriodAnalytics): YearMonth[] {
+  const map = new Map<string, YearMonth>();
+  for (const g of analytics.area_heads) for (const d of g.distributors) for (const m of d.monthly) map.set(`${m.year}-${m.month}`, { year: m.year, month: m.month });
+  for (const d of analytics.depot_direct) for (const m of d.monthly) map.set(`${m.year}-${m.month}`, { year: m.year, month: m.month });
+  return Array.from(map.values()).sort((a, b) => a.year - b.year || a.month - b.month);
 }
-function monthValue(d: DistributorRow, month: number, category: "sam" | "ev"): number {
-  return d.monthly.find((m) => m.month === month)?.[category] ?? 0;
+function monthValue(d: DistributorRow, ym: YearMonth, category: "sam" | "ev"): number {
+  return d.monthly.find((m) => m.year === ym.year && m.month === ym.month)?.[category] ?? 0;
 }
-function sumMonthly(monthly: MonthlyAmount[], monthFilter: MonthFilter, categoryFilter: CategoryFilter): number {
+function sumByCategory(monthly: MonthlyAmount[], categoryFilter: CategoryFilter): number {
   let total = 0;
   for (const m of monthly) {
-    if (monthFilter !== "ALL" && m.month !== monthFilter) continue;
     if (categoryFilter === "ALL") total += m.sam + m.ev;
     else if (categoryFilter === "SAM") total += m.sam;
     else total += m.ev;
@@ -97,24 +101,84 @@ function sumMonthly(monthly: MonthlyAmount[], monthFilter: MonthFilter, category
 function pctOf(achieved: number, target: number | null): number | null {
   return target ? Math.round((achieved / target) * 100 * 100) / 100 : null;
 }
+function extremeBy<T>(items: T[], selector: (item: T) => number | null, mode: "max" | "min"): T | null {
+  let best: T | null = null;
+  let bestVal: number | null = null;
+  for (const item of items) {
+    const v = selector(item);
+    if (v === null) continue;
+    if (bestVal === null || (mode === "max" ? v > bestVal : v < bestVal)) { best = item; bestVal = v; }
+  }
+  return best;
+}
+function chipClass(active: boolean) {
+  return `text-xs font-semibold px-3 py-1.5 rounded-full border transition-all ${
+    active ? "bg-orange-500 text-white border-orange-500" : "text-gray-600 border-gray-200 hover:border-orange-200"
+  }`;
+}
+
+interface KpiCardDef {
+  id: string; label: string; value: string; sub?: string; exact?: string;
+  icon: JSX.Element; color: string; bg: string; valueColor?: string;
+}
+function AttainmentLegend({ isPartial }: { isPartial: boolean }) {
+  const items: { color: string; label: string }[] = [
+    { color: "#22c55e", label: "≥100% target met" },
+    { color: "#f59e0b", label: "70–99% near target" },
+    { color: "#ef4444", label: "<70% off track" },
+    { color: "#94a3b8", label: "no target set" },
+  ];
+  if (isPartial) items.push({ color: "#f46617", label: "partial period vs. full target — not graded" });
+  return (
+    <div className="flex items-center gap-4 flex-wrap px-1">
+      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Attainment</span>
+      {items.map((it) => (
+        <div key={it.label} className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} />
+          <span className="text-[11px] text-gray-500">{it.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function KpiCard({ kpi }: { kpi: KpiCardDef }) {
+  return (
+    <div className="kpi-card">
+      <div className="flex items-center gap-2.5">
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: kpi.bg, color: kpi.color }}>
+          {kpi.icon}
+        </div>
+        <p className="text-xs font-bold text-gray-600 truncate">{kpi.label}</p>
+      </div>
+      <p className="text-2xl font-black mt-3 truncate" style={{ color: kpi.valueColor ?? "#111827" }} title={kpi.exact ?? kpi.value}>{kpi.value}</p>
+      {kpi.sub && <p className="text-xs font-semibold text-gray-500 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
+    </div>
+  );
+}
 
 export default function DepotToDistributorTab() {
   const { token } = useAuth();
   const headers = { Authorization: `Bearer ${token}` };
 
   const [sheetSources, setSheetSources] = useState<SheetSourceItem[]>([]);
-  const [selectedSheetId, setSelectedSheetId] = useState<string>("");
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [selectedManageSheetId, setSelectedManageSheetId] = useState<string>("");
+  const [analytics, setAnalytics] = useState<PeriodAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedHeads, setExpandedHeads] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("ALL");
-  const [monthFilter, setMonthFilter] = useState<MonthFilter>("ALL");
-  const [filtersOpen, setFiltersOpen] = useState(true);
-  const activeFilterCount = (categoryFilter !== "ALL" ? 1 : 0) + (monthFilter !== "ALL" ? 1 : 0);
+  const currentYear = new Date().getFullYear();
+  const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - 1 + i).map((y) => ({ value: String(y), label: String(y) }));
+
+  // ── Period selector ────────────────────────────────────────────────────────
+  const [mode, setMode] = useState<PeriodMode>("quarterly");
+  const [availablePeriods, setAvailablePeriods] = useState<AvailablePeriods>({ months: [], quarters: [], years: [] });
+  const [selectedYears, setSelectedYears] = useState<Set<number>>(new Set());
+  const [selectedMonthTokens, setSelectedMonthTokens] = useState<Set<string>>(new Set());
+  const [selectedQuarterTokens, setSelectedQuarterTokens] = useState<Set<string>>(new Set());
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [newLink, setNewLink] = useState("");
-  const [newLabel, setNewLabel] = useState("");
+  const [newQuarter, setNewQuarter] = useState("");
   const [newYear, setNewYear] = useState(String(new Date().getFullYear()));
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -132,7 +196,7 @@ export default function DepotToDistributorTab() {
       if (!res.ok) return;
       const data: SheetSourceItem[] = await res.json();
       setSheetSources(data);
-      if (data.length && !selectedSheetId) setSelectedSheetId(data[0].id);
+      if (data.length && !selectedManageSheetId) setSelectedManageSheetId(data[0].id);
     } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -147,11 +211,28 @@ export default function DepotToDistributorTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const loadAnalytics = useCallback(async (sheetId: string) => {
-    if (!sheetId) { setAnalytics(null); return; }
+  useEffect(() => {
+    if (selectedManageSheetId) loadHistory(selectedManageSheetId);
+  }, [selectedManageSheetId, loadHistory]);
+
+  const loadAvailablePeriods = useCallback(async (): Promise<AvailablePeriods | null> => {
+    try {
+      const res = await fetch(`${API_URL}/distributor-sales/periods`, { headers });
+      if (res.ok) {
+        const data: AvailablePeriods = await res.json();
+        setAvailablePeriods(data);
+        return data;
+      }
+    } catch { /* ignore */ }
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const loadPeriodAnalytics = useCallback(async (m: PeriodMode, tokens: string[]) => {
+    if (tokens.length === 0) { setAnalytics(null); return; }
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/distributor-sales/analytics?sheet_source_id=${sheetId}`, { headers });
+      const res = await fetch(`${API_URL}/distributor-sales/period-analytics?mode=${m}&periods=${tokens.join(",")}`, { headers });
       if (res.ok) setAnalytics(await res.json());
       else setAnalytics(null);
     } catch { setAnalytics(null); }
@@ -159,14 +240,71 @@ export default function DepotToDistributorTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // Default to the most recently registered quarter — same "opens on the
+  // latest data" behavior as before the period selector existed.
   useEffect(() => {
-    if (selectedSheetId) { loadAnalytics(selectedSheetId); loadHistory(selectedSheetId); setSyncResult(null); }
-  }, [selectedSheetId, loadAnalytics, loadHistory]);
+    loadAvailablePeriods().then((data) => {
+      if (data && data.quarters.length > 0) {
+        const latest = data.quarters[data.quarters.length - 1];
+        setSelectedQuarterTokens(new Set([`${latest.year}-${latest.quarter}`]));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const periodTokens = useMemo(() => {
+    if (mode === "monthly") return Array.from(selectedMonthTokens);
+    if (mode === "quarterly") return Array.from(selectedQuarterTokens);
+    return Array.from(selectedYears).map(String);
+  }, [mode, selectedMonthTokens, selectedQuarterTokens, selectedYears]);
+  const periodTokensKey = periodTokens.join(",");
+
+  useEffect(() => {
+    loadPeriodAnalytics(mode, periodTokens);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, periodTokensKey, loadPeriodAnalytics]);
+
+  const switchMode = (m: PeriodMode) => {
+    setMode(m);
+    setSelectedYears(new Set());
+    setSelectedMonthTokens(new Set());
+    setSelectedQuarterTokens(new Set());
+  };
+  const toggleYear = (y: number) => {
+    setSelectedYears((prev) => {
+      const next = new Set(prev);
+      next.has(y) ? next.delete(y) : next.add(y);
+      return next;
+    });
+  };
+  const toggleMonthToken = (t: string) => {
+    setSelectedMonthTokens((prev) => {
+      const next = new Set(prev);
+      next.has(t) ? next.delete(t) : next.add(t);
+      return next;
+    });
+  };
+  const toggleQuarterToken = (t: string) => {
+    setSelectedQuarterTokens((prev) => {
+      const next = new Set(prev);
+      next.has(t) ? next.delete(t) : next.add(t);
+      return next;
+    });
+  };
+
+  const visibleMonthOptions = useMemo(
+    () => availablePeriods.months.filter((m) => selectedYears.size === 0 || selectedYears.has(m.year)),
+    [availablePeriods.months, selectedYears]
+  );
+  const visibleQuarterOptions = useMemo(
+    () => availablePeriods.quarters.filter((q) => selectedYears.size === 0 || selectedYears.has(q.year)),
+    [availablePeriods.quarters, selectedYears]
+  );
 
   // ── Delete sheet source ───────────────────────────────────────────────────────
   const handleDelete = async () => {
-    if (!selectedSheetId) return;
-    const source = sheetSources.find((s) => s.id === selectedSheetId);
+    if (!selectedManageSheetId) return;
+    const source = sheetSources.find((s) => s.id === selectedManageSheetId);
     if (!source) return;
     const ok = window.confirm(
       `Delete "${source.label}"?\n\nThis will permanently remove all distributor sales data for this quarter. This cannot be undone.`
@@ -174,10 +312,11 @@ export default function DepotToDistributorTab() {
     if (!ok) return;
     setDeleting(true);
     try {
-      await fetch(`${API_URL}/distributor-sales/sheet-sources/${selectedSheetId}`, { method: "DELETE", headers });
-      setSelectedSheetId("");
-      setAnalytics(null);
+      await fetch(`${API_URL}/distributor-sales/sheet-sources/${selectedManageSheetId}`, { method: "DELETE", headers });
+      setSelectedManageSheetId("");
       await loadSheetSources();
+      await loadAvailablePeriods();
+      loadPeriodAnalytics(mode, periodTokens);
     } catch { /* ignore */ } finally {
       setDeleting(false);
     }
@@ -185,20 +324,22 @@ export default function DepotToDistributorTab() {
 
   // ── Add sheet ────────────────────────────────────────────────────────────────
   const handleAddSheet = async () => {
-    if (!newLink.trim() || !newLabel.trim() || !newYear.trim()) return;
+    if (!newLink.trim() || !newQuarter || !newYear.trim()) return;
     setAdding(true);
     setAddError(null);
     try {
       const res = await fetch(`${API_URL}/distributor-sales/sheet-sources`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ sheet_url_or_id: newLink.trim(), label: newLabel.trim(), calendar_year: Number(newYear) }),
+        body: JSON.stringify({ sheet_url_or_id: newLink.trim(), quarter: newQuarter, calendar_year: Number(newYear) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not add sheet");
-      setNewLink(""); setNewLabel(""); setShowAddForm(false);
+      const addedQuarter = newQuarter;
+      const addedYear = newYear;
+      setNewLink(""); setNewQuarter(""); setShowAddForm(false);
       await loadSheetSources();
-      setSelectedSheetId(data.id);
+      setSelectedManageSheetId(data.id);
       // Auto-sync on first add — use data.id directly since state hasn't flushed yet
       setSyncing(true);
       setSyncResult(null);
@@ -209,7 +350,13 @@ export default function DepotToDistributorTab() {
         setSyncResult(syncData);
         loadHistory(data.id);
         loadSheetSources();
-        loadAnalytics(data.id);
+        await loadAvailablePeriods();
+        // Jump the dashboard to the newly added quarter — same "show what you
+        // just added" behavior as before the period selector existed.
+        setMode("quarterly");
+        setSelectedYears(new Set());
+        setSelectedMonthTokens(new Set());
+        setSelectedQuarterTokens(new Set([`${addedYear}-${addedQuarter}`]));
       } catch (syncErr: any) {
         setSyncResult({
           sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 1, rows_deleted: 0,
@@ -227,17 +374,18 @@ export default function DepotToDistributorTab() {
 
   // ── Sync ─────────────────────────────────────────────────────────────────────
   const handleSync = async () => {
-    if (!selectedSheetId) return;
+    if (!selectedManageSheetId) return;
     setSyncing(true);
     setSyncResult(null);
     try {
-      const res = await fetch(`${API_URL}/distributor-sales/sheet-sources/${selectedSheetId}/sync`, { method: "POST", headers });
+      const res = await fetch(`${API_URL}/distributor-sales/sheet-sources/${selectedManageSheetId}/sync`, { method: "POST", headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sync failed");
       setSyncResult(data);
-      loadHistory(selectedSheetId);
-      loadAnalytics(selectedSheetId);
+      loadHistory(selectedManageSheetId);
       loadSheetSources();
+      await loadAvailablePeriods();
+      loadPeriodAnalytics(mode, periodTokens);
     } catch (err: any) {
       setSyncResult({
         sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 1, rows_deleted: 0,
@@ -257,48 +405,40 @@ export default function DepotToDistributorTab() {
   };
 
   const months = useMemo(() => (analytics ? allMonths(analytics) : []), [analytics]);
-  const visibleMonths = monthFilter === "ALL" ? months : [monthFilter];
   const visibleCategories: ("sam" | "ev")[] = categoryFilter === "ALL" ? ["sam", "ev"] : [categoryFilter === "SAM" ? "sam" : "ev"];
 
-  // Filters apply only to "achieved" figures, re-derived from the same monthly
-  // breakdown the backend already sends — target stays the full-quarter value
-  // from the sheet (comparing partial achieved to the full target is a normal
-  // "progress toward target" reading, not a fabricated number).
+  // Category is the only client-side filter left — period selection (which
+  // months/quarters/years) is now resolved server-side. Re-derives achieved/
+  // attainment_pct from the same monthly breakdown the backend already blended.
   const filteredAreaHeads = useMemo(() => {
     if (!analytics) return [];
     return analytics.area_heads.map((g) => {
-      const achieved = sumMonthly(g.monthly, monthFilter, categoryFilter);
+      const achieved = sumByCategory(g.monthly, categoryFilter);
       const distributors = g.distributors.map((d) => {
-        const dAchieved = sumMonthly(d.monthly, monthFilter, categoryFilter);
+        const dAchieved = sumByCategory(d.monthly, categoryFilter);
         return { ...d, achieved: dAchieved, attainment_pct: pctOf(dAchieved, d.target) };
       });
       return { ...g, achieved, attainment_pct: pctOf(achieved, g.target), distributors };
     });
-  }, [analytics, monthFilter, categoryFilter]);
+  }, [analytics, categoryFilter]);
 
   const filteredCompanyTotal = useMemo(() => {
     if (!analytics) return null;
-    const achieved = sumMonthly(analytics.company_total.monthly, monthFilter, categoryFilter);
+    const achieved = sumByCategory(analytics.company_total.monthly, categoryFilter);
     return { target: analytics.company_total.target, achieved, attainment_pct: pctOf(achieved, analytics.company_total.target) };
-  }, [analytics, monthFilter, categoryFilter]);
+  }, [analytics, categoryFilter]);
 
-  const topAreaHead = useMemo(() => {
-    return filteredAreaHeads.reduce<AreaHeadGroup | null>((best, g) => {
-      if (g.attainment_pct === null) return best;
-      if (!best || best.attainment_pct === null || g.attainment_pct > best.attainment_pct) return g;
-      return best;
-    }, null);
-  }, [filteredAreaHeads]);
+  const topAreaHeadByPct = useMemo(() => extremeBy(filteredAreaHeads, (g) => g.attainment_pct, "max"), [filteredAreaHeads]);
+  const topAreaHeadByValue = useMemo(() => extremeBy(filteredAreaHeads, (g) => g.achieved, "max"), [filteredAreaHeads]);
+  const bottomAreaHeadByPct = useMemo(() => extremeBy(filteredAreaHeads, (g) => g.attainment_pct, "min"), [filteredAreaHeads]);
+  const bottomAreaHeadByValue = useMemo(() => extremeBy(filteredAreaHeads, (g) => g.achieved, "min"), [filteredAreaHeads]);
 
   // Always reflects both categories regardless of the category filter — this is
   // the "how is SAM vs EV doing" at-a-glance split the filter itself can't show.
   const samEvSplit = useMemo(() => {
     if (!analytics) return { sam: 0, ev: 0 };
-    return {
-      sam: sumMonthly(analytics.company_total.monthly, monthFilter, "SAM"),
-      ev: sumMonthly(analytics.company_total.monthly, monthFilter, "EV"),
-    };
-  }, [analytics, monthFilter]);
+    return { sam: sumByCategory(analytics.company_total.monthly, "SAM"), ev: sumByCategory(analytics.company_total.monthly, "EV") };
+  }, [analytics]);
 
   const chartData = useMemo(
     () => filteredAreaHeads.map((g) => ({ area_head: g.area_head, attainment_pct: g.attainment_pct ?? 0 })),
@@ -311,12 +451,17 @@ export default function DepotToDistributorTab() {
       .sort((a, b) => (b.attainment_pct ?? -1) - (a.attainment_pct ?? -1));
   }, [filteredAreaHeads]);
 
-  // Always uses all months — category filter not applied here since the whole
-  // point is to see SAM vs EV trajectory through the quarter unobstructed.
+  const topDistributorByPct = useMemo(() => extremeBy(distributorChartData, (d) => d.attainment_pct, "max"), [distributorChartData]);
+  const topDistributorByValue = useMemo(() => extremeBy(distributorChartData, (d) => d.achieved, "max"), [distributorChartData]);
+  const bottomDistributorByPct = useMemo(() => extremeBy(distributorChartData, (d) => d.attainment_pct, "min"), [distributorChartData]);
+  const bottomDistributorByValue = useMemo(() => extremeBy(distributorChartData, (d) => d.achieved, "min"), [distributorChartData]);
+
+  // Always uses all months, category filter not applied — the whole point is
+  // to see SAM vs EV trajectory across the selection unobstructed.
   const trendData = useMemo(() => {
     if (!analytics) return [];
     return analytics.company_total.monthly.map((m) => ({
-      name: MONTH_NAMES[m.month],
+      name: `${MONTH_NAMES[m.month]} ${m.year}`,
       SAM: Math.round(m.sam),
       EV: Math.round(m.ev),
     }));
@@ -325,34 +470,127 @@ export default function DepotToDistributorTab() {
   const samEvByAreaHead = useMemo(() => {
     if (!analytics) return [];
     return analytics.area_heads
-      .map((g) => ({
-        area_head: g.area_head,
-        SAM: sumMonthly(g.monthly, monthFilter, "SAM"),
-        EV: sumMonthly(g.monthly, monthFilter, "EV"),
-      }))
+      .map((g) => ({ area_head: g.area_head, SAM: sumByCategory(g.monthly, "SAM"), EV: sumByCategory(g.monthly, "EV") }))
       .sort((a, b) => (b.SAM + b.EV) - (a.SAM + a.EV));
-  }, [analytics, monthFilter]);
+  }, [analytics]);
 
-  const kpiCards = analytics && filteredCompanyTotal ? [
-    { id: "dd-target", label: "Total Target", value: formatINR(filteredCompanyTotal.target), icon: <Target size={18} />, color: "#3b82f6", bg: "#eff6ff" },
-    { id: "dd-achieved", label: "Total Achieved", value: formatINR(filteredCompanyTotal.achieved), icon: <IndianRupee size={18} />, color: "#f46617", bg: "#fff7ed" },
+  const isPartial = analytics?.is_partial ?? false;
+
+  // Gap uses the same "grey out for a partial period" rule as the table's Gap
+  // column — a partial period's achieved can't be meaningfully compared to the
+  // full quarterly target.
+  const gapRaw = filteredCompanyTotal ? filteredCompanyTotal.target - filteredCompanyTotal.achieved : null;
+  const gapColor = gapRaw === null || isPartial ? "#94a3b8" : gapRaw <= 0 ? "#22c55e" : "#ef4444";
+  const gapBg = gapRaw === null || isPartial ? "#f8fafc" : gapRaw <= 0 ? "#f0fdf4" : "#fef2f2";
+  const gapValueStr = gapRaw === null ? "—"
+    : gapRaw <= 0 ? `+${formatCompact(filteredCompanyTotal!.achieved - filteredCompanyTotal!.target)}`
+    : formatCompact(gapRaw);
+  const gapExactStr = gapRaw === null ? undefined
+    : gapRaw <= 0 ? `+${formatINR(filteredCompanyTotal!.achieved - filteredCompanyTotal!.target)}`
+    : formatINR(gapRaw);
+
+  // Every performance metric is colored off its own attainment_pct — not off
+  // "is this the top or bottom card" — so a bottom-ranked ASM who still cleared
+  // 100% of target still reads green, and a top-ranked one short of target reads
+  // red/amber. pctColorScoped already grey/orange-outs the color for a partial
+  // period, since that can't be judged against the full target.
+  const statusColor = (pct: number | null | undefined) => pctColorScoped(pct ?? null, isPartial);
+  const statusBg = (color: string) => `${color}20`;
+
+  const attainmentColor = filteredCompanyTotal ? statusColor(filteredCompanyTotal.attainment_pct) : "#94a3b8";
+
+  const kpiCards: KpiCardDef[] = analytics && filteredCompanyTotal ? [
+    {
+      id: "dd-target", label: "Total Target", value: formatCompact(filteredCompanyTotal.target), exact: formatINR(filteredCompanyTotal.target),
+      icon: <Target size={18} />, color: "#3b82f6", bg: "#eff6ff",
+    },
+    {
+      id: "dd-achieved", label: "Total Achieved", value: formatCompact(filteredCompanyTotal.achieved), exact: formatINR(filteredCompanyTotal.achieved),
+      icon: <IndianRupee size={18} />, color: "#f46617", bg: "#fff7ed",
+    },
     {
       id: "dd-attainment", label: "Attainment %",
       value: filteredCompanyTotal.attainment_pct !== null ? `${filteredCompanyTotal.attainment_pct}%` : "—",
-      icon: <TrendingUp size={18} />, color: pctColorScoped(filteredCompanyTotal.attainment_pct, monthFilter), bg: "#f0fdf4",
+      icon: <TrendingUp size={18} />, color: attainmentColor, bg: statusBg(attainmentColor), valueColor: attainmentColor,
     },
-    { id: "dd-top", label: "Top Area Head", value: topAreaHead?.area_head ?? "—", icon: <Users size={18} />, color: "#a855f7", bg: "#faf5ff" },
+    { id: "dd-gap", label: "Gap to Target", value: gapValueStr, exact: gapExactStr, icon: <Gauge size={18} />, color: gapColor, bg: gapBg, valueColor: gapColor },
+  ] : [];
+
+  const asmKpiCards: KpiCardDef[] = analytics ? [
+    {
+      id: "dd-asm-top-pct", label: "Top ASM (% Wise)",
+      value: topAreaHeadByPct?.attainment_pct != null ? `${topAreaHeadByPct.attainment_pct}%` : "—",
+      sub: topAreaHeadByPct?.area_head,
+      icon: <Percent size={18} />, color: statusColor(topAreaHeadByPct?.attainment_pct), bg: statusBg(statusColor(topAreaHeadByPct?.attainment_pct)),
+      valueColor: statusColor(topAreaHeadByPct?.attainment_pct),
+    },
+    {
+      id: "dd-asm-top-val", label: "Top ASM (Value Wise)",
+      value: topAreaHeadByValue ? formatCompact(topAreaHeadByValue.achieved) : "—",
+      exact: topAreaHeadByValue ? formatINR(topAreaHeadByValue.achieved) : undefined,
+      sub: topAreaHeadByValue?.area_head,
+      icon: <IndianRupee size={18} />, color: statusColor(topAreaHeadByValue?.attainment_pct), bg: statusBg(statusColor(topAreaHeadByValue?.attainment_pct)),
+      valueColor: statusColor(topAreaHeadByValue?.attainment_pct),
+    },
+    {
+      id: "dd-asm-bottom-pct", label: "Bottom ASM (% Wise)",
+      value: bottomAreaHeadByPct?.attainment_pct != null ? `${bottomAreaHeadByPct.attainment_pct}%` : "—",
+      sub: bottomAreaHeadByPct?.area_head,
+      icon: <Percent size={18} />, color: statusColor(bottomAreaHeadByPct?.attainment_pct), bg: statusBg(statusColor(bottomAreaHeadByPct?.attainment_pct)),
+      valueColor: statusColor(bottomAreaHeadByPct?.attainment_pct),
+    },
+    {
+      id: "dd-asm-bottom-val", label: "Bottom ASM (Value Wise)",
+      value: bottomAreaHeadByValue ? formatCompact(bottomAreaHeadByValue.achieved) : "—",
+      exact: bottomAreaHeadByValue ? formatINR(bottomAreaHeadByValue.achieved) : undefined,
+      sub: bottomAreaHeadByValue?.area_head,
+      icon: <IndianRupee size={18} />, color: statusColor(bottomAreaHeadByValue?.attainment_pct), bg: statusBg(statusColor(bottomAreaHeadByValue?.attainment_pct)),
+      valueColor: statusColor(bottomAreaHeadByValue?.attainment_pct),
+    },
+  ] : [];
+
+  const distKpiCards: KpiCardDef[] = analytics ? [
+    {
+      id: "dd-dist-top-pct", label: "Top Dist (% Wise)",
+      value: topDistributorByPct?.attainment_pct != null ? `${topDistributorByPct.attainment_pct}%` : "—",
+      sub: topDistributorByPct?.distributor,
+      icon: <Percent size={18} />, color: statusColor(topDistributorByPct?.attainment_pct), bg: statusBg(statusColor(topDistributorByPct?.attainment_pct)),
+      valueColor: statusColor(topDistributorByPct?.attainment_pct),
+    },
+    {
+      id: "dd-dist-top-val", label: "Top Dist (Value Wise)",
+      value: topDistributorByValue ? formatCompact(topDistributorByValue.achieved) : "—",
+      exact: topDistributorByValue ? formatINR(topDistributorByValue.achieved) : undefined,
+      sub: topDistributorByValue?.distributor,
+      icon: <IndianRupee size={18} />, color: statusColor(topDistributorByValue?.attainment_pct), bg: statusBg(statusColor(topDistributorByValue?.attainment_pct)),
+      valueColor: statusColor(topDistributorByValue?.attainment_pct),
+    },
+    {
+      id: "dd-dist-bottom-pct", label: "Bottom Dist (% Wise)",
+      value: bottomDistributorByPct?.attainment_pct != null ? `${bottomDistributorByPct.attainment_pct}%` : "—",
+      sub: bottomDistributorByPct?.distributor,
+      icon: <Percent size={18} />, color: statusColor(bottomDistributorByPct?.attainment_pct), bg: statusBg(statusColor(bottomDistributorByPct?.attainment_pct)),
+      valueColor: statusColor(bottomDistributorByPct?.attainment_pct),
+    },
+    {
+      id: "dd-dist-bottom-val", label: "Bottom Dist (Value Wise)",
+      value: bottomDistributorByValue ? formatCompact(bottomDistributorByValue.achieved) : "—",
+      exact: bottomDistributorByValue ? formatINR(bottomDistributorByValue.achieved) : undefined,
+      sub: bottomDistributorByValue?.distributor,
+      icon: <IndianRupee size={18} />, color: statusColor(bottomDistributorByValue?.attainment_pct), bg: statusBg(statusColor(bottomDistributorByValue?.attainment_pct)),
+      valueColor: statusColor(bottomDistributorByValue?.attainment_pct),
+    },
   ] : [];
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Sheet picker + actions */}
+      {/* Sheet management + actions */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <Select
-            value={selectedSheetId}
-            onChange={setSelectedSheetId}
-            placeholder="Select a quarter…"
+            value={selectedManageSheetId}
+            onChange={setSelectedManageSheetId}
+            placeholder="Manage a quarter…"
             options={sheetSources.map((s) => ({ value: s.id, label: s.label }))}
             className="min-w-[160px]"
           />
@@ -360,7 +598,7 @@ export default function DepotToDistributorTab() {
             className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
             <Plus size={13} /> Add Sheet
           </button>
-          {selectedSheetId && (
+          {selectedManageSheetId && (
             <button onClick={handleDelete} disabled={deleting}
               className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
               <Trash2 size={13} />
@@ -368,25 +606,17 @@ export default function DepotToDistributorTab() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => selectedSheetId && loadAnalytics(selectedSheetId)}
-            disabled={!selectedSheetId || loading}
-            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 disabled:cursor-not-allowed">
-            <RefreshCw size={13} /> Refresh
-          </button>
-          <button
-            onClick={() => setFiltersOpen(!filtersOpen)}
-            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
-              activeFilterCount > 0 ? "bg-orange-500 text-white border-orange-500" : "text-gray-600 border-gray-200 hover:border-orange-200"
-            }`}>
-            <SlidersHorizontal size={13} /> Filters
-            {activeFilterCount > 0 && (
-              <span className="bg-white text-orange-500 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">{activeFilterCount}</span>
-            )}
-          </button>
+          <div className="min-w-[130px]">
+            <Select
+              value={categoryFilter === "ALL" ? "" : categoryFilter}
+              onChange={(v) => setCategoryFilter((v || "ALL") as CategoryFilter)}
+              placeholder="All Categories"
+              options={[{ value: "", label: "All Categories" }, { value: "SAM", label: "SAM" }, { value: "EV", label: "EV" }]}
+            />
+          </div>
           <button
             onClick={handleSync}
-            disabled={syncing || !selectedSheetId}
+            disabled={syncing || !selectedManageSheetId}
             className="flex items-center gap-2 text-xs font-semibold text-white px-4 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-orange-200 transition-all">
             {syncing ? (
               <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Syncing…</>
@@ -409,15 +639,23 @@ export default function DepotToDistributorTab() {
                   <input value={newLink} onChange={(e) => setNewLink(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…"
                     className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
                 </div>
-                <div className="flex flex-col gap-1 min-w-[140px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Label</label>
-                  <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="e.g. Q1 FY26"
-                    className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
+                <div className="flex flex-col gap-1 min-w-[110px]">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Quarter</label>
+                  <Select
+                    value={newQuarter}
+                    onChange={setNewQuarter}
+                    placeholder="Select…"
+                    options={QUARTERS.map((q) => ({ value: q, label: q }))}
+                  />
                 </div>
-                <div className="flex flex-col gap-1 min-w-[100px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Calendar Year</label>
-                  <input type="number" value={newYear} onChange={(e) => setNewYear(e.target.value)}
-                    className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
+                <div className="flex flex-col gap-1 min-w-[110px]">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Year</label>
+                  <Select
+                    value={newYear}
+                    onChange={setNewYear}
+                    placeholder="Select…"
+                    options={yearOptions}
+                  />
                 </div>
                 <button onClick={handleAddSheet} disabled={adding}
                   className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
@@ -472,44 +710,74 @@ export default function DepotToDistributorTab() {
         )}
       </AnimatePresence>
 
-      {/* Filter panel — same visual pattern as Plant to Depot's */}
-      <AnimatePresence>
-        {filtersOpen && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.2 }} className="overflow-hidden">
-            <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-              <div className="flex flex-wrap gap-4 items-end">
-                <div className="flex flex-col gap-1 min-w-[140px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Category</label>
-                  <Select
-                    value={categoryFilter === "ALL" ? "" : categoryFilter}
-                    onChange={(v) => setCategoryFilter((v || "ALL") as CategoryFilter)}
-                    options={[{ value: "", label: "All Categories" }, { value: "SAM", label: "SAM" }, { value: "EV", label: "EV" }]}
-                  />
-                </div>
-                <div className="flex flex-col gap-1 min-w-[140px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Month</label>
-                  <Select
-                    value={monthFilter === "ALL" ? "" : String(monthFilter)}
-                    onChange={(v) => setMonthFilter(v ? Number(v) : "ALL")}
-                    options={[{ value: "", label: "All Months" }, ...months.map((m) => ({ value: String(m), label: MONTH_NAMES[m] }))]}
-                  />
-                </div>
-                {activeFilterCount > 0 && (
-                  <button onClick={() => { setCategoryFilter("ALL"); setMonthFilter("ALL"); }}
-                    className="flex items-center gap-1 text-xs font-semibold text-red-500 hover:text-red-600 px-3 py-2 rounded-xl border border-red-200 hover:bg-red-50 transition-all self-end">
-                    <X size={12} /> Clear all
-                  </button>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Period selector — the primary navigation: pick a mode, then any
+          combination of periods (including across years) to view and compare. */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm flex flex-col gap-3">
+        <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-xl w-fit">
+          {(["monthly", "quarterly", "yearly"] as PeriodMode[]).map((m) => (
+            <button key={m} onClick={() => switchMode(m)}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg capitalize transition-all ${
+                mode === m ? "bg-white text-orange-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              {m}
+            </button>
+          ))}
+        </div>
 
-      {!selectedSheetId && (
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Year{mode === "yearly" ? " (this is your selection)" : ""}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {availablePeriods.years.map((y) => (
+              <button key={y} onClick={() => toggleYear(y)} className={chipClass(selectedYears.has(y))}>{y}</button>
+            ))}
+            {availablePeriods.years.length === 0 && <span className="text-xs text-gray-400">No data synced yet</span>}
+          </div>
+        </div>
+
+        {mode === "monthly" && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Month{selectedMonthTokens.size !== 1 ? "s" : ""} (pick any, need not be consecutive)</p>
+            <div className="flex flex-wrap gap-1.5">
+              {visibleMonthOptions.map((m) => {
+                const t = `${m.year}-${String(m.month).padStart(2, "0")}`;
+                return (
+                  <button key={t} onClick={() => toggleMonthToken(t)} className={chipClass(selectedMonthTokens.has(t))}>
+                    {MONTH_NAMES[m.month]} {m.year}
+                  </button>
+                );
+              })}
+              {visibleMonthOptions.length === 0 && <span className="text-xs text-gray-400">No months available</span>}
+            </div>
+          </div>
+        )}
+
+        {mode === "quarterly" && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Quarter{selectedQuarterTokens.size !== 1 ? "s" : ""}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {visibleQuarterOptions.map((q) => {
+                const t = `${q.year}-${q.quarter}`;
+                return (
+                  <button key={t} onClick={() => toggleQuarterToken(t)} className={chipClass(selectedQuarterTokens.has(t))}>
+                    {q.label}
+                  </button>
+                );
+              })}
+              {visibleQuarterOptions.length === 0 && <span className="text-xs text-gray-400">No quarters registered</span>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {sheetSources.length === 0 && (
         <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
           No quarter registered yet. Click "Add Sheet" above to register the team's quarterly Depot-to-Distributor sheet.
+        </div>
+      )}
+
+      {sheetSources.length > 0 && periodTokens.length === 0 && !loading && (
+        <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
+          Select at least one {mode === "monthly" ? "month" : mode === "quarterly" ? "quarter" : "year"} above to view analytics.
         </div>
       )}
 
@@ -522,19 +790,69 @@ export default function DepotToDistributorTab() {
 
       {analytics && !loading && (
         <>
-          {/* KPI cards */}
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-            {kpiCards.map((kpi) => (
-              <div key={kpi.id} className="kpi-card">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>
-                  {kpi.icon}
-                </div>
-                <div className="mt-3">
-                  <p className="text-2xl font-black text-gray-900">{kpi.value}</p>
-                  <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
-                </div>
+          {/* Period comparison — the mechanism for cross-period comparison: one
+              bar/card per selected period. Degrades gracefully to a single card
+              when only one period is selected. */}
+          <div className="card-premium p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500"><BarChart3 size={16} /></div>
+              <div>
+                <h3 className="text-sm font-bold text-gray-800">Period Comparison</h3>
+                <p className="text-[11px] text-gray-400">Target vs Achieved for every period selected above</p>
               </div>
-            ))}
+            </div>
+            {analytics.periods.length > 1 && (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={analytics.periods.map((p) => ({ name: p.label, Target: p.target, Achieved: p.achieved }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCr(v)} />
+                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{v}</span>} />
+                  <Bar dataKey="Target" fill="#3b82f6" radius={[6, 6, 0, 0]} />
+                  <Bar dataKey="Achieved" fill="#f46617" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+            <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 ${analytics.periods.length > 1 ? "mt-4" : ""}`}>
+              {analytics.periods.map((p) => (
+                <div key={p.key} className="rounded-xl border border-gray-100 p-3">
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-xs font-bold text-gray-700 truncate">{p.label}</p>
+                    {p.is_partial && (
+                      <span className="text-[9px] font-bold uppercase tracking-wide text-orange-500 bg-orange-50 px-1.5 py-0.5 rounded-full shrink-0">Partial</span>
+                    )}
+                  </div>
+                  <p className="text-lg font-black mt-1" style={{ color: pctColorScoped(p.attainment_pct, p.is_partial) }}>
+                    {p.attainment_pct !== null ? `${p.attainment_pct}%` : "—"}
+                  </p>
+                  <p className="text-[11px] text-gray-400">{formatCr(p.achieved)} of {formatCr(p.target)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <AttainmentLegend isPartial={isPartial} />
+
+          {/* KPI cards — company (blended across the whole selection) */}
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+            {kpiCards.map((kpi) => <KpiCard key={kpi.id} kpi={kpi} />)}
+          </div>
+
+          {/* KPI cards — Area Heads */}
+          <div>
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 ml-1">Area Head Performance</p>
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+              {asmKpiCards.map((kpi) => <KpiCard key={kpi.id} kpi={kpi} />)}
+            </div>
+          </div>
+
+          {/* KPI cards — Distributors */}
+          <div>
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 ml-1">Distributor Performance</p>
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+              {distKpiCards.map((kpi) => <KpiCard key={kpi.id} kpi={kpi} />)}
+            </div>
           </div>
 
           {/* Monthly trend + SAM vs EV company split */}
@@ -544,7 +862,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><TrendingUp size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Monthly Trend</h3>
-                  <p className="text-[11px] text-gray-400">SAM and EV trajectory through the quarter</p>
+                  <p className="text-[11px] text-gray-400">SAM and EV trajectory across the selection</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={180}>
@@ -561,7 +879,7 @@ export default function DepotToDistributorTab() {
             </div>
             {/* SAM vs EV split — always shows both, independent of the category filter */}
             <div className="card-premium p-5">
-              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">SAM vs EV Split{monthFilter !== "ALL" ? ` — ${MONTH_NAMES[monthFilter]}` : ""}</h3>
+              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">SAM vs EV Split</h3>
               <div className="flex flex-col gap-3">
                 {[
                   { label: "SAM", value: samEvSplit.sam, color: "#3b82f6" },
@@ -590,7 +908,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><Users size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Area Head Attainment</h3>
-                  <p className="text-[11px] text-gray-400">% of quarterly target achieved per ASM</p>
+                  <p className="text-[11px] text-gray-400">% of target achieved per ASM, blended across the selection</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={Math.max(200, chartData.length * 32)}>
@@ -600,7 +918,7 @@ export default function DepotToDistributorTab() {
                   <YAxis dataKey="area_head" type="category" tick={{ fontSize: 11, fill: "#64748b" }} width={120} axisLine={false} tickLine={false} />
                   <Tooltip formatter={(v: number) => `${v}%`} contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
                   <Bar dataKey="attainment_pct" radius={[0, 6, 6, 0]} name="Attainment">
-                    {chartData.map((d) => <Cell key={d.area_head} fill={pctColorScoped(d.attainment_pct, monthFilter)} />)}
+                    {chartData.map((d) => <Cell key={d.area_head} fill={pctColorScoped(d.attainment_pct, isPartial)} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
@@ -614,7 +932,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-purple-50 flex items-center justify-center text-purple-500"><Users size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">SAM vs EV per Area Head</h3>
-                  <p className="text-[11px] text-gray-400">Category mix by ASM{monthFilter !== "ALL" ? ` — ${MONTH_NAMES[monthFilter]}` : ""}</p>
+                  <p className="text-[11px] text-gray-400">Category mix by ASM, blended across the selection</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={Math.max(200, samEvByAreaHead.length * 36)}>
@@ -657,7 +975,7 @@ export default function DepotToDistributorTab() {
                             <p className="text-gray-400 mb-1">{d.area_head}</p>
                             <p className="text-gray-600">Target: {formatINR(d.target ?? 0)}</p>
                             <p className="text-gray-600">Achieved: {formatINR(d.achieved)}</p>
-                            <p className="font-bold mt-1" style={{ color: pctColorScoped(d.attainment_pct, monthFilter) }}>
+                            <p className="font-bold mt-1" style={{ color: pctColorScoped(d.attainment_pct, isPartial) }}>
                               {d.attainment_pct !== null ? `${d.attainment_pct}%` : "—"}
                             </p>
                           </div>
@@ -665,7 +983,7 @@ export default function DepotToDistributorTab() {
                       }}
                     />
                     <Bar dataKey="attainment_pct" radius={[0, 6, 6, 0]} name="Attainment">
-                      {distributorChartData.map((d) => <Cell key={d.distributor} fill={pctColorScoped(d.attainment_pct, monthFilter)} />)}
+                      {distributorChartData.map((d) => <Cell key={d.distributor} fill={pctColorScoped(d.attainment_pct, isPartial)} />)}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -690,13 +1008,13 @@ export default function DepotToDistributorTab() {
                       <span className="text-[11px] text-gray-400">({g.distributors.length} distributor{g.distributors.length > 1 ? "s" : ""})</span>
                     </div>
                     <div className="flex items-center gap-4 text-xs">
-                      <span className="text-gray-500">Target {formatCr(g.target)}</span>
+                      <span className="text-gray-500">Target {g.target !== null ? formatCr(g.target) : "—"}</span>
                       <span className="text-gray-700 font-semibold">Achieved {formatCr(g.achieved)}</span>
-                      <span className="font-bold px-2 py-0.5 rounded-full" style={{ color: pctColorScoped(g.attainment_pct, monthFilter), background: pctColorScoped(g.attainment_pct, monthFilter) + "20" }}>
+                      <span className="font-bold px-2 py-0.5 rounded-full" style={{ color: pctColorScoped(g.attainment_pct, isPartial), background: pctColorScoped(g.attainment_pct, isPartial) + "20" }}>
                         {g.attainment_pct !== null ? `${g.attainment_pct}%` : "—"}
                       </span>
-                      {g.target > 0 && (
-                        <span className="font-semibold" style={{ color: monthFilter !== "ALL" ? "#94a3b8" : g.target - g.achieved <= 0 ? "#22c55e" : "#ef4444" }}>
+                      {g.target !== null && g.target > 0 && (
+                        <span className="font-semibold" style={{ color: isPartial ? "#94a3b8" : g.target - g.achieved <= 0 ? "#22c55e" : "#ef4444" }}>
                           {g.target - g.achieved <= 0 ? `+${formatCr(g.achieved - g.target)} extra` : `Gap ${formatCr(g.target - g.achieved)}`}
                         </span>
                       )}
@@ -712,8 +1030,10 @@ export default function DepotToDistributorTab() {
                               <tr className="bg-gray-50/50">
                                 <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2">Distributor</th>
                                 <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Target</th>
-                                {visibleMonths.map((m) => visibleCategories.map((cat) => (
-                                  <th key={`${m}-${cat}`} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">{MONTH_NAMES[m]} {cat.toUpperCase()}</th>
+                                {months.map((ym) => visibleCategories.map((cat) => (
+                                  <th key={`${ym.year}-${ym.month}-${cat}`} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 whitespace-nowrap">
+                                    {MONTH_NAMES[ym.month]} {ym.year} {cat.toUpperCase()}
+                                  </th>
                                 )))}
                                 <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Achieved</th>
                                 <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Gap</th>
@@ -725,17 +1045,17 @@ export default function DepotToDistributorTab() {
                                 <tr key={d.distributor} className="hover:bg-gray-50/30">
                                   <td className="px-6 py-2.5 text-xs font-medium text-gray-700">{d.distributor}</td>
                                   <td className="px-3 py-2.5 text-xs text-gray-500 text-right">{d.target !== null ? formatINR(d.target) : "—"}</td>
-                                  {visibleMonths.map((m) => visibleCategories.map((cat) => (
-                                    <td key={`${m}-${cat}`} className="px-3 py-2.5 text-xs text-gray-500 text-right whitespace-nowrap">
-                                      {formatINR(monthValue(d, m, cat))}
+                                  {months.map((ym) => visibleCategories.map((cat) => (
+                                    <td key={`${ym.year}-${ym.month}-${cat}`} className="px-3 py-2.5 text-xs text-gray-500 text-right whitespace-nowrap">
+                                      {formatINR(monthValue(d, ym, cat))}
                                     </td>
                                   )))}
                                   <td className="px-3 py-2.5 text-xs font-semibold text-gray-800 text-right">{formatINR(d.achieved)}</td>
                                   <td className="px-3 py-2.5 text-xs font-semibold text-right whitespace-nowrap"
-                                    style={{ color: d.target === null ? "#94a3b8" : monthFilter !== "ALL" ? "#94a3b8" : d.target - d.achieved <= 0 ? "#22c55e" : "#ef4444" }}>
+                                    style={{ color: d.target === null ? "#94a3b8" : isPartial ? "#94a3b8" : d.target - d.achieved <= 0 ? "#22c55e" : "#ef4444" }}>
                                     {d.target !== null ? (d.target - d.achieved <= 0 ? `+${formatINR(d.achieved - d.target)}` : formatINR(d.target - d.achieved)) : "—"}
                                   </td>
-                                  <td className="px-4 py-2.5 text-xs font-bold text-right" style={{ color: pctColorScoped(d.attainment_pct, monthFilter) }}>
+                                  <td className="px-4 py-2.5 text-xs font-bold text-right" style={{ color: pctColorScoped(d.attainment_pct, isPartial) }}>
                                     {d.attainment_pct !== null ? `${d.attainment_pct}%` : "—"}
                                   </td>
                                 </tr>
@@ -759,7 +1079,7 @@ export default function DepotToDistributorTab() {
                 <div className="flex justify-between"><span className="text-gray-500">Target</span><span className="font-semibold text-gray-800">{formatINR(filteredCompanyTotal.target)}</span></div>
                 <div className="flex justify-between border-t border-gray-100 pt-2"><span className="text-gray-700 font-semibold">Achieved</span><span className="font-bold text-gray-900">{formatINR(filteredCompanyTotal.achieved)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-700 font-semibold">Attainment</span>
-                  <span className="font-bold" style={{ color: pctColorScoped(filteredCompanyTotal.attainment_pct, monthFilter) }}>
+                  <span className="font-bold" style={{ color: pctColorScoped(filteredCompanyTotal.attainment_pct, isPartial) }}>
                     {filteredCompanyTotal.attainment_pct !== null ? `${filteredCompanyTotal.attainment_pct}%` : "—"}
                   </span>
                 </div>
@@ -767,7 +1087,7 @@ export default function DepotToDistributorTab() {
             </div>
           )}
 
-          {/* Sync history */}
+          {/* Sync history — scoped to whichever sheet is selected in the manage picker above */}
           <div>
             <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-400" /> Sync History</h2>
             {!historyLoaded ? (

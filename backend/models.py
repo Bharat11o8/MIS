@@ -91,6 +91,7 @@ class SheetSource(Base):
     sheet_id      = Column(String(100), nullable=False)
     label         = Column(String(100), nullable=False)
     calendar_year = Column(Integer, nullable=True)
+    quarter       = Column(String(2), nullable=True)
     created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
 

@@ -5,9 +5,8 @@ import type { BsAnalytics, LineItem } from "./balance-sheet/types";
 import HeroKpiRow from "./balance-sheet/HeroKpiRow";
 import BalanceTrendChart from "./balance-sheet/BalanceTrendChart";
 import PeriodPicker from "./shared/PeriodPicker";
-import CompositionDonuts from "./balance-sheet/CompositionDonuts";
 import MirroredCompositionBars from "./balance-sheet/MirroredCompositionBars";
-import SectionTreemaps from "./balance-sheet/SectionTreemaps";
+import SectionBreakdownBars from "./balance-sheet/SectionBreakdownBars";
 import TopMovers from "./balance-sheet/TopMovers";
 import PeriodComparisonPanel from "./balance-sheet/PeriodComparisonPanel";
 import LineItemTable from "./balance-sheet/LineItemTable";
@@ -92,6 +91,27 @@ export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: str
 
   return (
     <div className="flex flex-col gap-8">
+      {/* One control bar drives every time-dependent card: the trend buckets
+          for the charts/tables and the snapshot month for the composition. */}
+      <div className="sticky top-3 z-20">
+        <div className="bg-white/95 backdrop-blur border border-gray-100 rounded-2xl shadow-sm px-4 py-2.5 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Trend</span>
+            <div className="flex items-center bg-gray-100 rounded-xl p-1">
+              {(["monthly", "quarterly", "yearly"] as TrendView[]).map((v) => (
+                <button key={v} onClick={() => setTrendView(v)}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition-all ${trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+          {snapshotPeriod && periods.length > 0 && (
+            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Snapshot" />
+          )}
+        </div>
+      </div>
+
       <section className="flex flex-col gap-4">
         <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Overview</h2>
         <HeroKpiRow kpis={kpis} sourcesSeries={sections.sources_of_funds.total.series} applicationSeries={sections.application_of_funds.total.series} />
@@ -99,20 +119,13 @@ export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: str
           sourcesSeries={sections.sources_of_funds.total.series}
           applicationSeries={sections.application_of_funds.total.series}
           trendView={trendView}
-          setTrendView={setTrendView}
         />
       </section>
 
       <section className="flex flex-col gap-4">
         <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Composition</h2>
-        {snapshotPeriod && periods.length > 0 && (
-          <div className="flex items-center justify-end">
-            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Snapshot" />
-          </div>
-        )}
         {snapshotPeriod && (
           <>
-            <CompositionDonuts sourcesItems={sourcesItems} applicationItems={applicationItems} pickedPeriod={snapshotPeriod} sourcesColorMap={sourcesColorMap} applicationColorMap={applicationColorMap} />
             <MirroredCompositionBars
               sourcesItems={sourcesItems}
               applicationItems={applicationItems}
@@ -122,25 +135,27 @@ export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: str
               sourcesColorMap={sourcesColorMap}
               applicationColorMap={applicationColorMap}
             />
-            <SectionTreemaps sourcesItems={sourcesItems} applicationItems={applicationItems} pickedPeriod={snapshotPeriod} sourcesColorMap={sourcesColorMap} applicationColorMap={applicationColorMap} />
+            <SectionBreakdownBars sourcesItems={sourcesItems} applicationItems={applicationItems} pickedPeriod={snapshotPeriod} sourcesColorMap={sourcesColorMap} applicationColorMap={applicationColorMap} />
           </>
         )}
       </section>
 
       <section className="flex flex-col gap-4">
         <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Movers &amp; Comparison</h2>
-        <TopMovers sourcesItems={sourcesItems} applicationItems={applicationItems} />
-        {compareA && compareB && (
-          <PeriodComparisonPanel
-            sourcesItems={sourcesItems}
-            applicationItems={applicationItems}
-            periods={periods}
-            compareA={compareA}
-            compareB={compareB}
-            setCompareA={setCompareA}
-            setCompareB={setCompareB}
-          />
-        )}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+          <TopMovers sourcesItems={sourcesItems} applicationItems={applicationItems} />
+          {compareA && compareB && (
+            <PeriodComparisonPanel
+              sourcesItems={sourcesItems}
+              applicationItems={applicationItems}
+              periods={periods}
+              compareA={compareA}
+              compareB={compareB}
+              setCompareA={setCompareA}
+              setCompareB={setCompareB}
+            />
+          )}
+        </div>
       </section>
 
       <section className="flex flex-col gap-4">

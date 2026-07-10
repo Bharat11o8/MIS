@@ -4,12 +4,14 @@ Register a quarterly Google Sheet, manually "Sync Now" against it, ASM-grouped
 analytics with our own recomputed attainment %, filter options, paginated
 list, sync history.
 """
+import re
 import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from database import get_db
 from models import SheetSource, DistributorSale, SyncLog, User
 from routers.auth import get_current_user
@@ -27,10 +29,218 @@ def _require_access(db: Session, current_user: User):
     require_module(db, current_user, MODULE_KEY)
 
 
+_MN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+QUARTERS = ("Q1", "Q2", "Q3", "Q4")
+
+_MONTH_TOKEN_RE = re.compile(r"^(\d{4})-(\d{2})$")
+_QUARTER_TOKEN_RE = re.compile(r"^(\d{4})-(Q[1-4])$")
+_YEAR_TOKEN_RE = re.compile(r"^(\d{4})$")
+
+
+# ── Period resolution ────────────────────────────────────────────────────────
+# Turns a period-selector token (one per selected chip) into the set of
+# sheet_source_id(s) + month restriction it actually covers. Quarterly/Yearly
+# resolve via the registered sheet_sources' own calendar_year/quarter — this
+# module already has an authoritative quarter identity, so there's no need to
+# re-derive fiscal quarters from raw month numbers (unlike sales.py's _fyq,
+# which exists there only because plant_to_depot_sales has no sheet-level
+# quarter identity at all).
+def _resolve_month_token(db: Session, token: str) -> dict:
+    m = _MONTH_TOKEN_RE.match(token)
+    if not m:
+        raise HTTPException(status_code=400, detail=f"Invalid month token: {token!r} (expected YYYY-MM)")
+    year, month = int(m.group(1)), int(m.group(2))
+    rows = db.execute(text("""
+        SELECT DISTINCT ds.sheet_source_id
+        FROM distributor_sales ds
+        JOIN sheet_sources s ON s.id = ds.sheet_source_id
+        WHERE s.module = :mod AND ds.sale_year = :y AND ds.sale_month = :m
+    """), {"mod": MODULE, "y": year, "m": month}).fetchall()
+    return {
+        "key": token, "label": f"{_MN[month - 1]} {year}", "is_partial": True,
+        "sheet_sources": [(str(r.sheet_source_id), [month]) for r in rows],
+    }
+
+
+def _resolve_quarter_token(db: Session, token: str) -> dict:
+    m = _QUARTER_TOKEN_RE.match(token)
+    if not m:
+        raise HTTPException(status_code=400, detail=f"Invalid quarter token: {token!r} (expected YYYY-Qn)")
+    year, quarter = int(m.group(1)), m.group(2)
+    source = db.query(SheetSource).filter(
+        SheetSource.module == MODULE, SheetSource.calendar_year == year, SheetSource.quarter == quarter,
+    ).first()
+    if not source:
+        return {
+            "key": token, "label": f"{quarter} FY{year % 100:02d} (not registered)",
+            "is_partial": False, "sheet_sources": [],
+        }
+    return {"key": token, "label": source.label, "is_partial": False, "sheet_sources": [(str(source.id), None)]}
+
+
+def _resolve_year_token(db: Session, token: str) -> dict:
+    m = _YEAR_TOKEN_RE.match(token)
+    if not m:
+        raise HTTPException(status_code=400, detail=f"Invalid year token: {token!r} (expected YYYY)")
+    year = int(m.group(1))
+    sources = db.query(SheetSource).filter(SheetSource.module == MODULE, SheetSource.calendar_year == year).all()
+    return {
+        "key": token, "label": f"FY{year % 100:02d}", "is_partial": False,
+        "sheet_sources": [(str(s.id), None) for s in sources],
+    }
+
+
+_RESOLVERS = {"monthly": _resolve_month_token, "quarterly": _resolve_quarter_token, "yearly": _resolve_year_token}
+
+
+def _resolve_periods(db: Session, mode: str, tokens: list) -> list:
+    resolver = _RESOLVERS.get(mode)
+    if resolver is None:
+        raise HTTPException(status_code=400, detail="mode must be one of monthly, quarterly, yearly")
+    return [resolver(db, t) for t in tokens]
+
+
+# Merges resolved periods' (sheet_source_id, months) pairs into one map for the
+# blended (whole-selection) view. None ("all months of this sheet") always wins
+# over a partial subset for the same sheet_source_id.
+def _flatten_periods(periods: list) -> dict:
+    merged: dict = {}
+    for p in periods:
+        for sid, months in p["sheet_sources"]:
+            if sid not in merged:
+                merged[sid] = months
+            elif merged[sid] is None or months is None:
+                merged[sid] = None
+            else:
+                merged[sid] = sorted(set(merged[sid]) | set(months))
+    return merged
+
+
+# ── Aggregation ──────────────────────────────────────────────────────────────
+# We mirror the sheet rather than audit it: a per-ASM TOTAL row can carry a
+# manual adjustment with no corresponding distributor row (confirmed real, not
+# a sheet error), so group/company rollups are read from the sheet's own
+# TOTAL/GRAND TOTAL rows directly — never recomputed by summing distributors.
+# Those rows carry a REAL independent value per (sale_month, category) cell
+# (confirmed against the parser and a live sheet), so summing any subset of
+# months from them — even discontinuous, even across different quarter-sheets
+# — stays 100% sheet-trusted.
+def _rows_for(db: Session, entity_type: str, sheet_month_map: dict):
+    """sheet_month_map: {sheet_source_id: [months] | None (= all months)}."""
+    if not sheet_month_map:
+        return []
+    clauses = []
+    params: dict = {"etype": entity_type}
+    for i, (sid, months) in enumerate(sheet_month_map.items()):
+        sid_key = f"sid{i}"
+        params[sid_key] = sid
+        if months is None:
+            clauses.append(f"sheet_source_id = :{sid_key}")
+        else:
+            month_keys = []
+            for j, mth in enumerate(months):
+                mk = f"{sid_key}_m{j}"
+                params[mk] = mth
+                month_keys.append(f":{mk}")
+            clauses.append(f"(sheet_source_id = :{sid_key} AND sale_month IN ({', '.join(month_keys)}))")
+    where_sql = " OR ".join(clauses)
+    return db.execute(text(f"""
+        SELECT sheet_source_id, distributor, area_head, target, sale_year, sale_month, category, amount
+        FROM distributor_sales
+        WHERE entity_type = :etype AND ({where_sql})
+    """), params).fetchall()
+
+
+# target is denormalized — the same quarterly figure repeats on every
+# (sale_month, category) row of one sheet_source_id. Dedupe to one value per
+# (key, sheet_source_id) FIRST, then sum across sheet_source_ids — never sum
+# target across months/categories of the same sheet_source_id, or a single
+# quarterly target gets counted once per selected month.
+def _blend(rows, key_fields: list):
+    by_key: dict = {}
+    for r in rows:
+        key = tuple(getattr(r, f) for f in key_fields) if key_fields else ("__all__",)
+        entry = by_key.setdefault(key, {f: getattr(r, f) for f in key_fields})
+        months = entry.setdefault("_months", {})
+        months.setdefault((r.sale_year, r.sale_month), {"sam": 0.0, "ev": 0.0})
+        months[(r.sale_year, r.sale_month)][r.category.lower()] += float(r.amount)
+        targets = entry.setdefault("_targets", {})
+        if r.sheet_source_id not in targets and r.target is not None:
+            targets[r.sheet_source_id] = float(r.target)
+
+    out = []
+    for entry in by_key.values():
+        months = entry.pop("_months")
+        targets = entry.pop("_targets")
+        entry["monthly"] = [
+            {"year": y, "month": m, "sam": v["sam"], "ev": v["ev"]}
+            for (y, m), v in sorted(months.items())
+        ]
+        entry["achieved"] = round(sum(v["sam"] + v["ev"] for v in months.values()), 2)
+        entry["target"] = round(sum(targets.values()), 2) if targets else None
+        out.append(entry)
+    return out
+
+
+def _aggregate(db: Session, sheet_month_map: dict) -> dict:
+    distributors = _blend(_rows_for(db, "distributor", sheet_month_map), ["distributor", "area_head"])
+    for d in distributors:
+        d["attainment_pct"] = round(d["achieved"] / d["target"] * 100, 2) if d["target"] else None
+    distributors_by_head: dict = {}
+    for d in distributors:
+        distributors_by_head.setdefault(d["area_head"], []).append(d)
+
+    depot_direct = _blend(_rows_for(db, "depot_direct", sheet_month_map), ["distributor"])
+
+    area_totals = _blend(_rows_for(db, "area_head_total", sheet_month_map), ["area_head"])
+    area_head_list = []
+    for grp in area_totals:
+        grp["attainment_pct"] = round(grp["achieved"] / grp["target"] * 100, 2) if grp["target"] else None
+        grp["distributors"] = distributors_by_head.get(grp["area_head"], [])
+        area_head_list.append(grp)
+    area_head_list.sort(key=lambda g: g["area_head"] or "")
+
+    grand_total = _blend(_rows_for(db, "grand_total", sheet_month_map), [])
+    company_target = grand_total[0]["target"] if grand_total and grand_total[0]["target"] is not None else 0.0
+    achieved_total = grand_total[0]["achieved"] if grand_total else 0.0
+    achieved_depot_direct = round(sum(d["achieved"] for d in depot_direct), 2)
+    achieved_distributors = round(achieved_total - achieved_depot_direct, 2)
+    attainment_pct = round(achieved_total / company_target * 100, 2) if company_target else None
+    top_area_head = max(area_head_list, key=lambda g: g["attainment_pct"] or 0, default=None)
+
+    return {
+        "kpis": {
+            "total_target": company_target,
+            "total_achieved": achieved_total,
+            "attainment_pct": attainment_pct,
+            "top_area_head": top_area_head["area_head"] if top_area_head else None,
+        },
+        "area_heads": area_head_list,
+        "depot_direct": depot_direct,
+        "company_total": {
+            "target": company_target,
+            "achieved_distributors": achieved_distributors,
+            "achieved_depot_direct": achieved_depot_direct,
+            "achieved_total": achieved_total,
+            "attainment_pct": attainment_pct,
+            "monthly": grand_total[0]["monthly"] if grand_total else [],
+        },
+    }
+
+
+def _period_company_totals(db: Session, period: dict) -> dict:
+    sheet_month_map = dict(period["sheet_sources"])
+    grand_total = _blend(_rows_for(db, "grand_total", sheet_month_map), [])
+    target = grand_total[0]["target"] if grand_total and grand_total[0]["target"] is not None else 0.0
+    achieved = grand_total[0]["achieved"] if grand_total else 0.0
+    attainment_pct = round(achieved / target * 100, 2) if target else None
+    return {"target": target, "achieved": achieved, "attainment_pct": attainment_pct}
+
+
 class SheetSourceIn(BaseModel):
     sheet_url_or_id: str
-    label: str
     calendar_year: int
+    quarter: str
 
 
 # ── Sheet registry ─────────────────────────────────────────────────────────────
@@ -42,21 +252,33 @@ def add_sheet_source(
 ):
     _require_access(db, current_user)
 
+    if body.quarter not in QUARTERS:
+        raise HTTPException(status_code=400, detail="quarter must be one of Q1, Q2, Q3, Q4")
+
+    # Label is derived, not typed — "Q1 FY26" — so quarter identity never drifts
+    # from what the sheet actually is, and quarters sort/compare reliably.
+    label = f"{body.quarter} FY{body.calendar_year % 100:02d}"
     sheet_id = extract_sheet_id(body.sheet_url_or_id)
     source = SheetSource(
         id=uuid.uuid4(),
         module=MODULE,
         sheet_id=sheet_id,
-        label=body.label.strip(),
+        label=label,
         calendar_year=body.calendar_year,
+        quarter=body.quarter,
         created_by=current_user.id,
     )
     db.add(source)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"{label} is already registered")
     db.refresh(source)
     return {
         "id": str(source.id), "sheet_id": source.sheet_id, "label": source.label,
-        "calendar_year": source.calendar_year, "created_at": source.created_at.isoformat(),
+        "calendar_year": source.calendar_year, "quarter": source.quarter,
+        "created_at": source.created_at.isoformat(),
     }
 
 
@@ -88,7 +310,11 @@ def list_sheet_sources(
 ):
     _require_access(db, current_user)
 
-    sources = db.query(SheetSource).filter(SheetSource.module == MODULE).order_by(SheetSource.created_at.desc()).all()
+    sources = (
+        db.query(SheetSource).filter(SheetSource.module == MODULE)
+        .order_by(SheetSource.calendar_year.desc(), SheetSource.quarter.desc())
+        .all()
+    )
     result = []
     for s in sources:
         last_log = (
@@ -98,7 +324,8 @@ def list_sheet_sources(
             .first()
         )
         result.append({
-            "id": str(s.id), "sheet_id": s.sheet_id, "label": s.label, "calendar_year": s.calendar_year,
+            "id": str(s.id), "sheet_id": s.sheet_id, "label": s.label,
+            "calendar_year": s.calendar_year, "quarter": s.quarter,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "last_synced_at": last_log.synced_at.isoformat() if last_log and last_log.synced_at else None,
             "last_sync_status": last_log.status if last_log else None,
@@ -215,96 +442,74 @@ def filter_options(
     return {"area_heads": [r.area_head for r in area_heads], "categories": ["SAM", "EV"]}
 
 
-# ── Analytics ──────────────────────────────────────────────────────────────────
-@router.get("/analytics")
-def distributor_analytics(
-    sheet_source_id: str = Query(...),
+# ── Period analytics ─────────────────────────────────────────────────────────
+# Replaces the old single-quarter /analytics + manual /compare with one
+# selector-driven endpoint: pick a mode and 1+ periods (months, quarters, or
+# years — mixing years within a mode is allowed), get back a per-period
+# comparison row for the top-of-dashboard cards plus one blended breakdown
+# (area heads / distributors / company total) summed across the whole
+# selection for everything below.
+@router.get("/period-analytics")
+def period_analytics(
+    mode: str = Query(...),
+    periods: str = Query(..., description="Comma-separated tokens; shape depends on mode"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     _require_access(db, current_user)
 
-    source = db.query(SheetSource).filter(SheetSource.id == sheet_source_id, SheetSource.module == MODULE).first()
-    if not source:
-        raise HTTPException(status_code=404, detail="Sheet source not found")
+    tokens = [t.strip() for t in periods.split(",") if t.strip()]
+    if not tokens:
+        raise HTTPException(status_code=400, detail="Provide at least 1 period")
 
-    # We mirror the sheet rather than audit it: a per-ASM TOTAL row can carry a
-    # manual adjustment with no corresponding distributor row (confirmed real,
-    # not a sheet error), so group/company rollups are read from the sheet's own
-    # TOTAL/GRAND TOTAL rows directly — never recomputed by summing distributors.
-    def rows_for(entity_type: str):
-        return db.execute(text("""
-            SELECT distributor, area_head, MAX(target) AS target, sale_month, category, SUM(amount) AS amount
-            FROM distributor_sales
-            WHERE sheet_source_id = :sid AND entity_type = :etype
-            GROUP BY distributor, area_head, sale_month, category
-            ORDER BY area_head, distributor, sale_month, category
-        """), {"sid": sheet_source_id, "etype": entity_type}).fetchall()
+    resolved = _resolve_periods(db, mode, tokens)
 
-    def fold_monthly(rows, key_fields):
-        """Groups flat (key..., sale_month, category, amount) rows into {key: {..., monthly: [...], achieved}}."""
-        by_key: dict = {}
-        for r in rows:
-            key = tuple(getattr(r, f) for f in key_fields)
-            entry = by_key.setdefault(key, {f: getattr(r, f) for f in key_fields})
-            months = entry.setdefault("_months", {})
-            months.setdefault(r.sale_month, {"sam": 0.0, "ev": 0.0})
-            months[r.sale_month][r.category.lower()] = float(r.amount)
-        out = []
-        for key, entry in by_key.items():
-            months = entry.pop("_months")
-            entry["monthly"] = [
-                {"month": m, "sam": v["sam"], "ev": v["ev"]} for m, v in sorted(months.items())
-            ]
-            entry["achieved"] = round(sum(v["sam"] + v["ev"] for v in months.values()), 2)
-            out.append(entry)
-        return out
+    period_rows = [
+        {"key": p["key"], "label": p["label"], "is_partial": p["is_partial"], **_period_company_totals(db, p)}
+        for p in resolved
+    ]
 
-    distributors = fold_monthly(rows_for("distributor"), ["distributor", "area_head", "target"])
-    for d in distributors:
-        d["target"] = float(d["target"]) if d["target"] is not None else None
-        d["attainment_pct"] = round(d["achieved"] / d["target"] * 100, 2) if d["target"] else None
-    distributors_by_head: dict = {}
-    for d in distributors:
-        distributors_by_head.setdefault(d["area_head"], []).append(d)
-
-    depot_direct = fold_monthly(rows_for("depot_direct"), ["distributor"])
-
-    area_totals = fold_monthly(rows_for("area_head_total"), ["area_head", "target"])
-    area_head_list = []
-    for grp in area_totals:
-        grp["target"] = float(grp["target"]) if grp["target"] is not None else None
-        grp["attainment_pct"] = round(grp["achieved"] / grp["target"] * 100, 2) if grp["target"] else None
-        grp["distributors"] = distributors_by_head.get(grp["area_head"], [])
-        area_head_list.append(grp)
-    area_head_list.sort(key=lambda g: g["area_head"] or "")
-
-    grand_total = fold_monthly(rows_for("grand_total"), ["target"])
-    company_target = float(grand_total[0]["target"]) if grand_total and grand_total[0]["target"] is not None else 0.0
-    achieved_total = grand_total[0]["achieved"] if grand_total else 0.0
-    achieved_depot_direct = round(sum(d["achieved"] for d in depot_direct), 2)
-    achieved_distributors = round(achieved_total - achieved_depot_direct, 2)
-    attainment_pct = round(achieved_total / company_target * 100, 2) if company_target else None
-
-    top_area_head = max(area_head_list, key=lambda g: g["attainment_pct"] or 0, default=None)
+    sheet_month_map = _flatten_periods(resolved)
+    aggregate = _aggregate(db, sheet_month_map)
 
     return {
-        "kpis": {
-            "total_target": company_target,
-            "total_achieved": achieved_total,
-            "attainment_pct": attainment_pct,
-            "top_area_head": top_area_head["area_head"] if top_area_head else None,
-        },
-        "area_heads": area_head_list,
-        "depot_direct": depot_direct,
-        "company_total": {
-            "target": company_target,
-            "achieved_distributors": achieved_distributors,
-            "achieved_depot_direct": achieved_depot_direct,
-            "achieved_total": achieved_total,
-            "attainment_pct": attainment_pct,
-            "monthly": grand_total[0]["monthly"] if grand_total else [],
-        },
+        "mode": mode,
+        "is_partial": any(p["is_partial"] for p in resolved),
+        "periods": period_rows,
+        **aggregate,
+    }
+
+
+# ── Available periods (selector chip options) ───────────────────────────────
+@router.get("/periods")
+def available_periods(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_access(db, current_user)
+
+    months = db.execute(text("""
+        SELECT DISTINCT ds.sale_year AS year, ds.sale_month AS month
+        FROM distributor_sales ds
+        JOIN sheet_sources s ON s.id = ds.sheet_source_id
+        WHERE s.module = :mod
+        ORDER BY 1, 2
+    """), {"mod": MODULE}).fetchall()
+
+    sources = (
+        db.query(SheetSource)
+        .filter(SheetSource.module == MODULE, SheetSource.quarter.isnot(None))
+        .order_by(SheetSource.calendar_year, SheetSource.quarter)
+        .all()
+    )
+
+    return {
+        "months": [{"year": r.year, "month": r.month} for r in months],
+        "quarters": [
+            {"year": s.calendar_year, "quarter": s.quarter, "label": s.label, "sheet_source_id": str(s.id)}
+            for s in sources
+        ],
+        "years": sorted({s.calendar_year for s in sources if s.calendar_year is not None}),
     }
 
 

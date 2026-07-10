@@ -56,14 +56,16 @@ export default function PlHeroKpiRow({ kpis }: { kpis: PlAnalytics["kpis"] }) {
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
       {cards.map((kpi) => (
         <div key={kpi.id} className="kpi-card relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-[3px]" style={{ background: kpi.color }} />
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: kpi.bg, color: kpi.color }}>{kpi.icon}</div>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: kpi.bg, color: kpi.color }}>{kpi.icon}</div>
+            <p className="text-xs font-bold text-gray-600 truncate">{kpi.label}</p>
+          </div>
           <div className="mt-3 min-w-0">
             <p className={`font-black text-gray-900 tabular-nums ${kpi.big ? "text-2xl" : "text-xl"}`} title={kpi.exact}>{kpi.value}</p>
-            <p className="text-xs font-bold text-gray-500 mt-0.5">{kpi.label}</p>
             {kpi.sub && <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
           </div>
         </div>
