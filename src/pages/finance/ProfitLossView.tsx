@@ -1,167 +1,112 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { TrendView } from "./aggregate";
-import type { PlAnalytics } from "./profit-loss/types";
-import { findSalesItem, indirectExpenseBreakdown } from "./profit-loss/plMath";
-import PeriodPicker from "./shared/PeriodPicker";
-import PlHeroKpiRow from "./profit-loss/PlHeroKpiRow";
-import RevenueProfitTrendChart from "./profit-loss/RevenueProfitTrendChart";
-import MarginTrendChart from "./profit-loss/MarginTrendChart";
-import ProfitBridgePanel from "./profit-loss/ProfitBridgePanel";
-import IndirectExpenseBreakdown from "./profit-loss/IndirectExpenseBreakdown";
-import PlTopMovers from "./profit-loss/PlTopMovers";
-import PlPeriodComparisonPanel from "./profit-loss/PlPeriodComparisonPanel";
-import PlLineItemTable from "./profit-loss/PlLineItemTable";
-import FyFiguresPanel from "./profit-loss/FyFiguresPanel";
+import {
+  KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, ProfitBridgeCard, MarginTrendCard,
+  RatiosPanel, WatchListCard, SectionHeading, bucketLabelsOf, bucketChange,
+  type FinAnalytics, type FinGroup, type FinPoint,
+} from "./dashboardKit";
+import type { TrendView } from "./aggregate";
+import { formatCompact, formatINR, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR } from "./format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-function subtractOneYear(dateStr: string): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(Date.UTC(y - 1, m - 1, d));
-  return dt.toISOString().slice(0, 10);
+function findItemSeries(groups: FinGroup[], lineKey: string): FinPoint[] {
+  for (const g of groups) {
+    for (const sub of g.sub_sections) {
+      const it = sub.line_items.find((x) => x.line_key === lineKey);
+      if (it) return it.series;
+      if (sub.total?.line_key === lineKey) return sub.total.series;
+    }
+  }
+  return [];
 }
 
-export default function ProfitLossView({ sheetSourceId }: { sheetSourceId: string }) {
+export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sheetSourceId: string; refreshNonce?: number }) {
   const { token } = useAuth();
-  const headers = { Authorization: `Bearer ${token}` };
-  const [data, setData] = useState<PlAnalytics | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [trendView, setTrendView] = useState<TrendView>("monthly");
-  const [snapshotPeriod, setSnapshotPeriod] = useState<string>("");
-  const [compareA, setCompareA] = useState<string>("");
-  const [compareB, setCompareB] = useState<string>("");
+  const [data, setData] = useState<FinAnalytics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<TrendView>("monthly");
+  const [bucket, setBucket] = useState<string>("");
 
   useEffect(() => {
-    if (!sheetSourceId) { setData(null); return; }
+    let alive = true;
     setLoading(true);
-    fetch(`${API_URL}/finance/analytics?sheet_source_id=${sheetSourceId}&statement=profit_loss`, { headers })
-      .then((r) => (r.ok ? r.json() : null))
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetSourceId, token]);
+    setError(null);
+    fetch(`${API_URL}/finance/analytics?sheet_source_id=${sheetSourceId}&statement=profit_loss`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Could not load P&L");
+        return r.json();
+      })
+      .then((d: FinAnalytics) => {
+        if (!alive) return;
+        setData(d);
+      })
+      .catch((e) => alive && setError(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => { alive = false; };
+  }, [sheetSourceId, token, refreshNonce]);
 
-  // Every monthly period any row reports — drives the snapshot and comparison pickers.
-  const periods = useMemo(() => {
-    if (!data) return [];
-    const set = new Set<string>();
-    const collect = (series: { period_end_date: string }[]) => series.forEach((p) => set.add(p.period_end_date));
-    for (const section of [data.sections.trading_account, data.sections.income_statement]) {
-      section.line_items.forEach((i) => collect(i.series));
-      section.subtotals.forEach((i) => collect(i.series));
-    }
-    collect(data.headline.gross_profit.series);
-    collect(data.headline.nett_profit.series);
-    return Array.from(set).sort();
-  }, [data]);
+  const sales = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/sales_accounts") : []), [data]);
+  const gross = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/gross_margin") : []), [data]);
+  const pat = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/pat") : []), [data]);
+  const plGroup = useMemo(() => data?.groups.find((g) => g.section_key === "profit_loss_a_c") ?? null, [data]);
+  const bucketLabels = useMemo(() => bucketLabelsOf(sales, "flow", view), [sales, view]);
+  const effBucket = bucketLabels.includes(bucket) ? bucket : (bucketLabels[bucketLabels.length - 1] ?? "");
 
-  useEffect(() => {
-    if (periods.length === 0) return;
-    const latest = periods[periods.length - 1];
-    setSnapshotPeriod((cur) => (cur && periods.includes(cur) ? cur : latest));
-    setCompareB((cur) => (cur && periods.includes(cur) ? cur : latest));
-    setCompareA((cur) => {
-      if (cur && periods.includes(cur)) return cur;
-      const target = subtractOneYear(latest);
-      const candidate = [...periods].reverse().find((p) => p <= target);
-      return candidate ?? periods[0];
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periods]);
+  if (loading) return <div className="text-sm text-gray-400 py-10 text-center">Loading P&L…</div>;
+  if (error) return <EmptyState>{error}</EmptyState>;
+  if (!data || data.periods.length === 0) return <EmptyState>No P&amp;L data yet. Click “Sync Now” to pull the latest from the sheet.</EmptyState>;
 
-  if (!sheetSourceId) return null;
-  if (loading) return <div className="flex items-center justify-center py-10 text-sm text-gray-400"><div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin mr-2" /> Loading…</div>;
-  if (!data) return <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">No P&L data yet. Sync this company's sheet.</div>;
-
-  const { sections, headline } = data;
-  const salesSeries = findSalesItem(sections.trading_account)?.series ?? [];
-  // Mirrors IndirectExpenseBreakdown's own render gate so the bridge can take
-  // the full row when the breakdown hides itself.
-  const breakdownVisible = snapshotPeriod
-    ? (() => {
-        const b = indirectExpenseBreakdown(data, snapshotPeriod);
-        return !!b && b.reconciles && b.slices.some((s) => s.amount > 0);
-      })()
-    : false;
+  // KPIs at the selected bucket/granularity so they track the control.
+  const salesCh = bucketChange(sales, "flow", view, effBucket);
+  const grossCh = bucketChange(gross, "flow", view, effBucket);
+  const patCh = bucketChange(pat, "flow", view, effBucket);
+  const changePct = salesCh.value != null && salesCh.prevValue != null && salesCh.prevValue > 0
+    ? Math.round(((salesCh.value - salesCh.prevValue) / salesCh.prevValue) * 1000) / 10 : null;
+  const changeLabel = view === "monthly" ? "MoM Sales" : view === "quarterly" ? "QoQ Sales" : "YoY Sales";
 
   return (
-    <div className="flex flex-col gap-8">
-      {/* One control bar drives every time-dependent card: the trend buckets
-          for the charts/tables and the snapshot month for the bridge. */}
-      <div className="sticky top-3 z-20">
-        <div className="bg-white/95 backdrop-blur border border-gray-100 rounded-2xl shadow-sm px-4 py-2.5 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Trend</span>
-            <div className="flex items-center bg-gray-100 rounded-xl p-1">
-              {(["monthly", "quarterly", "yearly"] as TrendView[]).map((v) => (
-                <button key={v} onClick={() => setTrendView(v)}
-                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition-all ${trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
-                  {v}
-                </button>
-              ))}
-            </div>
+    <div className="flex flex-col gap-6">
+      <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <KpiCard label={`Sales · ${effBucket}`} value={formatCompact(salesCh.value ?? 0)} exact={formatINR(salesCh.value ?? 0)} accent={REVENUE_COLOR} />
+        <KpiCard label={`Gross Margin · ${effBucket}`} value={formatCompact(grossCh.value ?? 0)} exact={formatINR(grossCh.value ?? 0)} accent={GROSS_PROFIT_COLOR} />
+        <KpiCard label={`PAT · ${effBucket}`} value={formatCompact(patCh.value ?? 0)} exact={formatINR(patCh.value ?? 0)} accent={NETT_PROFIT_COLOR} />
+        <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? "#4E7D57" : "#B5483A" }} />
+          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel} Change</div>
+          <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: changePct == null ? "#8F8A83" : changePct >= 0 ? "#4E7D57" : "#B5483A" }}>
+            {changePct != null ? `${changePct > 0 ? "+" : ""}${changePct}%` : "—"}
           </div>
-          {snapshotPeriod && periods.length > 0 && (
-            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Month" />
-          )}
+          <div className="text-[11px] font-medium text-gray-400 mt-0.5">{salesCh.prevLabel ? `${salesCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
         </div>
       </div>
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Overview</h2>
-        <PlHeroKpiRow kpis={data.kpis} />
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <RevenueProfitTrendChart
-            salesSeries={salesSeries}
-            grossSeries={headline.gross_profit.series}
-            nettSeries={headline.nett_profit.series}
-            trendView={trendView}
-          />
-          <MarginTrendChart
-            salesSeries={salesSeries}
-            grossSeries={headline.gross_profit.series}
-            nettSeries={headline.nett_profit.series}
-            trendView={trendView}
-          />
-        </div>
-      </section>
+      <WatchListCard data={data} view={view} bucket={effBucket} />
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Profit Bridge</h2>
-        {snapshotPeriod && (
-          <div className={`grid grid-cols-1 gap-4 ${breakdownVisible ? "xl:grid-cols-2" : ""}`}>
-            <ProfitBridgePanel data={data} pickedPeriod={snapshotPeriod} />
-            <IndirectExpenseBreakdown data={data} pickedPeriod={snapshotPeriod} />
-          </div>
-        )}
-      </section>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <MoneyTrendCard title="Revenue & Profit" note="Sales bars with PAT overlaid, summed per period across the merged timeline (flow)."
+          primary={sales} primaryLabel="Sales" kind="flow"
+          secondary={pat} secondaryLabel="PAT" view={view} />
+        <MarginTrendCard salesSeries={sales} grossSeries={gross} patSeries={pat} view={view} />
+      </div>
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Movers &amp; Comparison</h2>
-        <PlTopMovers tradingItems={sections.trading_account.line_items} incomeItems={sections.income_statement.line_items} />
-        {compareA && compareB && (
-          <PlPeriodComparisonPanel
-            tradingItems={sections.trading_account.line_items}
-            incomeItems={sections.income_statement.line_items}
-            grossProfit={headline.gross_profit}
-            nettProfit={headline.nett_profit}
-            periods={periods}
-            compareA={compareA}
-            compareB={compareB}
-            setCompareA={setCompareA}
-            setCompareB={setCompareB}
-          />
-        )}
-      </section>
+      {plGroup && <ProfitBridgeCard group={plGroup} view={view} bucket={effBucket} />}
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Detail</h2>
-        <PlLineItemTable title="Trading Account" section={sections.trading_account} headline={headline.gross_profit} trendView={trendView} />
-        <PlLineItemTable title="Income Statement" section={sections.income_statement} headline={headline.nett_profit} trendView={trendView} />
-        <FyFiguresPanel rows={data.fy_to_date} />
-      </section>
+      {data.ratios && data.ratios.length > 0 && (
+        <>
+          <SectionHeading>Financial Health</SectionHeading>
+          <RatiosPanel ratios={data.ratios} view={view} bucket={effBucket} title="Profitability & Growth Ratios" />
+        </>
+      )}
+
+      {data.groups.map((g) => (
+        <GroupBlock key={g.section_key} group={g} view={view} bucket={effBucket} kind="flow" />
+      ))}
     </div>
   );
 }

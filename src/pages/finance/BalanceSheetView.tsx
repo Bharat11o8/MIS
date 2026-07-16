@@ -1,168 +1,123 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { TrendView, buildColorMap } from "./aggregate";
-import type { BsAnalytics, LineItem } from "./balance-sheet/types";
-import HeroKpiRow from "./balance-sheet/HeroKpiRow";
-import BalanceTrendChart from "./balance-sheet/BalanceTrendChart";
-import PeriodPicker from "./shared/PeriodPicker";
-import MirroredCompositionBars from "./balance-sheet/MirroredCompositionBars";
-import SectionBreakdownBars from "./balance-sheet/SectionBreakdownBars";
-import TopMovers from "./balance-sheet/TopMovers";
-import PeriodComparisonPanel from "./balance-sheet/PeriodComparisonPanel";
-import LineItemTable from "./balance-sheet/LineItemTable";
+import {
+  KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, RatiosPanel,
+  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange,
+  type FinAnalytics, type FinGroup, type FinPoint,
+} from "./dashboardKit";
+import type { TrendView } from "./aggregate";
+import { formatCompact, formatINR, SOURCES_COLOR, APPLICATION_COLOR, SUCCESS_COLOR, DANGER_COLOR } from "./format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-function subtractOneYear(dateStr: string): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(Date.UTC(y - 1, m - 1, d));
-  return dt.toISOString().slice(0, 10);
+function findTotalSeries(groups: FinGroup[], sectionKey: string, subKey: string): FinPoint[] {
+  const g = groups.find((x) => x.section_key === sectionKey);
+  const sub = g?.sub_sections.find((s) => s.key === subKey);
+  return sub?.total?.series ?? [];
 }
 
-// Canonical, chart-independent ordering (the sheet's own item_no) used to
-// assign colors — so a color depends on where an item sits in the sheet, not
-// on which chart's own top-N/sort-by-amount logic happens to render it.
-function canonicalOrder(lineItems: LineItem[]): string[] {
-  return lineItems
-    .filter((i) => i.entity_type === "line_item")
-    .sort((a, b) => (a.item_no ?? 0) - (b.item_no ?? 0))
-    .map((i) => i.line_key);
-}
-
-export default function BalanceSheetView({ sheetSourceId }: { sheetSourceId: string }) {
+export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { sheetSourceId: string; refreshNonce?: number }) {
   const { token } = useAuth();
-  const headers = { Authorization: `Bearer ${token}` };
-  const [data, setData] = useState<BsAnalytics | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [trendView, setTrendView] = useState<TrendView>("monthly");
-  const [snapshotPeriod, setSnapshotPeriod] = useState<string>("");
-  const [compareA, setCompareA] = useState<string>("");
-  const [compareB, setCompareB] = useState<string>("");
+  const [data, setData] = useState<FinAnalytics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<TrendView>("yearly");
+  const [bucket, setBucket] = useState<string>("");
 
   useEffect(() => {
-    if (!sheetSourceId) { setData(null); return; }
+    let alive = true;
     setLoading(true);
-    fetch(`${API_URL}/finance/analytics?sheet_source_id=${sheetSourceId}&statement=balance_sheet`, { headers })
-      .then((r) => (r.ok ? r.json() : null))
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetSourceId, token]);
+    setError(null);
+    fetch(`${API_URL}/finance/analytics?sheet_source_id=${sheetSourceId}&statement=balance_sheet`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Could not load balance sheet");
+        return r.json();
+      })
+      .then((d: FinAnalytics) => {
+        if (!alive) return;
+        setData(d);
+      })
+      .catch((e) => alive && setError(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => { alive = false; };
+  }, [sheetSourceId, token, refreshNonce]);
 
-  const periods = useMemo(() => {
-    if (!data) return [];
-    const set = new Set<string>();
-    data.sections.sources_of_funds.total.series.forEach((p) => set.add(p.period_end_date));
-    data.sections.application_of_funds.total.series.forEach((p) => set.add(p.period_end_date));
-    return Array.from(set).sort();
-  }, [data]);
+  const sources = useMemo(() => (data ? findTotalSeries(data.groups, "balance_sheet", "sources_of_funds") : []), [data]);
+  const application = useMemo(() => (data ? findTotalSeries(data.groups, "balance_sheet", "application_of_funds") : []), [data]);
+  const bucketLabels = useMemo(() => bucketLabelsOf(sources, "stock", view), [sources, view]);
+  const effBucket = bucketLabels.includes(bucket) ? bucket : (bucketLabels[bucketLabels.length - 1] ?? "");
 
-  useEffect(() => {
-    if (periods.length === 0) return;
-    const latest = periods[periods.length - 1];
-    setSnapshotPeriod((cur) => (cur && periods.includes(cur) ? cur : latest));
-    setCompareB((cur) => (cur && periods.includes(cur) ? cur : latest));
-    setCompareA((cur) => {
-      if (cur && periods.includes(cur)) return cur;
-      const target = subtractOneYear(latest);
-      const candidate = [...periods].reverse().find((p) => p <= target);
-      return candidate ?? periods[0];
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periods]);
+  if (loading) return <div className="text-sm text-gray-400 py-10 text-center">Loading balance sheet…</div>;
+  if (error) return <EmptyState>{error}</EmptyState>;
+  if (!data || data.periods.length === 0) return <EmptyState>No balance-sheet data yet. Click “Sync Now” to pull the latest from the sheet.</EmptyState>;
 
-  const sourcesColorMap = useMemo(
-    () => buildColorMap(canonicalOrder(data?.sections.sources_of_funds.line_items ?? [])),
-    [data],
-  );
-  const applicationColorMap = useMemo(
-    () => buildColorMap(canonicalOrder(data?.sections.application_of_funds.line_items ?? [])),
-    [data],
-  );
-
-  if (!sheetSourceId) return null;
-  if (loading) return <div className="flex items-center justify-center py-10 text-sm text-gray-400"><div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin mr-2" /> Loading…</div>;
-  if (!data) return <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">No Balance Sheet data yet. Sync this company's sheet.</div>;
-
-  const { kpis, sections } = data;
-  const sourcesItems = sections.sources_of_funds.line_items;
-  const applicationItems = sections.application_of_funds.line_items;
+  // KPIs computed at the selected bucket/granularity so they track the control.
+  const srcCh = bucketChange(sources, "stock", view, effBucket);
+  const appCh = bucketChange(application, "stock", view, effBucket);
+  const changePct = srcCh.value != null && srcCh.prevValue != null && srcCh.prevValue > 0
+    ? Math.round(((srcCh.value - srcCh.prevValue) / srcCh.prevValue) * 1000) / 10 : null;
+  const changeLabel = view === "monthly" ? "MoM Change" : view === "quarterly" ? "QoQ Change" : "YoY Change";
+  const gap = srcCh.value != null && appCh.value != null ? srcCh.value - appCh.value : null;
+  const balanced = gap != null && Math.abs(gap) < 1;
 
   return (
-    <div className="flex flex-col gap-8">
-      {/* One control bar drives every time-dependent card: the trend buckets
-          for the charts/tables and the snapshot month for the composition. */}
-      <div className="sticky top-3 z-20">
-        <div className="bg-white/95 backdrop-blur border border-gray-100 rounded-2xl shadow-sm px-4 py-2.5 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Trend</span>
-            <div className="flex items-center bg-gray-100 rounded-xl p-1">
-              {(["monthly", "quarterly", "yearly"] as TrendView[]).map((v) => (
-                <button key={v} onClick={() => setTrendView(v)}
-                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition-all ${trendView === v ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
-                  {v}
-                </button>
-              ))}
-            </div>
+    <div className="flex flex-col gap-6">
+      <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <KpiCard label={`Sources of Funds · ${effBucket}`} value={srcCh.value != null ? formatCompact(srcCh.value) : "—"} exact={srcCh.value != null ? formatINR(srcCh.value) : undefined} accent={SOURCES_COLOR} />
+        <KpiCard label={`Application of Funds · ${effBucket}`} value={appCh.value != null ? formatCompact(appCh.value) : "—"} exact={appCh.value != null ? formatINR(appCh.value) : undefined} accent={APPLICATION_COLOR} />
+        <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? SUCCESS_COLOR : DANGER_COLOR }} />
+          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel}</div>
+          <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: changePct == null ? "#8F8A83" : changePct >= 0 ? SUCCESS_COLOR : DANGER_COLOR }}>
+            {changePct != null ? `${changePct > 0 ? "+" : ""}${changePct}%` : "—"}
           </div>
-          {snapshotPeriod && periods.length > 0 && (
-            <PeriodPicker periods={periods} value={snapshotPeriod} onChange={setSnapshotPeriod} label="Snapshot" />
-          )}
+          <div className="text-[11px] font-medium text-gray-400 mt-0.5">{srcCh.prevLabel ? `${srcCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
+        </div>
+        <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: balanced ? SUCCESS_COLOR : DANGER_COLOR }} />
+          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Balance Check</div>
+          <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: balanced ? SUCCESS_COLOR : DANGER_COLOR }}>
+            {balanced ? "Balanced" : gap != null ? formatCompact(Math.abs(gap)) : "—"}
+          </div>
+          <div className="text-[11px] font-medium text-gray-400 mt-0.5">
+            {balanced ? "Sources = Application" : gap != null ? `Off by ${formatINR(Math.abs(gap))}` : "No data"}
+          </div>
         </div>
       </div>
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Overview</h2>
-        <HeroKpiRow kpis={kpis} sourcesSeries={sections.sources_of_funds.total.series} applicationSeries={sections.application_of_funds.total.series} />
-        <BalanceTrendChart
-          sourcesSeries={sections.sources_of_funds.total.series}
-          applicationSeries={sections.application_of_funds.total.series}
-          trendView={trendView}
-        />
-      </section>
+      <WatchListCard data={data} view={view} bucket={effBucket} />
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Composition</h2>
-        {snapshotPeriod && (
+      <MoneyTrendCard title="Balance Sheet Size" note="Total Sources of Funds over the merged yearly + monthly timeline (point-in-time)."
+        primary={sources} primaryLabel="Sources of Funds" kind="stock"
+        secondary={application} secondaryLabel="Application of Funds" view={view} />
+
+      {data.ratios && data.ratios.length > 0 && (
+        <>
+          <SectionHeading>Financial Health</SectionHeading>
+          <CashCycleCard ratios={data.ratios} view={view} bucket={effBucket} />
+          <RatiosPanel ratios={data.ratios} view={view} bucket={effBucket} title="Balance Sheet Ratios" />
+          {data.reconciliation && data.reconciliation.length > 0 && <ReconciliationPanel ties={data.reconciliation} />}
+        </>
+      )}
+
+      {data.groups.filter((g) => g.section_key !== "working_capital_aging").map((g) => (
+        <GroupBlock key={g.section_key} group={g} view={view} bucket={effBucket} kind="stock" />
+      ))}
+
+      {(() => {
+        const aging = data.groups.find((g) => g.section_key === "working_capital_aging");
+        if (!aging) return null;
+        return (
           <>
-            <MirroredCompositionBars
-              sourcesItems={sourcesItems}
-              applicationItems={applicationItems}
-              pickedPeriod={snapshotPeriod}
-              sourcesTotal={kpis.sources_total_latest}
-              applicationTotal={kpis.application_total_latest}
-              sourcesColorMap={sourcesColorMap}
-              applicationColorMap={applicationColorMap}
-            />
-            <SectionBreakdownBars sourcesItems={sourcesItems} applicationItems={applicationItems} pickedPeriod={snapshotPeriod} sourcesColorMap={sourcesColorMap} applicationColorMap={applicationColorMap} />
+            <SectionHeading accent={APPLICATION_COLOR}>Working Capital Aging</SectionHeading>
+            <AgingPanel group={aging} view={view} bucket={effBucket} />
           </>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Movers &amp; Comparison</h2>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
-          <TopMovers sourcesItems={sourcesItems} applicationItems={applicationItems} />
-          {compareA && compareB && (
-            <PeriodComparisonPanel
-              sourcesItems={sourcesItems}
-              applicationItems={applicationItems}
-              periods={periods}
-              compareA={compareA}
-              compareB={compareB}
-              setCompareA={setCompareA}
-              setCompareB={setCompareB}
-            />
-          )}
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <h2 className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Detail</h2>
-        <LineItemTable title="Sources of Funds" section={sections.sources_of_funds} trendView={trendView} />
-        <LineItemTable title="Application of Funds" section={sections.application_of_funds} trendView={trendView} />
-      </section>
+        );
+      })()}
     </div>
   );
 }

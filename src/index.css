@@ -4,6 +4,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Print / board-pack export ─────────────────────────
+   Hide the app shell and interactive chrome, flow the finance dashboard onto
+   pages, and keep chart/card colours in print. Triggered by the Print button. */
+.print-only { display: none; }
+@media print {
+  .no-print, .no-print * { display: none !important; }
+  .print-only { display: block !important; }
+  html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+  #root, #root > div { height: auto !important; overflow: visible !important; display: block !important; padding: 0 !important; margin: 0 !important; background: #fff !important; }
+  main { box-shadow: none !important; border-radius: 0 !important; overflow: visible !important; transform: none !important; }
+  main > div { overflow: visible !important; height: auto !important; }
+  section, .print-avoid-break { break-inside: avoid; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  @page { margin: 12mm; }
+}
+
 /* ─── Design Tokens ─────────────────────────────────── */
 @layer base {
   :root {

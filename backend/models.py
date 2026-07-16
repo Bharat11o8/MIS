@@ -3,7 +3,7 @@ AutoForm MIS — Updated SQLAlchemy ORM Models (Phase 3)
 """
 import uuid
 from sqlalchemy import Column, String, Boolean, Integer, Date, Text, ForeignKey, Numeric, Float
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from sqlalchemy import TIMESTAMP
 from database import Base
@@ -92,6 +92,7 @@ class SheetSource(Base):
     label         = Column(String(100), nullable=False)
     calendar_year = Column(Integer, nullable=True)
     quarter       = Column(String(2), nullable=True)
+    kind          = Column(String(10), nullable=True)  # finance v3: 'master' | 'company'
     created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
@@ -171,6 +172,35 @@ class ProfitLossLine(Base):
     period_type       = Column(String(10), nullable=False)
     amount            = Column(Numeric(16, 2), nullable=False)
     percent           = Column(Float, nullable=True)
+    sync_log_id       = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at        = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at        = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class FinanceLine(Base):
+    """Finance v2 — one generic fact table for all 14 sheet sections
+    (see migrate_phase9_finance_v2.sql). Supersedes BalanceSheetLine /
+    ProfitLossLine, which are left mapped but unused."""
+    __tablename__ = "finance_lines"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id   = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    tab_title         = Column(String(100), nullable=False)
+    cadence           = Column(String(10), nullable=False)
+    section_key       = Column(String(50), nullable=False)
+    section_label     = Column(String(150), nullable=False)
+    sub_section       = Column(String(50), nullable=True)
+    entity_type       = Column(String(20), nullable=False)
+    item_no           = Column(Integer, nullable=True)
+    line_key          = Column(String(120), nullable=False)
+    line_label        = Column(String(200), nullable=False)
+    parent_key        = Column(String(120), nullable=True)
+    period_start_date = Column(Date, nullable=False)
+    period_end_date   = Column(Date, nullable=False)
+    period_type       = Column(String(10), nullable=False)
+    amount            = Column(Numeric(18, 2), nullable=True)
+    percent           = Column(Float, nullable=True)
+    metrics           = Column(JSONB, nullable=True)
     sync_log_id       = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
     created_at        = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at        = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())

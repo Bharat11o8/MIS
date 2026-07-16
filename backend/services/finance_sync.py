@@ -1,37 +1,73 @@
 """
-AutoForm MIS — Finance (Balance Sheet + P&L) Sync
-Parses one company's Finance Google Sheet — one tab per financial year, each
-tab holding a Balance Sheet block and a Profit & Loss block with however many
-"as at"/date-range period columns the team currently has (a real FY tab will
-have ~12 monthly columns; a dummy tab may have as few as 3) — never assumes a
-fixed period count, everything is discovered via regex against the sheet's
-own header text.
+AutoForm MIS — Finance v2 Sync (whole-sheet, 14-section template)
 
-Mirrors the sheet, never audits it: the sheet's own "Total" rows (Balance
-Sheet) and unlabeled subtotal / "Gross Profit :" / "Nett Profit:" rows (P&L)
-are captured as their own entities and used as-is, never recomputed by
-summing the line items above them — same principle already locked in for
-Depot-to-Distributor's ASM totals.
+The finance team replaced the old Tally-style export with a new hand-built
+template. Layout of every tab:
 
-Column layout is fixed across the whole sheet (col A = item number when the
-row is a numbered line item, col B = label, then Amount/% column pairs from
-col D onward) — this is a generated accounting export, not a hand-typed
-pivot table, so unlike Plant-to-Depot's drifting blocks there's no need to
-anchor column positions per block.
+    row 1:  [ ] | COMPANY'S NAME | <name>
+    row 2:  S.No. | Particulars | <period1> | % | <period2> | % | ...      (header)
+    row 3:  1 | Sales Accounts                                             (section)
+    row 4:    | Branch Sales | 510198.30 | 0.10 | 561218.13 | 0.10 | ...   (line item)
+    ...
+    row 8:    | Total | 5101983 | 1 | ...                                  (section total)
+
+Key differences from the old export (see git history / phase-8 finance_sync):
+  * Column A holds the SECTION number only — line items have a blank col A.
+  * Values start at col C (index 3): Amount/% column PAIRS, one pair per period.
+  * Periods are plain dates (monthly sheet) or FY strings like "2023-24"
+    (yearly sheet) — no "AS AT" / "... TO ..." header text to regex.
+  * 14 numbered sections in one flat sheet, not a BS block + P&L block.
+
+Cadence (monthly vs yearly) is auto-detected per period column from the header
+cell's own type, so it doesn't matter whether the team keeps monthly & yearly
+as two tabs in one file or two separate files — every tab is parsed the same
+way and merged by period. Periods are period-count-agnostic (the monthly sheet
+grows a column each month; nothing here assumes a fixed count).
+
+Mirrors the sheet, never audits it: the sheet's own "Total" rows are captured
+as their own entities and used as-is, never recomputed by summing children —
+same principle locked in for every other sheet-backed module.
+
+REGISTERED_SECTIONS gates which sections are captured. Phase A: the seven
+statement-style sections feeding Balance Sheet + P&L. Phase B adds `ratios`
+(single value per period, no %) and `units` (quantity per period, no %) — both
+still fit the generic value/percent walk. The remaining sections (aging, cost
+stages, average unit cost, alteration, stock audit) are empty shells in the
+current template and/or need extra columns before they can be captured; they
+stay unregistered until finance populates them.
 """
 import re
-from datetime import date, datetime
+import calendar
+from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
 
 from services.google_sheets import get_sheets_service
 
-ITEM_COL = 1
-LABEL_COL = 2
+ITEM_COL = 1   # col A — section number (blank on line-item rows)
+LABEL_COL = 2  # col B — Particulars / label
 
-_BS_ASAT_RE = re.compile(r"^AS AT\s+(.+)$", re.IGNORECASE)
-_PL_RANGE_RE = re.compile(r"^(.+?)\s+TO\s+(.+)$", re.IGNORECASE)
-_OUT_OF_SCOPE_TERMINATORS = {"SALES ACCOUNTS (BREAK UP)", "WORKING CAPITAL", "KEY FINANCIAL RATIOS"}
-_HEADLINE_PL_LABELS = {"GROSS PROFIT", "NETT PROFIT"}
+# Excel/Sheets serial dates count days from this epoch.
+_EXCEL_EPOCH = date(1899, 12, 30)
+_FY_RE = re.compile(r"^(\d{4})-(\d{2,4})$")
+
+# Sections captured (slug of the col-B section title). Everything else in the
+# sheet is skipped until it is registered here.
+REGISTERED_SECTIONS = {
+    # Phase A — Balance Sheet + P&L statements
+    "sales_accounts",
+    "profit_loss_a_c",
+    "balance_sheet",
+    "inventories",
+    "working_capital",
+    "production_cost",
+    "employee_s_cost",
+    # Phase B — ratios (Key Financial Ratios) + units (Sales/Production volumes)
+    "ratios",
+    "units",
+    # Phase C — Working Capital Aging (§8) + Average Unit Cost (§12)
+    "working_capital_aging",
+    "average_unit_cost",
+}
 
 
 # ── Grid helpers (same idioms as every other sync service) ───────────────────
@@ -48,7 +84,7 @@ def _cell(grid, row: int, col: int):
 
 
 def _to_number(v) -> Optional[float]:
-    if v is None:
+    if v is None or isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         return float(v)
@@ -74,270 +110,241 @@ def _to_item_no(v) -> Optional[int]:
 
 
 def _slugify(label: str) -> str:
-    s = re.sub(r"[^a-zA-Z0-9]+", "_", label.strip().lower())
+    # Preserve comparison operators as words so aging buckets don't collide:
+    # "< 90 Days" and "> 90 Days" would both strip to "90_days" otherwise, and
+    # the two rows would clash on line_key in the upsert.
+    s = label.strip().lower().replace("<", " lt ").replace(">", " gt ")
+    s = re.sub(r"[^a-zA-Z0-9]+", "_", s)
     return s.strip("_")
 
 
-def _parse_sheet_date(s: str) -> Optional[date]:
-    s = s.strip()
-    for fmt in ("%d-%b-%y", "%d-%b-%Y"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
+def _last_day(y: int, m: int) -> int:
+    return calendar.monthrange(y, m)[1]
+
+
+def _month_span(d: date) -> Tuple[date, date]:
+    return date(d.year, d.month, 1), date(d.year, d.month, _last_day(d.year, d.month))
+
+
+# ── Period detection (cadence auto-detected per column) ──────────────────────
+
+def _parse_period(v) -> Optional[Tuple[str, date, date, str]]:
+    """Interpret a header cell → (cadence, period_start, period_end, period_type),
+    or None if the cell isn't a period. Handles FY strings ("2023-24"), real
+    date objects (openpyxl path), Excel serial numbers (Sheets API UNFORMATTED
+    path — gap-analysis flagged the date cells show as serials), and date
+    strings, defensively."""
+    if v is None or isinstance(v, bool):
+        return None
+
+    # Financial-year string, e.g. "2023-24" → Apr 2023 … Mar 2024
+    if isinstance(v, str):
+        m = _FY_RE.match(v.strip())
+        if m:
+            start_year = int(m.group(1))
+            return ("yearly", date(start_year, 4, 1), date(start_year + 1, 3, 31), "annual")
+
+    # Real date/datetime object (openpyxl) → its month
+    if isinstance(v, (datetime, date)):
+        d = v.date() if isinstance(v, datetime) else v
+        s, e = _month_span(d)
+        return ("monthly", s, e, "monthly")
+
+    # Excel/Sheets serial number → date → its month
+    n = _to_number(v)
+    if n is not None and 20000 <= n <= 80000:
+        d = _EXCEL_EPOCH + timedelta(days=int(n))
+        s, e = _month_span(d)
+        return ("monthly", s, e, "monthly")
+
+    # Date string fallbacks
+    if isinstance(v, str):
+        for fmt in ("%Y-%m-%d", "%d-%b-%y", "%d-%b-%Y", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                d = datetime.strptime(v.strip(), fmt).date()
+                s, e = _month_span(d)
+                return ("monthly", s, e, "monthly")
+            except ValueError:
+                continue
     return None
 
 
-def _find_row_with_label(grid, label: str, start_row: int = 1) -> Optional[int]:
-    target = label.strip().upper()
-    for r_idx in range(start_row, len(grid) + 1):
-        v = _cell(grid, r_idx, LABEL_COL)
-        if isinstance(v, str) and v.strip().upper() == target:
-            return r_idx
+def _find_header_row(grid) -> Optional[int]:
+    for r in range(1, len(grid) + 1):
+        v = _cell(grid, r, LABEL_COL)
+        if isinstance(v, str) and v.strip().upper() == "PARTICULARS":
+            return r
     return None
 
 
-# ── Period-column detection (count-agnostic — however many exist) ────────────
-
-def _find_bs_period_columns(grid, header_row: int) -> list:
-    cols = []
+def _detect_periods(grid, header_row: int) -> list:
+    """Scan the header row → list of (amount_col, percent_col, cadence,
+    period_start, period_end, period_type). The period label sits in the
+    value column; the next column holds "%" (percent_col = amount_col + 1),
+    unless that next column is itself another period value column."""
     line = grid[header_row - 1] if 0 <= header_row - 1 < len(grid) else []
+    value_cols = {}
     for c_idx, v in enumerate(line, start=1):
-        if not isinstance(v, str):
-            continue
-        m = _BS_ASAT_RE.match(v.strip())
-        if m:
-            period_end = _parse_sheet_date(m.group(1))
-            if period_end:
-                cols.append((c_idx, c_idx + 1, period_end))
+        parsed = _parse_period(v)
+        if parsed:
+            value_cols[c_idx] = parsed
+    cols = []
+    for c_idx, (cadence, p_start, p_end, p_type) in value_cols.items():
+        percent_col = c_idx + 1
+        if percent_col in value_cols:
+            percent_col = None
+        cols.append((c_idx, percent_col, cadence, p_start, p_end, p_type))
     return cols
 
 
-def _find_pl_period_columns(grid, header_row: int) -> list:
-    cols = []
-    line = grid[header_row - 1] if 0 <= header_row - 1 < len(grid) else []
-    for c_idx, v in enumerate(line, start=1):
-        if not isinstance(v, str):
+# ── Section walk (generic across all statement-style sections) ───────────────
+
+def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
+    errors: list = []
+    header_row = _find_header_row(grid)
+    if header_row is None:
+        return [], [f"{tab_title}: 'Particulars' header row not found"]
+
+    period_cols = _detect_periods(grid, header_row)
+    if not period_cols:
+        return [], [f"{tab_title}: no period columns detected in header row"]
+
+    records: list = []
+    section_key: Optional[str] = None
+    section_label: Optional[str] = None
+    registered = False
+    sub_section: Optional[str] = None
+    ordinal = 0
+
+    def emit(label: str, entity_type: str):
+        nonlocal ordinal
+        ordinal += 1
+        base = section_key
+        if sub_section:
+            base = f"{base}/{sub_section}"
+        line_key = f"{base}/{_slugify(label)}"
+        for amount_col, percent_col, cadence, p_start, p_end, p_type in period_cols:
+            amount = _to_number(_cell(grid, r, amount_col))
+            if amount is None:
+                continue
+            percent = _to_number(_cell(grid, r, percent_col)) if percent_col else None
+            records.append({
+                "tab_title": tab_title, "cadence": cadence,
+                "section_key": section_key, "section_label": section_label,
+                "sub_section": sub_section, "entity_type": entity_type,
+                "item_no": ordinal, "line_key": line_key, "line_label": label,
+                "parent_key": None,
+                "period_start_date": p_start, "period_end_date": p_end, "period_type": p_type,
+                "amount": amount, "percent": percent, "metrics": None,
+            })
+
+    for r in range(header_row + 1, len(grid) + 1):
+        a = _to_item_no(_cell(grid, r, ITEM_COL))
+        b = _cell(grid, r, LABEL_COL)
+
+        # A numbered row with a title starts a new section.
+        if a is not None and isinstance(b, str) and b.strip():
+            section_label = b.strip()
+            section_key = _slugify(section_label)
+            registered = section_key in REGISTERED_SECTIONS
+            sub_section = None
+            ordinal = 0
             continue
-        m = _PL_RANGE_RE.match(v.strip())
-        if m:
-            start = _parse_sheet_date(m.group(1))
-            end = _parse_sheet_date(m.group(2))
-            if start and end:
-                span_days = (end - start).days + 1
-                period_type = "annual" if span_days > 60 else "monthly"
-                cols.append((c_idx, c_idx + 1, start, end, period_type))
-    return cols
 
+        if not registered or section_key is None:
+            continue
 
-# ── Balance Sheet ──────────────────────────────────────────────────────────────
+        label = str(b).strip() if isinstance(b, str) and b.strip() else None
+        if label is None:
+            continue  # blank separator / spacer row
 
-def _walk_bs_section(grid, start_row: int, section_key: str, period_cols: list, max_scan: int = 30) -> Tuple[list, int]:
-    records = []
-    current_parent_key = None
-    for r in range(start_row, start_row + max_scan):
-        label_raw = _cell(grid, r, LABEL_COL)
-        if label_raw is None:
-            continue  # tolerate blank separator rows within the section
-        label = str(label_raw).strip()
+        # A sub-header (e.g. "Current Assets", "Sources of Funds:") carries a
+        # label but nothing in any amount OR percent cell. A real line item with
+        # a blank amount still has a percent cell ("Advance from Debtors | | 0"),
+        # so keying off amount alone would wrongly demote it to a sub-header.
+        amount_present = any(_to_number(_cell(grid, r, ac)) is not None for ac, *_ in period_cols)
+        any_cell = amount_present or any(
+            pc and _cell(grid, r, pc) is not None for _, pc, *_ in period_cols
+        )
         label_norm = label.upper().rstrip(":").strip()
 
         if label_norm == "TOTAL":
-            for amount_col, percent_col, period_end in period_cols:
-                amount = _to_number(_cell(grid, r, amount_col))
-                if amount is None:
-                    continue
-                records.append({
-                    "section": section_key, "entity_type": "total", "item_no": None,
-                    "line_key": f"{section_key}_total", "line_label": "Total", "parent_key": None,
-                    "period_end_date": period_end, "amount": amount,
-                    "percent": _to_number(_cell(grid, r, percent_col)),
-                })
-            return records, r + 1
-
-        item_no = _to_item_no(_cell(grid, r, ITEM_COL))
-        line_key = f"{section_key}_{_slugify(label)}"
-        if item_no is not None:
-            entity_type, parent_key = "line_item", None
-            current_parent_key = line_key
+            emit(label, "total")
+            sub_section = None  # a total closes its sub-section
+        elif not any_cell:
+            sub_section = _slugify(label)  # sub-header — context only, not stored
         else:
-            entity_type, parent_key = "detail", current_parent_key
+            emit(label, "line_item")
 
-        for amount_col, percent_col, period_end in period_cols:
-            amount = _to_number(_cell(grid, r, amount_col))
-            if amount is None:
-                continue
-            records.append({
-                "section": section_key, "entity_type": entity_type, "item_no": item_no,
-                "line_key": line_key, "line_label": label, "parent_key": parent_key,
-                "period_end_date": period_end, "amount": amount,
-                "percent": _to_number(_cell(grid, r, percent_col)),
-            })
-    return records, start_row + max_scan
-
-
-def parse_balance_sheet_tab(grid, tab_title: str) -> Tuple[list, list]:
-    errors: list = []
-    sof_row = _find_row_with_label(grid, "Sources of Funds:")
-    if sof_row is None:
-        return [], [f"{tab_title}: 'Sources of Funds:' row not found"]
-
-    period_cols = _find_bs_period_columns(grid, sof_row - 1)
-    if not period_cols:
-        errors.append(f"{tab_title}: no 'as at' period columns found for Balance Sheet")
-
-    sources_records, next_row = _walk_bs_section(grid, sof_row + 1, "sources_of_funds", period_cols)
-
-    aof_row = _find_row_with_label(grid, "Application of Funds:", start_row=next_row)
-    application_records = []
-    if aof_row is None:
-        errors.append(f"{tab_title}: 'Application of Funds:' row not found")
-    else:
-        application_records, _ = _walk_bs_section(grid, aof_row + 1, "application_of_funds", period_cols)
-
-    records = sources_records + application_records
-    for rec in records:
-        rec["tab_title"] = tab_title
     return records, errors
 
 
-# ── Profit & Loss ──────────────────────────────────────────────────────────────
-
-def _walk_pl_section(grid, start_row: int, period_cols: list, max_scan: int = 40) -> list:
-    records = []
-    section_key = "trading_account"
-    current_parent_key = None
-    last_seen_key = None
-    last_seen_label = None
-
-    for r in range(start_row, start_row + max_scan):
-        label_raw = _cell(grid, r, LABEL_COL)
-
-        if isinstance(label_raw, str):
-            label_norm = label_raw.strip().upper().rstrip(":").strip()
-            if label_norm in _OUT_OF_SCOPE_TERMINATORS:
-                break
-            if label_norm == "INCOME STATEMENT":
-                section_key = "income_statement"
-                current_parent_key = None
-                continue
-            if label_norm == "TRADING ACCOUNT":
-                continue
-
-        item_no = _to_item_no(_cell(grid, r, ITEM_COL))
-        label = str(label_raw).strip() if isinstance(label_raw, str) else None
-
-        if item_no is None and label is None:
-            # Possible unlabeled subtotal row — the sheet's own computed total
-            # for whatever comes above it (never recomputed by us).
-            any_amount = any(_to_number(_cell(grid, r, ac)) is not None for ac, *_ in period_cols)
-            if any_amount and last_seen_key:
-                key = f"{section_key}_subtotal_after_{last_seen_key}"
-                lbl = f"Subtotal (after {last_seen_label})"
-                for amount_col, percent_col, p_start, p_end, p_type in period_cols:
-                    amount = _to_number(_cell(grid, r, amount_col))
-                    if amount is None:
-                        continue
-                    records.append({
-                        "section": section_key, "entity_type": "subtotal", "item_no": None,
-                        "line_key": key, "line_label": lbl, "parent_key": None,
-                        "period_start_date": p_start, "period_end_date": p_end, "period_type": p_type,
-                        "amount": amount, "percent": _to_number(_cell(grid, r, percent_col)),
-                    })
-                last_seen_key, last_seen_label = key, lbl
-            continue
-
-        if label is None:
-            continue  # fully blank row, nothing to anchor
-
-        line_key = f"{section_key}_{_slugify(label)}"
-        if item_no is not None:
-            label_key_norm = label.upper().rstrip(":").strip()
-            entity_type = "total" if label_key_norm in _HEADLINE_PL_LABELS else "line_item"
-            parent_key = None
-            current_parent_key = line_key
-        else:
-            entity_type = "detail"
-            parent_key = current_parent_key
-
-        for amount_col, percent_col, p_start, p_end, p_type in period_cols:
-            amount = _to_number(_cell(grid, r, amount_col))
-            if amount is None:
-                continue
-            records.append({
-                "section": section_key, "entity_type": entity_type, "item_no": item_no,
-                "line_key": line_key, "line_label": label, "parent_key": parent_key,
-                "period_start_date": p_start, "period_end_date": p_end, "period_type": p_type,
-                "amount": amount, "percent": _to_number(_cell(grid, r, percent_col)),
-            })
-        last_seen_key, last_seen_label = line_key, label
-
-    return records
-
-
-def parse_profit_loss_tab(grid, tab_title: str) -> Tuple[list, list]:
-    errors: list = []
-    particulars_row = _find_row_with_label(grid, "Particulars")
-    if particulars_row is None:
-        return [], [f"{tab_title}: 'Particulars' row not found (P&L)"]
-
-    period_cols = _find_pl_period_columns(grid, particulars_row)
-    if not period_cols:
-        errors.append(f"{tab_title}: no period-range columns found for P&L")
-
-    trading_row = _find_row_with_label(grid, "Trading Account:", start_row=particulars_row)
-    if trading_row is None:
-        errors.append(f"{tab_title}: 'Trading Account:' row not found")
-        return [], errors
-
-    records = _walk_pl_section(grid, trading_row + 1, period_cols)
-    for rec in records:
-        rec["tab_title"] = tab_title
-    return records, errors
-
-
-# ── Per-tab / multi-tab orchestration ─────────────────────────────────────────
-
-def parse_finance_tab(grid, tab_title: str) -> Tuple[dict, list]:
-    bs_records, bs_errors = parse_balance_sheet_tab(grid, tab_title)
-    pl_records, pl_errors = parse_profit_loss_tab(grid, tab_title)
-    return {"balance_sheet": bs_records, "profit_loss": pl_records}, bs_errors + pl_errors
-
+# ── Multi-tab orchestration ──────────────────────────────────────────────────
 
 def fetch_finance_grids(sheet_id: str) -> dict:
-    """Fetches every tab in the sheet — a Finance sheet has one tab per FY, all valid."""
+    """Fetches every tab in the sheet (monthly and/or yearly). UNFORMATTED_VALUE
+    so numbers come through as numbers and date cells as serials (handled by
+    _parse_period), rather than locale-formatted strings."""
     service = get_sheets_service()
     meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
     titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
     if not titles:
         return {}
-    ranges = [f"'{t}'!A1:AF200" for t in titles]
-    resp = service.spreadsheets().values().batchGet(spreadsheetId=sheet_id, ranges=ranges).execute()
+    ranges = [f"'{t}'!A1:AZ500" for t in titles]
+    resp = service.spreadsheets().values().batchGet(
+        spreadsheetId=sheet_id, ranges=ranges,
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute()
     grids = {}
     for title, value_range in zip(titles, resp.get("valueRanges", [])):
         grids[title] = value_range.get("values", [])
     return grids
 
 
-def parse_finance_workbook_grids(grids: dict) -> Tuple[dict, list, dict]:
-    """Pure — no network. Unions every tab's records; returns covered periods for reconciliation."""
-    all_records = {"balance_sheet": [], "profit_loss": []}
+def parse_finance_workbook_grids(grids: dict) -> Tuple[list, list, set]:
+    """Pure — no network. Unions every tab's records; returns the set of covered
+    (line_key, period_start, period_end) triples for sync reconciliation."""
+    all_records: list = []
     all_errors: list = []
-    covered = {"bs_period_ends": set(), "pl_periods": set()}
+    covered: set = set()
 
     for title, grid in grids.items():
         parsed, errors = parse_finance_tab(grid, title)
         all_errors += errors
-        for rec in parsed["balance_sheet"]:
-            all_records["balance_sheet"].append(rec)
-            covered["bs_period_ends"].add(rec["period_end_date"])
-        for rec in parsed["profit_loss"]:
-            all_records["profit_loss"].append(rec)
-            covered["pl_periods"].add((rec["period_start_date"], rec["period_end_date"]))
+        for rec in parsed:
+            all_records.append(rec)
+            covered.add((rec["line_key"], rec["period_start_date"], rec["period_end_date"]))
 
     return all_records, all_errors, covered
 
 
-def fetch_and_parse_finance_workbook(sheet_id: str) -> Tuple[dict, list, dict]:
+def parse_finance_workbook_by_company(grids: dict) -> Tuple[dict, list]:
+    """Finance v3 — a master workbook holds ONE tab per company. Group each tab's
+    parsed records by tab title (= company), returning
+    {tab_title: {"records": [...], "covered": {(line_key, ps, pe), ...},
+                 "cadences": {"monthly"|"yearly", ...}}}
+    plus the flat error list. Tabs that fail to parse (no "Particulars" header —
+    e.g. an index/README tab) yield no records and are simply omitted, so no
+    company is created for them."""
+    by_company: dict = {}
+    all_errors: list = []
+    for title, grid in grids.items():
+        records, errors = parse_finance_tab(grid, title)
+        all_errors += errors
+        if not records:
+            continue
+        entry = by_company.setdefault(title, {"records": [], "covered": set(), "cadences": set()})
+        for rec in records:
+            entry["records"].append(rec)
+            entry["covered"].add((rec["line_key"], rec["period_start_date"], rec["period_end_date"]))
+            entry["cadences"].add(rec["cadence"])
+    return by_company, all_errors
+
+
+def fetch_and_parse_finance_by_company(sheet_id: str) -> Tuple[dict, list]:
+    return parse_finance_workbook_by_company(fetch_finance_grids(sheet_id))
+
+
+def fetch_and_parse_finance_workbook(sheet_id: str) -> Tuple[list, list, set]:
     grids = fetch_finance_grids(sheet_id)
     return parse_finance_workbook_grids(grids)

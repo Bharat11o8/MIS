@@ -186,7 +186,8 @@ def set_user_access(
     if body.finance_company_ids:
         valid_ids = {
             str(r.id) for r in db.query(SheetSource.id).filter(
-                SheetSource.module == "finance", SheetSource.id.in_(body.finance_company_ids)
+                SheetSource.module == "finance", SheetSource.kind == "company",
+                SheetSource.id.in_(body.finance_company_ids)
             ).all()
         }
         bad_ids = set(body.finance_company_ids) - valid_ids

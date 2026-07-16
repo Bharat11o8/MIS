@@ -97,7 +97,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className="relative flex flex-col h-full bg-white rounded-[32px] border border-orange-100 overflow-hidden"
+      className="no-print relative flex flex-col h-full bg-white rounded-[32px] border border-orange-100 overflow-hidden"
       style={{ width: 280, boxShadow: "0 10px 40px rgba(0,0,0,0.04)", flexShrink: 0 }}
     >
       {/* Logo — centred */}

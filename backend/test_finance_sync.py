@@ -1,91 +1,99 @@
 """
-Offline test for the Finance (Balance Sheet + P&L) parser — no network/DB
-dependency. Loads the real dummy workbook directly via openpyxl (simulating
-the grid shape the Sheets API's values.get would return) and runs the same
-parser that the live sync endpoint will use.
+Offline parser test for Finance v2 (no network, no DB).
+
+Loads the two dummy workbooks the finance team supplied — a monthly sheet and a
+yearly sheet — into raw grids via openpyxl and runs the pure parser path
+(parse_finance_workbook_grids), asserting the Phase A sections, the auto-detected
+cadence (monthly vs annual), the merged timeline, and that the sheet's own Total
+rows are mirrored (Balance Sheet balances; section totals equal the sum of their
+line items).
+
+Run:  venv/Scripts/python.exe test_finance_sync.py
 """
-import sys; sys.path.insert(0, '.')
-from datetime import date
+import os
 import openpyxl
-from services.finance_sync import parse_finance_tab, parse_finance_workbook_grids
 
-WORKBOOK = r"D:\MIS\Local_sheets\FInance\Dashboard_DataInput-2.xlsx"
+from services.finance_sync import parse_finance_workbook_grids
+
+DUMMY_DIR = r"D:\MIS\Local_sheets\Finance_new"
+MONTHLY_XLSX = "Monthly Complete Financial Dashboard Dummy Data.xlsx"
+YEARLY_XLSX = "Yearly Complete Financial Dashboard Dummy Data.xlsx"
+
+PHASE_A = {
+    "sales_accounts", "profit_loss_a_c", "balance_sheet", "inventories",
+    "working_capital", "production_cost", "employee_s_cost",
+}
 
 
-def sheet_to_grid(ws):
-    return [[c.value for c in row] for row in ws.iter_rows()]
+def _grid(path):
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.worksheets[0]
+    return [list(row) for row in ws.iter_rows(min_row=1, max_row=160, max_col=26, values_only=True)]
 
 
-def main():
-    wb = openpyxl.load_workbook(WORKBOOK, data_only=True)
-    grids = {title: sheet_to_grid(wb[title]) for title in wb.sheetnames}
-    assert set(grids.keys()) == {"abc", "xyz"}, grids.keys()
+def load_grids():
+    return {
+        "monthly": _grid(os.path.join(DUMMY_DIR, MONTHLY_XLSX)),
+        "yearly": _grid(os.path.join(DUMMY_DIR, YEARLY_XLSX)),
+    }
 
-    parsed, errors = parse_finance_tab(grids["abc"], "abc")
-    bs, pl = parsed["balance_sheet"], parsed["profit_loss"]
-    print(f"balance_sheet: {len(bs)} records, profit_loss: {len(pl)} records, {len(errors)} messages")
-    for e in errors:
-        print(" ", e)
 
-    def bs_amount(line_key, period_end):
-        rec = next(r for r in bs if r["line_key"] == line_key and r["period_end_date"] == period_end)
-        return rec["amount"], rec["percent"]
+def test_parse():
+    records, errors, covered = parse_finance_workbook_grids(load_grids())
+    assert not errors, f"unexpected parse errors: {errors}"
+    assert records, "no records parsed"
 
-    def pl_rec(line_key, start, end):
-        return next(r for r in pl if r["line_key"] == line_key and r["period_start_date"] == start and r["period_end_date"] == end)
+    # (a) all seven Phase A sections captured, and nothing outside the registry
+    sections = {r["section_key"] for r in records}
+    assert sections == PHASE_A, f"section mismatch: {sections} vs {PHASE_A}"
 
-    d_31may26 = date(2026, 5, 31)
-    d_31mar26 = date(2026, 3, 31)
-    p_may_start, p_may_end = date(2026, 5, 1), date(2026, 5, 31)
-    p_fy_start, p_fy_end = date(2025, 4, 1), date(2026, 3, 31)
+    # (b) cadence auto-detection: yearly tab → 3 annual FY points; monthly → 3 months
+    annual_periods = {(r["period_start_date"], r["period_end_date"]) for r in records if r["period_type"] == "annual"}
+    monthly_periods = {(r["period_start_date"], r["period_end_date"]) for r in records if r["period_type"] == "monthly"}
+    assert len(annual_periods) == 3, f"expected 3 FY points, got {sorted(annual_periods)}"
+    assert len(monthly_periods) == 3, f"expected 3 monthly points, got {sorted(monthly_periods)}"
+    assert all(r["cadence"] == "yearly" for r in records if r["period_type"] == "annual")
+    assert all(r["cadence"] == "monthly" for r in records if r["period_type"] == "monthly")
 
-    # ── Balance Sheet ────────────────────────────────────────────────────────
-    amount, percent = bs_amount("sources_of_funds_capital_account", d_31may26)
-    assert amount == 164019800, amount
-    assert percent == 23.35, percent
+    # monthly points land in Apr/May/Jun 2026, normalised to month-end
+    from datetime import date
+    assert (date(2026, 4, 1), date(2026, 4, 30)) in monthly_periods
+    assert (date(2026, 6, 1), date(2026, 6, 30)) in monthly_periods
+    # yearly FY spans Apr→Mar
+    assert (date(2023, 4, 1), date(2024, 3, 31)) in annual_periods
+    assert (date(2025, 4, 1), date(2026, 3, 31)) in annual_periods
 
-    amount, _ = bs_amount("sources_of_funds_total", d_31mar26)
-    assert amount == 782915448.62, amount
+    # (c) Balance Sheet balances every period: Sources total == Application total
+    src = {r["period_end_date"]: r["amount"] for r in records if r["line_key"] == "balance_sheet/sources_of_funds/total"}
+    app = {r["period_end_date"]: r["amount"] for r in records if r["line_key"] == "balance_sheet/application_of_funds/total"}
+    assert src and set(src) == set(app), "balance-sheet totals missing/uneven across periods"
+    for pe in src:
+        assert abs(src[pe] - app[pe]) < 0.01, f"balance sheet does not balance at {pe}: {src[pe]} vs {app[pe]}"
 
-    amount, _ = bs_amount("application_of_funds_total", d_31may26)
-    assert amount == 702368842.99, amount
+    # (d) merged timeline is deduped (both tabs union into one covered set)
+    triples = [(r["line_key"], r["period_start_date"], r["period_end_date"]) for r in records]
+    assert len(triples) == len(set(triples)), "duplicate (line_key, period) rows in merge"
+    assert covered == set(triples)
 
-    # ── Profit & Loss ────────────────────────────────────────────────────────
-    sales = pl_rec("trading_account_sales_accounts", p_may_start, p_may_end)
-    assert sales["amount"] == 205093564.93, sales["amount"]
-    assert sales["period_type"] == "monthly", sales["period_type"]
+    # (e) mirror-the-sheet: Sales Accounts Total == sum of its line items every period
+    for pe in {r["period_end_date"] for r in records if r["section_key"] == "sales_accounts"}:
+        items = [r["amount"] for r in records
+                 if r["line_key"].startswith("sales_accounts/") and r["entity_type"] == "line_item" and r["period_end_date"] == pe]
+        total = [r["amount"] for r in records if r["line_key"] == "sales_accounts/total" and r["period_end_date"] == pe]
+        assert total, f"sales_accounts total missing at {pe}"
+        assert abs(sum(items) - total[0]) < 1.0, f"sales total mismatch at {pe}: {sum(items)} vs {total[0]}"
 
-    direct_incomes = pl_rec("trading_account_direct_incomes", p_may_start, p_may_end)
-    subtotal_key = f"trading_account_subtotal_after_{direct_incomes['line_key']}"
-    subtotal = pl_rec(subtotal_key, p_may_start, p_may_end)
-    assert subtotal["amount"] == 207054082.43, subtotal["amount"]
+    # (f) Working Capital sub-sections resolve correctly (blank 'Advance' rows are
+    #     dropped, not mistaken for sub-headers)
+    wc = {r["line_key"] for r in records if r["section_key"] == "working_capital"}
+    assert "working_capital/current_assets/total" in wc
+    assert "working_capital/current_liabilities/total" in wc
+    assert "working_capital/net_working_capital" in wc
+    assert not any("advance" in k for k in wc), "blank Advance rows should not appear"
 
-    gross_profit = pl_rec("trading_account_gross_profit", p_may_start, p_may_end)
-    assert gross_profit["entity_type"] == "total", gross_profit["entity_type"]
-    assert gross_profit["amount"] == 15909074.49, gross_profit["amount"]
-
-    indirect_incomes = pl_rec("income_statement_indirect_incomes", p_may_start, p_may_end)
-    subtotal_key2 = f"income_statement_subtotal_after_{indirect_incomes['line_key']}"
-    subtotal2 = pl_rec(subtotal_key2, p_may_start, p_may_end)
-    assert subtotal2["amount"] == 16612027.56, subtotal2["amount"]
-
-    nett_profit = pl_rec("income_statement_nett_profit", p_may_start, p_may_end)
-    assert nett_profit["entity_type"] == "total", nett_profit["entity_type"]
-    assert nett_profit["amount"] == 404395.85, nett_profit["amount"]
-
-    # ── Period-type classification ──────────────────────────────────────────
-    fy_sales = pl_rec("trading_account_sales_accounts", p_fy_start, p_fy_end)
-    assert fy_sales["period_type"] == "annual", fy_sales["period_type"]
-
-    # ── Multi-tab union/reconciliation — both dummy tabs report identical
-    # periods; covered sets must dedupe rather than double-count. ────────────
-    all_records, all_errors, covered = parse_finance_workbook_grids(grids)
-    assert len(covered["bs_period_ends"]) == 3, covered["bs_period_ends"]
-    assert len(covered["pl_periods"]) == 3, covered["pl_periods"]
-    assert len(all_records["balance_sheet"]) == 2 * len(bs), len(all_records["balance_sheet"])
-
-    print("\nAll assertions passed.")
+    print(f"OK — {len(records)} records, sections={sorted(sections)}, "
+          f"{len(annual_periods)} FY + {len(monthly_periods)} monthly periods")
 
 
 if __name__ == "__main__":
-    main()
+    test_parse()
