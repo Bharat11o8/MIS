@@ -158,14 +158,14 @@ def _send_otp_email(to_email: str, otp: str, name: str) -> None:
     smtp_from = os.getenv("EMAIL_FROM", smtp_user)
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "AutoForm MIS — Password Reset OTP"
-    msg["From"]    = f"AutoForm MIS <{smtp_from}>"
+    msg["Subject"] = "Amato Automotive MIS — Password Reset OTP"
+    msg["From"]    = f"Amato Automotive MIS <{smtp_from}>"
     msg["To"]      = to_email
 
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
       <div style="background:#111827;padding:28px 32px;">
-        <p style="color:#fff;font-size:11px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;margin:0;">AutoForm India · MIS</p>
+        <p style="color:#fff;font-size:11px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;margin:0;">Amato Automotive · MIS</p>
       </div>
       <div style="padding:32px;">
         <p style="color:#374151;font-size:15px;margin:0 0 8px;">Hi {name},</p>
@@ -181,7 +181,7 @@ def _send_otp_email(to_email: str, otp: str, name: str) -> None:
         </p>
       </div>
       <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
-        <p style="color:#9ca3af;font-size:11px;margin:0;">© 2025 AutoForm India · This is an automated message, please do not reply.</p>
+        <p style="color:#9ca3af;font-size:11px;margin:0;">© {datetime.now().year} Amato Automotive · This is an automated message, please do not reply.</p>
       </div>
     </div>
     """

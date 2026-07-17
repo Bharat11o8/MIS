@@ -2,18 +2,19 @@ import { useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   TrendingUp,
-  Upload,
   BarChart2,
   LogOut,
   UserCircle,
   UserCog,
   Wallet,
+  FileSpreadsheet,
+  CarFront,
 } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
-import { ModuleKey } from "@/lib/modules";
+import { ModuleKey, canAccessModule } from "@/lib/modules";
 import { cn } from "@/lib/utils";
 
-const logoSrc = "/autoform-logo.png";
+const logoSrc = "/amato-logo.png";
 
 interface NavItem {
   id: string;
@@ -47,13 +48,6 @@ const NAV_ITEMS: NavItem[] = [
     moduleKey: "leads",
   },
   {
-    id: "leads-upload",
-    label: "Upload Data",
-    icon: <Upload size={16} />,
-    path: "/dashboard/leads/upload",
-    moduleKey: "leads",
-  },
-  {
     id: "finance",
     label: "Finance",
     icon: <Wallet size={16} />,
@@ -61,11 +55,25 @@ const NAV_ITEMS: NavItem[] = [
     moduleKey: "finance",
   },
   {
+    id: "oe-network",
+    label: "OE Network",
+    icon: <CarFront size={16} />,
+    path: "/dashboard/oe-network",
+    moduleKey: "oe_network",
+  },
+  {
     id: "users",
     label: "Users",
     icon: <UserCog size={16} />,
     path: "/dashboard/users",
     section: "ADMIN",
+  },
+  {
+    id: "sheet-guide",
+    label: "Connect a Sheet",
+    icon: <FileSpreadsheet size={16} />,
+    path: "/dashboard/sheet-guide",
+    section: "HELP",
   },
 ];
 
@@ -77,8 +85,15 @@ export default function Sidebar() {
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (!user) return false;
     if (item.id === "users") return user.role === "superadmin";
+    // Only useful to people who actually have a sheet-backed module.
+    if (item.id === "sheet-guide")
+      return (
+        canAccessModule(user, "sales") ||
+        canAccessModule(user, "finance") ||
+        canAccessModule(user, "oe_network")
+      );
     if (!item.moduleKey) return true;
-    return user.role === "superadmin" || (user.modules ?? []).includes(item.moduleKey);
+    return canAccessModule(user, item.moduleKey);
   });
 
   const handleLogout = () => {
@@ -102,7 +117,7 @@ export default function Sidebar() {
     >
       {/* Logo — centred */}
       <div className="flex items-center justify-center h-20 border-b border-orange-50 shrink-0 px-4">
-        <img src={logoSrc} alt="AutoForm India" className="h-10 w-auto" />
+        <img src={logoSrc} alt="Amato Automotive" className="h-10 w-auto" />
       </div>
 
       {/* Navigation */}

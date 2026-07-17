@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from models import User, UserModuleAccess, UserSheetSourceAccess, SheetSource
 
-VALID_MODULES = {"sales", "leads", "finance"}
+VALID_MODULES = {"sales", "leads", "finance", "oe_network"}
 
 
 def user_has_module(db: Session, user: User, module: str) -> bool:

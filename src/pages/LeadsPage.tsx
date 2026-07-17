@@ -4,6 +4,7 @@ import {
   Users, TrendingUp, PhoneCall, CheckCircle2, Clock, XCircle,
   BarChart2, MapPin, Award, RefreshCw, SlidersHorizontal, X
 } from "lucide-react";
+import LeadsUploadTab from "@/pages/LeadsUploadTab";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line,
@@ -91,6 +92,7 @@ export default function LeadsPage() {
   const [totalLeads, setTotalLeads] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState<"analytics" | "upload">("analytics");
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -221,40 +223,66 @@ export default function LeadsPage() {
     <div className="p-6 flex flex-col gap-5">
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between">
+        className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="flex items-center gap-3">
             <span className="page-title-dark">LEADS</span>
-            <span className="page-title-orange">ANALYTICS</span>
+            <span className="page-title-orange">{activeTab === "analytics" ? "ANALYTICS" : "UPLOAD DATA"}</span>
           </h1>
           <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-1">
-            {analytics ? `${analytics.kpis.total.toLocaleString()} leads` : "Loading…"}
-            {activeCount > 0 && <span className="text-orange-500"> · {activeCount} filter{activeCount > 1 ? "s" : ""} active</span>}
+            {activeTab === "analytics" ? (
+              <>
+                {analytics ? `${analytics.kpis.total.toLocaleString()} leads` : "Loading…"}
+                {activeCount > 0 && <span className="text-orange-500"> · {activeCount} filter{activeCount > 1 ? "s" : ""} active</span>}
+              </>
+            ) : "IVR / WhatsApp / Instagram lead sheets (.xlsx or .csv)"}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => fetchData(filters)}
-            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
-            <RefreshCw size={13} /> Refresh
-          </button>
-          <button
-            onClick={() => setFiltersOpen(!filtersOpen)}
-            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
-              activeCount > 0
-                ? "bg-orange-500 text-white border-orange-500"
-                : "text-gray-600 border-gray-200 hover:border-orange-200"
-            }`}>
-            <SlidersHorizontal size={13} />
-            Filters
-            {activeCount > 0 && (
-              <span className="bg-white text-orange-500 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">
-                {activeCount}
-              </span>
-            )}
-          </button>
+          {activeTab === "analytics" && (
+            <>
+              <button onClick={() => fetchData(filters)}
+                className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
+                <RefreshCw size={13} /> Refresh
+              </button>
+              <button
+                onClick={() => setFiltersOpen(!filtersOpen)}
+                className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
+                  activeCount > 0
+                    ? "bg-orange-500 text-white border-orange-500"
+                    : "text-gray-600 border-gray-200 hover:border-orange-200"
+                }`}>
+                <SlidersHorizontal size={13} />
+                Filters
+                {activeCount > 0 && (
+                  <span className="bg-white text-orange-500 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">
+                    {activeCount}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
+          <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+            <button onClick={() => setActiveTab("analytics")}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                activeTab === "analytics" ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              Analytics
+            </button>
+            <button onClick={() => setActiveTab("upload")}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                activeTab === "upload" ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              Upload Data
+            </button>
+          </div>
         </div>
       </motion.div>
 
+      {activeTab === "upload" && <LeadsUploadTab />}
+
+      {activeTab === "analytics" && (
+        <>
       {/* Filter panel */}
       <AnimatePresence>
         {filtersOpen && (
@@ -681,6 +709,8 @@ export default function LeadsPage() {
               </table>
             </div>
           </motion.div>
+        </>
+      )}
         </>
       )}
     </div>

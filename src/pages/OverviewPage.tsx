@@ -1,34 +1,73 @@
-import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import {
-  Users, CheckCircle, TrendingUp, Radio, Clock, XCircle,
-  ArrowUpRight, BarChart3, PieChart as PieIcon,
-} from "lucide-react";
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, Legend,
-} from "recharts";
+import { TrendingUp, BarChart2, Wallet, UserCog, ArrowUpRight, LayoutDashboard, CarFront } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { ModuleKey, canAccessModule } from "@/lib/modules";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-const SOURCE_COLORS: Record<string, string> = {
-  IVR: "#3b82f6", WhatsApp: "#22c55e", Instagram: "#f46617", Other: "#94a3b8",
-};
-
-interface Analytics {
-  kpis: {
-    total: number;
-    closed_won: number;
-    follow_up: number;
-    closed_lost: number;
-    conversion_rate: number;
-    top_source: string | null;
-    top_source_count: number;
-  };
-  trends: { period: string; count: number; closed_won: number; follow_up: number }[];
-  sources: { source: string; count: number }[];
+interface ModuleTile {
+  id: string;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+  path: string;
+  color: string;
+  bg: string;
+  moduleKey?: ModuleKey; // omitted = gated by `adminOnly` instead
+  adminOnly?: boolean;
 }
+
+const TILES: ModuleTile[] = [
+  {
+    id: "sales",
+    label: "Sales",
+    description: "Plant-to-depot dispatch and depot-to-distributor targets",
+    icon: <TrendingUp size={24} />,
+    path: "/dashboard/sales",
+    color: "#f46617",
+    bg: "#fff4ed",
+    moduleKey: "sales",
+  },
+  {
+    id: "leads",
+    label: "Lead Analytics",
+    description: "IVR, WhatsApp and Instagram lead pipeline",
+    icon: <BarChart2 size={24} />,
+    path: "/dashboard/leads",
+    color: "#3b82f6",
+    bg: "#eff6ff",
+    moduleKey: "leads",
+  },
+  {
+    id: "finance",
+    label: "Finance",
+    description: "Balance Sheet, Profit & Loss and Plant Operations",
+    icon: <Wallet size={24} />,
+    path: "/dashboard/finance",
+    color: "#22c55e",
+    bg: "#f0fdf4",
+    moduleKey: "finance",
+  },
+  {
+    id: "oe-network",
+    label: "OE Network",
+    description: "OEM dealership visit plans and field team log book",
+    icon: <CarFront size={24} />,
+    path: "/dashboard/oe-network",
+    color: "#0ea5e9",
+    bg: "#f0f9ff",
+    moduleKey: "oe_network",
+  },
+  {
+    id: "users",
+    label: "Users",
+    description: "Manage users, module access and company permissions",
+    icon: <UserCog size={24} />,
+    path: "/dashboard/users",
+    color: "#8b5cf6",
+    bg: "#f5f3ff",
+    adminOnly: true,
+  },
+];
 
 const container = {
   hidden: { opacity: 0 },
@@ -39,130 +78,42 @@ const item = {
   show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.4, 0, 0.2, 1] } },
 };
 
-function SkeletonCard() {
-  return (
-    <div className="kpi-card animate-pulse">
-      <div className="flex items-center gap-2.5">
-        <div className="w-9 h-9 rounded-xl bg-gray-100 shrink-0" />
-        <div className="h-3 w-16 bg-gray-100 rounded" />
-      </div>
-      <div className="h-7 w-24 bg-gray-100 rounded mt-3" />
-    </div>
-  );
+function greetingFor(hour: number) {
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
 }
 
 export default function OverviewPage() {
-  const { user, token, logout } = useAuth();
-  const [data, setData] = useState<Analytics | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const navigate = useNavigate();
 
-  useEffect(() => {
-    if (!token) return;
-    fetch(`${API_URL}/leads/analytics`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => {
-        if (r.status === 401) { logout(); return null; }
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d) => { if (d) setData(d); })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [token]);
+  const visibleTiles = TILES.filter((tile) =>
+    tile.adminOnly ? user?.role === "superadmin" : canAccessModule(user, tile.moduleKey!)
+  );
 
-  const isManagement = user?.role === "superadmin" || user?.role === "management";
-
-  const trendData = (data?.trends ?? []).map((t) => ({
-    month: new Date(t.period).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }),
-    leads: t.count,
-    closedWon: t.closed_won,
-    followUp: t.follow_up,
-  }));
-
-  const sourceData = (data?.sources ?? []).map((s) => ({
-    name: s.source,
-    value: s.count,
-    color: SOURCE_COLORS[s.source] ?? "#94a3b8",
-  }));
-
-  const kpis = [
-    {
-      id: "total-leads",
-      label: "Total Leads",
-      value: loading ? "—" : (data?.kpis?.total ?? 0).toLocaleString("en-IN"),
-      sub: isManagement ? "All channels combined" : "Your portfolio",
-      icon: <Users size={18} />,
-      color: "#f46617",
-      bg: "#fff4ed",
-    },
-    {
-      id: "closed-won",
-      label: "Closed Won",
-      value: loading ? "—" : (data?.kpis?.closed_won ?? 0).toLocaleString("en-IN"),
-      sub: "Converted leads",
-      icon: <CheckCircle size={18} />,
-      color: "#22c55e",
-      bg: "#f0fdf4",
-    },
-    {
-      id: "conversion-rate",
-      label: "Conversion Rate",
-      value: loading ? "—" : `${data?.kpis?.conversion_rate ?? 0}%`,
-      sub: "Lead to Closed Won",
-      icon: <TrendingUp size={18} />,
-      color: "#3b82f6",
-      bg: "#eff6ff",
-    },
-    {
-      id: "follow-up",
-      label: "Follow Ups",
-      value: loading ? "—" : (data?.kpis?.follow_up ?? 0).toLocaleString("en-IN"),
-      sub: "Pending follow-up",
-      icon: <Clock size={18} />,
-      color: "#f59e0b",
-      bg: "#fffbeb",
-    },
-    {
-      id: "closed-lost",
-      label: "Closed Lost",
-      value: loading ? "—" : (data?.kpis?.closed_lost ?? 0).toLocaleString("en-IN"),
-      sub: "Did not convert",
-      icon: <XCircle size={18} />,
-      color: "#ef4444",
-      bg: "#fef2f2",
-    },
-        {
-      id: "top-source",
-      label: "Top Channel",
-      value: loading ? "—" : (data?.kpis?.top_source ?? "—"),
-      sub: loading ? "" : `${(data?.kpis?.top_source_count ?? 0).toLocaleString("en-IN")} leads`,
-      icon: <Radio size={18} />,
-      color: "#8b5cf6",
-      bg: "#f5f3ff",
-    },
-  ];
+  const firstName = user?.name?.split(" ")[0] ?? "there";
 
   return (
     <div className="p-6 flex flex-col gap-6">
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
-        <div className="flex items-end justify-between">
+        <div className="flex items-end justify-between flex-wrap gap-3">
           <div>
             <h1 className="flex items-center gap-3">
-              <span className="page-title-dark">DASHBOARD</span>
-              <span className="page-title-orange">OVERVIEW</span>
+              <span className="page-title-dark">{greetingFor(new Date().getHours())},</span>
+              <span className="page-title-orange">{firstName}</span>
             </h1>
             <div className="flex items-center gap-2 mt-1">
               <div className="w-8 h-0.5 bg-gray-800 rounded" />
               <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
               <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
-                {isManagement ? "All Departments" : "My Portfolio"} · {user?.name}
+                {visibleTiles.length > 0 ? "Select a module to get started" : "Welcome"}
               </p>
             </div>
           </div>
           <div className="text-right">
-            <p className="text-xs text-gray-400">Last updated</p>
+            <p className="text-xs text-gray-400">Today</p>
             <p className="text-sm font-bold text-gray-700">
               {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
             </p>
@@ -170,168 +121,62 @@ export default function OverviewPage() {
         </div>
       </motion.div>
 
-      {/* KPI Cards */}
-      <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
-        {loading
-          ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
-          : kpis.map((kpi) => (
-              <motion.div key={kpi.id} variants={item} className="kpi-card">
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                    style={{ background: kpi.bg, color: kpi.color }}
-                  >
-                    {kpi.icon}
-                  </div>
-                  <p className="text-xs font-bold text-gray-600">{kpi.label}</p>
-                </div>
-                <div className="mt-3">
-                  <p className="text-2xl font-black text-gray-900">{kpi.value}</p>
-                  <p className="text-[11px] text-gray-400 mt-0.5">{kpi.sub}</p>
-                </div>
-              </motion.div>
-            ))}
-      </motion.div>
-
-      {/* Charts */}
-      <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        {/* Monthly Trend */}
-        <motion.div variants={item} className="card-premium p-6 xl:col-span-2">
-          <div className="flex items-center justify-between mb-5">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500">
-                <BarChart3 size={16} />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-gray-800">Lead Acquisition Trend</h3>
-                <p className="text-[11px] text-gray-400">
-                  {isManagement ? "All channels" : "Your uploads"} — monthly
-                </p>
-              </div>
-            </div>
-            <button
-              className="flex items-center gap-1 text-[11px] font-bold text-orange-500 hover:text-orange-600 transition-colors"
-              onClick={() => window.location.href = "/dashboard/leads"}
-            >
-              View All <ArrowUpRight size={12} />
-            </button>
-          </div>
-          {loading ? (
-            <div className="h-[220px] bg-gray-50 rounded-xl animate-pulse" />
-          ) : trendData.length === 0 ? (
-            <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">No data yet</div>
-          ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={trendData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }}
-                />
-                <Legend
-                  iconType="circle"
-                  iconSize={8}
-                  formatter={(value) => (
-                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{value}</span>
-                  )}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="leads"
-                  stroke="#f46617"
-                  strokeWidth={2.5}
-                  dot={{ fill: "#f46617", r: 4 }}
-                  activeDot={{ r: 6 }}
-                  name="Total Leads"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="closedWon"
-                  stroke="#22c55e"
-                  strokeWidth={2.5}
-                  dot={{ fill: "#22c55e", r: 4 }}
-                  activeDot={{ r: 6 }}
-                  name="Closed Won"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="followUp"
-                  stroke="#f59e0b"
-                  strokeWidth={2.5}
-                  dot={{ fill: "#f59e0b", r: 4 }}
-                  activeDot={{ r: 6 }}
-                  name="Follow Up"
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </motion.div>
-
-        {/* Source Pie */}
-        <motion.div variants={item} className="card-premium p-6">
-          <div className="flex items-center gap-2 mb-5">
-            <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500">
-              <PieIcon size={16} />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-gray-800">Lead Sources</h3>
-              <p className="text-[11px] text-gray-400">Channel breakdown</p>
-            </div>
-          </div>
-          {loading ? (
-            <div className="h-[200px] bg-gray-50 rounded-xl animate-pulse" />
-          ) : sourceData.length === 0 ? (
-            <div className="h-[200px] flex items-center justify-center text-sm text-gray-400">No data yet</div>
-          ) : (
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie
-                  data={sourceData}
-                  cx="50%"
-                  cy="45%"
-                  innerRadius={55}
-                  outerRadius={80}
-                  paddingAngle={4}
-                  dataKey="value"
-                >
-                  {sourceData.map((entry) => (
-                    <Cell key={entry.name} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }}
-                />
-                <Legend
-                  iconType="circle"
-                  iconSize={8}
-                  formatter={(value) => (
-                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{value}</span>
-                  )}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          )}
-        </motion.div>
-      </motion.div>
-
-      {/* Sales placeholder — shown only for management until Sales module is built */}
-      {isManagement && (
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3, duration: 0.4 }}
-          className="card-premium p-6 flex items-center gap-4"
-        >
-          <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center text-gray-400 shrink-0">
-            <BarChart3 size={18} />
+      {/* Module tiles */}
+      {visibleTiles.length === 0 ? (
+        <div className="card-premium p-10 flex flex-col items-center text-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-400">
+            <LayoutDashboard size={22} />
           </div>
           <div>
-            <p className="text-sm font-bold text-gray-700">Sales Module — Coming Soon</p>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Plant-to-depot dispatch analytics will appear here once the Sales module is enabled.
+            <p className="text-sm font-bold text-gray-700">No modules assigned yet</p>
+            <p className="text-xs text-gray-400 mt-1 max-w-sm">
+              Your account doesn't have access to any modules. Ask a super admin to grant access from the Users page.
             </p>
           </div>
+        </div>
+      ) : (
+        <motion.div
+          variants={container}
+          initial="hidden"
+          animate="show"
+          className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5"
+        >
+          {visibleTiles.map((tile) => (
+            <motion.button
+              key={tile.id}
+              variants={item}
+              onClick={() => navigate(tile.path)}
+              className="group card-premium relative overflow-hidden aspect-square p-6 flex flex-col justify-between text-left"
+            >
+              {/* Accent wash — grows on hover */}
+              <div
+                className="absolute -top-10 -right-10 w-36 h-36 rounded-full opacity-[0.07] transition-all duration-500 group-hover:opacity-[0.14] group-hover:scale-125"
+                style={{ background: tile.color }}
+              />
+
+              <div
+                className="relative w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-105"
+                style={{ background: tile.bg, color: tile.color }}
+              >
+                {tile.icon}
+              </div>
+
+              <div className="relative">
+                <p className="text-lg font-black text-gray-900 tracking-tight">{tile.label}</p>
+                <p className="text-xs text-gray-400 mt-1 leading-relaxed">{tile.description}</p>
+                <div
+                  className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider mt-4"
+                  style={{ color: tile.color }}
+                >
+                  Open
+                  <ArrowUpRight
+                    size={13}
+                    className="transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+                  />
+                </div>
+              </div>
+            </motion.button>
+          ))}
         </motion.div>
       )}
     </div>

@@ -1,13 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from routers import auth, leads, users, sales, distributor_sales, finance
+from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network
 
 load_dotenv()
 
 app = FastAPI(
-    title="AutoForm MIS API",
-    description="Management Information System — AutoForm India",
+    title="Amato Automotive MIS API",
+    description="Management Information System — Amato Automotive",
     version="2.0.0"
 )
 
@@ -32,11 +32,13 @@ app.include_router(users.router)
 app.include_router(sales.router)
 app.include_router(distributor_sales.router)
 app.include_router(finance.router)
+app.include_router(sheets.router)
+app.include_router(oe_network.router)
 
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/", tags=["Health"])
 def root():
-    return {"status": "ok", "app": "AutoForm MIS API", "version": "2.0.0"}
+    return {"status": "ok", "app": "Amato Automotive MIS API", "version": "2.0.0"}
 
 @app.get("/health", tags=["Health"])
 def health():

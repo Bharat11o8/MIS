@@ -5,7 +5,7 @@ import { Eye, EyeOff, Lock, AlertCircle } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-const logoSrc = "/autoform-logo.png";
+const logoSrc = "/amato-logo.png";
 
 function getStrength(pw: string): { score: number; label: string; color: string } {
   let score = 0;
@@ -106,7 +106,7 @@ export default function ResetPasswordPage() {
           <div className="flex flex-col items-center gap-3">
             <img
               src={logoSrc}
-              alt="AutoForm India"
+              alt="Amato Automotive"
               className="h-12 w-auto"
               style={{ filter: "brightness(0) invert(1)" }}
             />
@@ -286,7 +286,7 @@ export default function ResetPasswordPage() {
         </div>
 
         <p className="text-center text-[10px] text-white/100 mt-4 uppercase tracking-wider">
-          © 2025 AutoForm India
+          © {new Date().getFullYear()} Amato Automotive
         </p>
       </motion.div>
     </div>

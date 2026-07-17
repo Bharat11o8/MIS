@@ -92,6 +92,7 @@ class SheetSource(Base):
     label         = Column(String(100), nullable=False)
     calendar_year = Column(Integer, nullable=True)
     quarter       = Column(String(2), nullable=True)
+    month         = Column(Integer, nullable=True)  # OE visit plans: one sheet per (calendar_year, month)
     kind          = Column(String(10), nullable=True)  # finance v3: 'master' | 'company'
     created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
@@ -113,6 +114,48 @@ class DistributorSale(Base):
     sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
     created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OEVisitPlan(Base):
+    __tablename__ = "oe_visit_plans"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    salesperson     = Column(String(100), nullable=False)
+    visit_date      = Column(Date, nullable=True)
+    plan_year       = Column(Integer, nullable=False)
+    plan_month      = Column(Integer, nullable=False)
+    oem             = Column(String(50), nullable=True)
+    dealer_name     = Column(String(200), nullable=False)
+    city            = Column(String(100), nullable=True)
+    state           = Column(String(100), nullable=True)
+    sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class OEVisitLog(Base):
+    __tablename__ = "oe_visit_logs"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id  = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    visit_date       = Column(Date, nullable=False)
+    log_year         = Column(Integer, nullable=False)
+    log_month        = Column(Integer, nullable=False)
+    salesperson      = Column(String(100), nullable=True)
+    contact_mode     = Column(String(30), nullable=True)
+    oem              = Column(String(50), nullable=True)
+    dealership       = Column(String(200), nullable=False)
+    address          = Column(String(255), nullable=True)
+    designation      = Column(String(100), nullable=True)
+    # Dealer's own monthly figures (units) — aggregate as averages, never sums.
+    car_sales        = Column(Numeric(12, 2), nullable=True)
+    seat_cover_sales = Column(Numeric(12, 2), nullable=True)
+    mats_sales       = Column(Numeric(12, 2), nullable=True)
+    remarks          = Column(Text, nullable=True)
+    city             = Column(String(100), nullable=True)
+    state            = Column(String(100), nullable=True)
+    sync_log_id      = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at       = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
 class UserModuleAccess(Base):

@@ -365,7 +365,7 @@ export default function ForgotPasswordPage() {
         </div>
 
         <p className="text-center text-[10px] text-white/60 mt-4 uppercase tracking-wider">
-          © 2025 AutoForm India
+          © {new Date().getFullYear()} Amato Automotive
         </p>
       </motion.div>
     </div>

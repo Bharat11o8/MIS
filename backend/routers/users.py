@@ -225,3 +225,26 @@ def toggle_active(
     user.is_active = not user.is_active
     db.commit()
     return {"id": str(user.id), "is_active": user.is_active}
+
+
+# ── Delete user (permanent) ──────────────────────────────────────────────────
+@router.delete("/{user_id}")
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_superadmin),
+):
+    """Permanently remove an account. Module/company grants cascade away with it.
+    Work the user produced (leads, upload logs, sheet sources, sync logs) is kept
+    — those FKs are ON DELETE SET NULL, so rows survive and only lose attribution.
+    Blocking self-deletion also guarantees at least one superadmin always remains.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if str(user.id) == str(admin.id):
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    db.delete(user)
+    db.commit()
+    return {"id": str(user_id), "deleted": True}

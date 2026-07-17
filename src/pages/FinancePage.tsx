@@ -4,6 +4,7 @@ import {
   RefreshCw, Plus, ChevronDown, ChevronUp, CheckCircle2, XCircle, Clock, History, Trash2, Printer, Database,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
 import BalanceSheetView from "@/pages/finance/BalanceSheetView";
 import ProfitLossView from "@/pages/finance/ProfitLossView";
@@ -31,6 +32,7 @@ export default function FinancePage() {
   const { token, user } = useAuth();
   const headers = { Authorization: `Bearer ${token}` };
   const isAdmin = user?.role === "superadmin";
+  const toast = useToast();
 
   const [sources, setSources] = useState<SheetSourceItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -128,9 +130,16 @@ export default function FinancePage() {
   const handleDeleteMaster = async (id: string, label: string) => {
     if (!window.confirm(`Remove the "${label}" master file registration?\n\nCompany data stays until the next sync; you can re-register it anytime.`)) return;
     try {
-      await fetch(`${API_URL}/finance/masters/${id}`, { method: "DELETE", headers });
+      const res = await fetch(`${API_URL}/finance/masters/${id}`, { method: "DELETE", headers });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
       await loadMasters();
-    } catch { /* ignore */ }
+      toast.success("Master file removed", `"${label}" is no longer registered.`);
+    } catch (e) {
+      toast.error("Couldn't remove master file", e instanceof Error ? e.message : "Please try again.");
+    }
   };
 
   const handleDeleteCompany = async () => {
@@ -139,10 +148,17 @@ export default function FinancePage() {
     if (!source) return;
     if (!window.confirm(`Delete company "${source.label}"?\n\nThis removes all its finance data. It will reappear on the next master sync if its tab still exists.`)) return;
     try {
-      await fetch(`${API_URL}/finance/sheet-sources/${selectedId}`, { method: "DELETE", headers });
+      const res = await fetch(`${API_URL}/finance/sheet-sources/${selectedId}`, { method: "DELETE", headers });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
       setSelectedId("");
       await loadSources();
-    } catch { /* ignore */ }
+      toast.success("Company deleted", `"${source.label}" and its finance data were removed.`);
+    } catch (e) {
+      toast.error("Couldn't delete company", e instanceof Error ? e.message : "Please try again.");
+    }
   };
 
   const companyLabel = sources.find((s) => s.id === selectedId)?.label ?? "";

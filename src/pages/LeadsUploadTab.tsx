@@ -31,7 +31,7 @@ function formatDate(iso: string) {
   });
 }
 
-export default function LeadsUploadPage() {
+export default function LeadsUploadTab() {
   const { token } = useAuth();
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -108,14 +108,6 @@ export default function LeadsUploadPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Upload Lead Data</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Upload your IVR / WhatsApp / Instagram lead sheets (.xlsx or .csv)
-        </p>
-      </div>
-
       {/* Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}

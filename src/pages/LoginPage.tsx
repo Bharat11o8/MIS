@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { Eye, EyeOff, Lock, Mail, AlertCircle } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
-const logoSrc = "/autoform-logo.png";
+const logoSrc = "/amato-logo.png";
 
 
 export default function LoginPage() {
@@ -56,7 +56,7 @@ export default function LoginPage() {
             <div className="flex items-center justify-center">
               <img
                 src={logoSrc}
-                alt="AutoForm India"
+                alt="Amato Automotive"
                 className="h-14 w-auto"
                 style={{ filter: "brightness(0) invert(1)" }}
               />
@@ -240,7 +240,7 @@ export default function LoginPage() {
         </div>
         {/* Footer */}
         <p className="text-center text-[10px] text-white/100 mt-4 uppercase tracking-wider">
-          © 2025 AutoForm India
+          © {new Date().getFullYear()} Amato Automotive
         </p>
       </motion.div>
     </div>

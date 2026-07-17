@@ -1,9 +1,19 @@
-export type ModuleKey = "sales" | "leads" | "finance";
+export type ModuleKey = "sales" | "leads" | "finance" | "oe_network";
 
-export const ALL_MODULES: ModuleKey[] = ["sales", "leads", "finance"];
+export const ALL_MODULES: ModuleKey[] = ["sales", "leads", "finance", "oe_network"];
 
 export const MODULE_LABELS: Record<ModuleKey, string> = {
   sales: "Sales",
   leads: "Lead Analytics",
   finance: "Finance",
+  oe_network: "OE Network",
 };
+
+/** Single source of truth for module gating — used by the sidebar and the overview launcher. */
+export function canAccessModule(
+  user: { role: string; modules?: string[] } | null | undefined,
+  moduleKey: ModuleKey
+): boolean {
+  if (!user) return false;
+  return user.role === "superadmin" || (user.modules ?? []).includes(moduleKey);
+}

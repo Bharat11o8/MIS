@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   UserPlus, Search, ShieldCheck, UserCheck, UserX, KeyRound, Settings,
-  X, Eye, EyeOff, RefreshCw as Shuffle, Copy, Check, AlertCircle, Users as UsersIcon,
+  X, Eye, EyeOff, RefreshCw as Shuffle, Copy, Check, AlertCircle, Users as UsersIcon, Trash2,
 } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
+import { useToast } from "@/components/ui/Toast";
 import { ROLE_LABELS, ROLE_COLORS, ALL_ROLES } from "@/lib/roles";
 import { ALL_MODULES, MODULE_LABELS, ModuleKey } from "@/lib/modules";
 
@@ -39,6 +40,7 @@ function generatePassword() {
 
 export default function UsersPage() {
   const { user: me, token } = useAuth();
+  const toast = useToast();
   const headers = { Authorization: `Bearer ${token}` };
 
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -46,6 +48,7 @@ export default function UsersPage() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<UserRole | "">("");
   const [pendingToggle, setPendingToggle] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [justCreated, setJustCreated] = useState<{ email: string; password: string } | null>(null);
@@ -57,11 +60,11 @@ export default function UsersPage() {
     setLoading(true);
     fetch(`${API_URL}/users/`, { headers })
       .then((r) => {
-        if (!r.ok) throw new Error();
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then(setUsers)
-      .catch(console.error)
+      .catch((e: Error) => toast.error("Couldn't load users", e.message))
       .finally(() => setLoading(false));
   };
 
@@ -91,8 +94,37 @@ export default function UsersPage() {
       if (!res.ok) throw new Error();
     } catch {
       setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, is_active: u.is_active } : x)));
+      toast.error(
+        `Couldn't ${u.is_active ? "deactivate" : "activate"} ${u.name}`,
+        "The change has been reverted. Please try again."
+      );
     } finally {
       setPendingToggle(null);
+    }
+  };
+
+  const deleteUser = async (u: AppUser) => {
+    const confirmed = window.confirm(
+      `Permanently delete "${u.name}" (${u.email})?\n\n` +
+        `This cannot be undone. Their account and all module/company access will be removed.\n\n` +
+        `Data they uploaded or synced (leads, sheets, history) is kept, but will no longer show them as the owner.\n\n` +
+        `If you only want to block sign-in, use Deactivate instead — that's reversible.`
+    );
+    if (!confirmed) return;
+
+    setPendingDelete(u.id);
+    try {
+      const res = await fetch(`${API_URL}/users/${u.id}`, { method: "DELETE", headers });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Delete failed (HTTP ${res.status})`);
+      }
+      setUsers((prev) => prev.filter((x) => x.id !== u.id));
+      toast.success("User deleted", `${u.name} has been permanently removed.`);
+    } catch (e) {
+      toast.error("Couldn't delete user", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -278,6 +310,18 @@ export default function UsersPage() {
                           }`}
                         >
                           {pendingToggle === u.id ? "…" : u.is_active ? "Deactivate" : "Activate"}
+                        </button>
+                        <button
+                          onClick={() => deleteUser(u)}
+                          disabled={isSelf || pendingDelete === u.id}
+                          title={isSelf ? "You can't delete your own account" : "Delete permanently"}
+                          className="w-8 h-8 rounded-xl border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          {pendingDelete === u.id ? (
+                            <span className="text-[11px] font-bold">…</span>
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
                         </button>
                       </div>
                     </td>
