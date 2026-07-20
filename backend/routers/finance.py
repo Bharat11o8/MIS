@@ -161,8 +161,8 @@ class SheetSourceIn(BaseModel):
 
 
 def _require_admin(user: User):
-    if user.role != "superadmin":
-        raise HTTPException(status_code=403, detail="Only a superadmin can manage finance data sources")
+    if user.role not in {"superadmin", "management"}:
+        raise HTTPException(status_code=403, detail="Only a superadmin or management user can manage finance data sources")
 
 
 @router.post("/masters")

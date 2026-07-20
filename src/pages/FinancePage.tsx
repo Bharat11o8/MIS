@@ -31,7 +31,7 @@ type Statement = "balance_sheet" | "profit_loss" | "plant_ops";
 export default function FinancePage() {
   const { token, user } = useAuth();
   const headers = { Authorization: `Bearer ${token}` };
-  const isAdmin = user?.role === "superadmin";
+  const isAdmin = user?.role === "superadmin" || user?.role === "management";
   const toast = useToast();
 
   const [sources, setSources] = useState<SheetSourceItem[]>([]);
