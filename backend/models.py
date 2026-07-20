@@ -158,6 +158,31 @@ class OEVisitLog(Base):
     created_at       = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
+class OETarget(Base):
+    __tablename__ = "oe_targets"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sheet_source_id = Column(UUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="CASCADE"), nullable=False)
+    fy_year         = Column(Integer, nullable=False)   # FY start year: 2026 = FY26-27
+    quarter         = Column(Integer, nullable=False)   # 1-4, Indian FY (Q1 = AMJ)
+    period_year     = Column(Integer, nullable=False)
+    period_month    = Column(Integer, nullable=False)
+    oem             = Column(String(50), nullable=False)
+    category        = Column(String(30), nullable=True)   # 'SC' | 'MAT'
+    salesperson     = Column(String(100), nullable=False)
+    region          = Column(String(100), nullable=True)
+    tgt_nos         = Column(Numeric(14, 2), nullable=True)
+    # Money is stored in RUPEES; the source mixes rupees and crores between tabs
+    # under identical headers, so the scale is detected per block at sync and
+    # recorded in value_scale.
+    tgt_value       = Column(Numeric(18, 2), nullable=True)
+    ach_nos         = Column(Numeric(14, 2), nullable=True)
+    ach_value       = Column(Numeric(18, 2), nullable=True)
+    value_scale     = Column(String(10), nullable=True)
+    sync_log_id     = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
+    created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
 class UserModuleAccess(Base):
     __tablename__ = "user_module_access"
 

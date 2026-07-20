@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network
+from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network, oe_targets
 
 load_dotenv()
 
@@ -34,6 +34,7 @@ app.include_router(distributor_sales.router)
 app.include_router(finance.router)
 app.include_router(sheets.router)
 app.include_router(oe_network.router)
+app.include_router(oe_targets.router)
 
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/", tags=["Health"])

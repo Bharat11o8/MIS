@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   CarFront, Phone, Footprints, Building2, Users, RefreshCw, Plus, Trash2,
   Search, History, CheckCircle2, XCircle, Clock, Target, X,
-  Printer, ChevronRight, Percent,
+  Printer, ChevronRight, Percent, TrendingUp,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -12,7 +12,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
-import { formatDate } from "@/lib/format";
+import { formatCompact, formatDate } from "@/lib/format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -24,11 +24,17 @@ const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 // orange, phone calls are blue (same palette as the rest of the app).
 const VISIT_COLOR = "#f46617";
 const CALL_COLOR = "#3b82f6";
+// On the bullet charts the grey track is the goal (planned visits / the target).
+const TGT_TRACK = "#e5e7eb";
+const OVER_COLOR = "#22c55e";
+// A quarter from 90% of target up counts as on-track for the business, so the
+// target bars turn green there rather than at a literal 100%.
+const ON_TRACK_PCT = 90;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface OESource {
-  id: string; sheet_id: string; label: string; sheet_type: "visit_plan" | "log_book";
-  calendar_year: number | null; month: number | null;
+  id: string; sheet_id: string; label: string; sheet_type: "visit_plan" | "log_book" | "targets";
+  calendar_year: number | null; month: number | null; quarter: string | null;
   created_at: string | null; last_synced_at: string | null; last_sync_status: string | null;
 }
 interface SyncResult {
@@ -36,16 +42,6 @@ interface SyncResult {
   skipped_tabs: string[]; errors: string[]; status: string;
 }
 interface Period { year: number; month: number; }
-interface PlanRow {
-  id: string; salesperson: string; visit_date: string | null;
-  oem: string | null; dealer_name: string; city: string | null; state: string | null;
-}
-interface LogRow {
-  id: string; visit_date: string; salesperson: string | null; contact_mode: string | null;
-  oem: string | null; dealership: string; address: string | null; designation: string | null;
-  car_sales: number | null; seat_cover_sales: number | null; mats_sales: number | null;
-  remarks: string | null; city: string | null; state: string | null;
-}
 interface PvaRow {
   salesperson: string; log_name: string | null; planned: number; dealers_planned: number;
   visits: number; calls: number; total_logged: number; dealerships_contacted: number;
@@ -90,7 +86,29 @@ interface AttachOem {
   mats_attach_pct: number | null; avg_car_sales: number | null;
 }
 
-type TabId = "overview" | "indepth" | "plans" | "logs" | "sheets";
+/** Every targets payload carries units AND money side by side — they tell
+ *  different stories (Hyundai AMJ: 72% on units, 84% on money), so the tab
+ *  toggles between them without refetching and neither is "the" number. */
+interface TgtMetrics {
+  tgt_nos: number; ach_nos: number; tgt_value: number; ach_value: number;
+  ach_pct_nos: number | null; ach_pct_value: number | null;
+  gap_nos: number; gap_value: number;
+}
+interface TgtGroup extends TgtMetrics { key: string; region?: string | null }
+interface TgtSummary {
+  fy_year: number; quarter: number; label: string;
+  kpis: TgtMetrics;
+  by_salesperson: TgtGroup[];
+  by_oem: TgtGroup[];
+  by_oem_category: (TgtMetrics & { oem: string; key: string })[];
+  by_region: TgtGroup[];
+  by_month: (TgtMetrics & { year: number; month: number })[];
+  value_scales: Record<string, string>;
+}
+interface TgtPeriod { fy_year: number; quarter: number; token: string; label: string }
+
+type TabId = "overview" | "indepth" | "targets" | "sheets";
+type Metric = "value" | "nos";
 type PeriodMode = "monthly" | "quarterly" | "yearly";
 
 function monthToken(p: Period) { return `${p.year}-${p.month}`; }
@@ -153,6 +171,22 @@ function coverageColor(pct: number | null) {
   return "text-red-500";
 }
 
+/**
+ * Bar widths on the bullet charts stop short of the full track so the value
+ * printed at the bar's tip always has somewhere to go. Labels sit outside the
+ * bar in the bar's own colour rather than reversed out in white inside it —
+ * a white label only stays readable while it's over the fill, and the moment a
+ * bar falls short of its target the tail of the number lands on the grey track
+ * and disappears.
+ *
+ * The gutter is reserved in PIXELS, not percent: a label is a fixed width no
+ * matter how wide the card is, so a percentage reserve would quietly stop being
+ * enough on a laptop even though it looked fine on a monitor.
+ */
+const LABEL_RESERVE = 54;
+const barWidth = (n: number, max: number) =>
+  `calc(${Math.min(n / max, 1).toFixed(4)} * (100% - ${LABEL_RESERVE}px))`;
+
 function ModeBadge({ mode }: { mode: string | null }) {
   if (!mode) return <span className="text-gray-300">—</span>;
   const isVisit = mode === "Visit";
@@ -213,6 +247,91 @@ function Pagination({ page, total, perPage, onPage }: {
 
 const inputClass =
   "h-9 px-3 rounded-xl border border-gray-200 text-xs text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all";
+
+/**
+ * Target-vs-actual bullet rows, one per salesperson. Grey track = visits planned,
+ * orange fill = visits actually done (past the tick means they beat the plan),
+ * blue bar = calls, which are real work but never count toward coverage.
+ * Every bar shares one scale, so lengths are comparable across the team.
+ */
+function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
+  // Ranked best-to-worst — the point of the chart is who is off plan.
+  // "No plan" people have no coverage to rank, so they sit at the bottom.
+  const ranked = [...rows].sort((a, b) => {
+    if (a.coverage_pct == null) return b.coverage_pct == null ? 0 : 1;
+    if (b.coverage_pct == null) return -1;
+    return b.coverage_pct - a.coverage_pct;
+  });
+  const max = Math.max(1, ...rows.flatMap((r) => [r.planned, r.visits, r.calls]));
+  const w = (n: number) => barWidth(n, max);
+
+  if (ranked.length === 0) {
+    return <p className="text-xs text-gray-400 py-6 text-center">No plan or log data for this period</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3.5 pt-1">
+      {ranked.map((r) => (
+        <div key={r.salesperson} className="flex items-center gap-3">
+          <div className="w-[118px] shrink-0 min-w-0">
+            <p className="text-xs font-semibold text-gray-700 truncate"
+              title={r.log_name && r.log_name !== r.salesperson ? `${r.salesperson} · logs as ${r.log_name}` : r.salesperson}>
+              {r.salesperson}
+            </p>
+            {r.planned === 0 && <p className="text-[9px] font-bold uppercase text-amber-600">no plan</p>}
+          </div>
+
+          <div className="flex-1 min-w-0 flex flex-col gap-1">
+            {/* Visits against the plan — the grey track ends at the plan, so it
+                marks the goal on its own; only an overshoot needs a notch. */}
+            <div className="relative h-5">
+              {r.planned > 0 && (
+                <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(r.planned), background: TGT_TRACK }} />
+              )}
+              <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(r.visits), background: VISIT_COLOR }} />
+              {r.visits > r.planned && r.planned > 0 && (
+                <div className="absolute inset-y-0 w-[2px]" style={{ left: w(r.planned), background: "rgba(255,255,255,0.9)" }} />
+              )}
+              {/* Done-out-of-planned reads at the bar tip, where the eye already is. */}
+              <span className="absolute top-1/2 -translate-y-1/2 text-[9px] font-bold leading-none whitespace-nowrap"
+                style={{ left: `calc(${w(r.visits)} + 5px)`, color: VISIT_COLOR }}>
+                {r.visits}
+                {r.planned > 0 && <span className="font-semibold text-gray-400">/{r.planned}</span>}
+              </span>
+            </div>
+            {/* Calls — same scale, deliberately outside the coverage measure */}
+            <div className="relative h-2.5">
+              <div className="absolute inset-y-0 left-0 rounded" style={{ width: w(r.calls), background: CALL_COLOR }} />
+              <span className="absolute top-1/2 -translate-y-1/2 text-[9px] font-bold leading-none"
+                style={{ left: `calc(${w(r.calls)} + 5px)`, color: CALL_COLOR }}>
+                {r.calls}
+              </span>
+            </div>
+          </div>
+
+          <div className="w-[72px] shrink-0 text-right">
+            <p className={`text-sm font-black leading-none ${coverageColor(r.coverage_pct)}`}>
+              {r.coverage_pct != null ? `${r.coverage_pct}%` : "—"}
+            </p>
+            <p className="text-[9px] text-gray-400 mt-0.5">{r.dealerships_contacted} dealers</p>
+          </div>
+        </div>
+      ))}
+
+      <div className="flex items-center gap-4 flex-wrap pt-1">
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: VISIT_COLOR }} /> Visits done
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: CALL_COLOR }} /> Calls
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: TGT_TRACK }} /> Planned
+        </span>
+      </div>
+    </div>
+  );
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Overview tab — plan-vs-actual coverage + log analytics for one month
@@ -470,51 +589,12 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
           sub="contacted this period" icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
       </div>
 
-      {/* Plan vs actual table */}
-      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Plan vs Actual — by Salesperson</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
-                <th className="py-2 pr-3">Salesperson</th>
-                <th className="py-2 pr-3 text-right">Planned</th>
-                <th className="py-2 pr-3 text-right">Visits</th>
-                <th className="py-2 pr-3 text-right">Calls</th>
-                <th className="py-2 pr-3 text-right">Total Logged</th>
-                <th className="py-2 pr-3 text-right">Dealerships</th>
-                <th className="py-2 text-right">Coverage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(pva?.rows ?? []).map((r) => (
-                <tr key={r.salesperson} className="border-b border-gray-50 hover:bg-orange-50/40">
-                  <td className="py-2 pr-3 font-semibold text-gray-700">
-                    {r.salesperson}
-                    {r.log_name && r.log_name !== r.salesperson && (
-                      <span className="text-gray-400 font-normal"> · logs as {r.log_name}</span>
-                    )}
-                    {r.planned === 0 && (
-                      <span className="ml-1.5 text-[9px] font-bold uppercase text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">no plan</span>
-                    )}
-                  </td>
-                  <td className="py-2 pr-3 text-right text-gray-600">{r.planned}</td>
-                  <td className="py-2 pr-3 text-right font-semibold" style={{ color: VISIT_COLOR }}>{r.visits}</td>
-                  <td className="py-2 pr-3 text-right font-semibold" style={{ color: CALL_COLOR }}>{r.calls}</td>
-                  <td className="py-2 pr-3 text-right text-gray-600">{r.total_logged}</td>
-                  <td className="py-2 pr-3 text-right text-gray-600">{r.dealerships_contacted}</td>
-                  <td className={`py-2 text-right font-bold ${coverageColor(r.coverage_pct)}`}>
-                    {r.coverage_pct != null ? `${r.coverage_pct}%` : "—"}
-                  </td>
-                </tr>
-              ))}
-              {(pva?.rows ?? []).length === 0 && (
-                <tr><td colSpan={7} className="py-6 text-center text-gray-400">No plan or log data for this month</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <p className="text-[10px] text-gray-400 mt-2">
+      {/* Plan vs actual */}
+      <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Plan vs Actual — by Salesperson</h3>
+        <p className="text-[10px] text-gray-400 mb-1">Ranked by coverage — field visits against the advance plan</p>
+        <PlanVsActualChart rows={pva?.rows ?? []} />
+        <p className="text-[10px] text-gray-400 mt-3">
           Coverage compares field visits (not calls) against the advance plan. Names are matched across the two
           sheets automatically.
         </p>
@@ -1053,301 +1133,347 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Visit Plans tab
+// Targets tab — quarterly target vs achievement
 // ══════════════════════════════════════════════════════════════════════════════
-function PlansTab({ headers }: { headers: Record<string, string> }) {
-  const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[] } | null>(null);
-  const [months, setMonths] = useState<Period[]>([]);
-  const [month, setMonth] = useState("");
-  const [salesperson, setSalesperson] = useState("");
-  const [oem, setOem] = useState("");
-  const [state, setState] = useState("");
-  const [city, setCity] = useState("");
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [rows, setRows] = useState<PlanRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState<{ planned_visits: number; salespersons: number; dealers: number; cities: number } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const perPage = 50;
+/** Units or money out of the same row — the API sends both. */
+function pick(r: TgtMetrics, m: Metric) {
+  return m === "value"
+    ? { tgt: r.tgt_value, ach: r.ach_value, pct: r.ach_pct_value }
+    : { tgt: r.tgt_nos, ach: r.ach_nos, pct: r.ach_pct_nos };
+}
 
-  useEffect(() => {
-    (async () => {
-      const [optRes, perRes] = await Promise.all([
-        fetch(`${API_URL}/oe-network/filter-options?scope=plans`, { headers }),
-        fetch(`${API_URL}/oe-network/periods`, { headers }),
-      ]);
-      if (optRes.ok) setOptions(await optRes.json());
-      if (perRes.ok) {
-        const p = await perRes.json();
-        setMonths(p.plan_months);
-        if (p.plan_months.length) setMonth(monthToken(p.plan_months[p.plan_months.length - 1]));
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+const fmtNos = (n: number) => Math.round(n).toLocaleString("en-IN");
+const fmtBy = (m: Metric) => (m === "value" ? formatCompact : fmtNos);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
-    if (month) {
-      const [y, m] = month.split("-");
-      params.set("year", y); params.set("month", m);
-    }
-    if (salesperson) params.set("salesperson", salesperson);
-    if (oem) params.set("oem", oem);
-    if (state) params.set("state", state);
-    if (city) params.set("city", city);
-    if (q.trim()) params.set("q", q.trim());
-    const res = await fetch(`${API_URL}/oe-network/plans?${params}`, { headers });
-    if (res.ok) {
-      const data = await res.json();
-      setRows(data.data); setTotal(data.total); setSummary(data.summary);
-    }
-    setLoading(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, salesperson, oem, state, city, q, page]);
+function achColor(pct: number | null) {
+  if (pct == null) return "text-gray-400";
+  if (pct >= ON_TRACK_PCT) return "text-green-600";
+  if (pct >= 80) return "text-amber-600";
+  return "text-red-500";
+}
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { setPage(1); }, [month, salesperson, oem, state, city, q]);
+/**
+ * Target-vs-achievement bullet rows — the same idiom as Plan vs Actual on the
+ * Overview, so coverage and targets read the same way. Grey track = target,
+ * fill = achieved (green once it passes the tick), one shared scale per chart.
+ */
+function TargetBulletChart({ rows, metric }: { rows: TgtGroup[]; metric: Metric }) {
+  const fmt = fmtBy(metric);
+  const vals = rows.map((r) => pick(r, metric));
+  const max = Math.max(1, ...vals.map((v) => Math.max(v.tgt, v.ach)));
+  const w = (n: number) => barWidth(n, max);
 
-  const monthOptions = [
-    { value: "", label: "All months" },
-    ...months.map((p) => ({ value: monthToken(p), label: tokenLabel(monthToken(p)) })).reverse(),
-  ];
-  const toOpts = (arr: string[] | undefined, all: string) =>
-    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
+  if (!rows.length) {
+    return <p className="text-xs text-gray-400 py-6 text-center">Nothing to show for these filters</p>;
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      <FilterBar>
-        <Select value={month} onChange={setMonth} options={monthOptions} placeholder="Month" />
-        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
-        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
-        <Select value={city} onChange={setCity} options={toOpts(options?.cities, "All cities")} placeholder="City" />
-        <div className="relative">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search dealer…"
-            className={`${inputClass} pl-8 w-44`} />
-        </div>
-        {(salesperson || oem || state || city || q) && (
-          <button onClick={() => { setSalesperson(""); setOem(""); setState(""); setCity(""); setQ(""); }}
-            className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
-            <X size={12} /> Clear
-          </button>
-        )}
-      </FilterBar>
-
-      {/* Summary chips */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Planned Visits" value={summary?.planned_visits ?? 0} icon={<Target size={18} />} color="#a855f7" bg="#f5f3ff" />
-        <StatCard label="Salespersons" value={summary?.salespersons ?? 0} icon={<Users size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
-        <StatCard label="Unique Dealers" value={summary?.dealers ?? 0} icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
-        <StatCard label="Cities" value={summary?.cities ?? 0} icon={<CarFront size={18} />} color="#22c55e" bg="#f0fdf4" />
-      </div>
-
-      {/* Table */}
-      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        {loading ? (
-          <div className="py-10 flex justify-center"><div className="w-5 h-5 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" /></div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
-                    <th className="py-2 pr-3">Date</th>
-                    <th className="py-2 pr-3">Salesperson</th>
-                    <th className="py-2 pr-3">OEM</th>
-                    <th className="py-2 pr-3">Dealer</th>
-                    <th className="py-2 pr-3">City</th>
-                    <th className="py-2">State</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b border-gray-50 hover:bg-orange-50/40">
-                      <td className="py-2 pr-3 text-gray-500 whitespace-nowrap">{shortDate(r.visit_date)}</td>
-                      <td className="py-2 pr-3 font-semibold text-gray-700">{r.salesperson}</td>
-                      <td className="py-2 pr-3 text-gray-600">{r.oem ?? "—"}</td>
-                      <td className="py-2 pr-3 text-gray-700">{r.dealer_name}</td>
-                      <td className="py-2 pr-3 text-gray-600">{r.city ?? "—"}</td>
-                      <td className="py-2 text-gray-600">{r.state ?? "—"}</td>
-                    </tr>
-                  ))}
-                  {rows.length === 0 && (
-                    <tr><td colSpan={6} className="py-6 text-center text-gray-400">No planned visits match these filters</td></tr>
-                  )}
-                </tbody>
-              </table>
+    <div className="flex flex-col gap-3.5 pt-1">
+      {rows.map((r, i) => {
+        const { tgt, ach, pct } = vals[i];
+        // Colour says "on track" (90%+); the notch is a separate question —
+        // it only exists once the bar has actually run past the target.
+        const onTrack = pct != null && pct >= ON_TRACK_PCT;
+        const over = ach > tgt && tgt > 0;
+        const fill = onTrack ? OVER_COLOR : VISIT_COLOR;
+        return (
+          <div key={r.key} className="flex items-center gap-3">
+            <div className="w-[118px] shrink-0 min-w-0">
+              <p className="text-xs font-semibold text-gray-700 truncate" title={r.key}>{r.key}</p>
+              {r.region && <p className="text-[9px] text-gray-400 truncate" title={r.region}>{r.region}</p>}
             </div>
-            <Pagination page={page} total={total} perPage={perPage} onPage={setPage} />
-          </>
-        )}
+
+            <div className="relative h-5 flex-1 min-w-0">
+              {/* The track IS the target — where it ends is the goal, so no
+                  separate marker is needed while the bar falls short of it. */}
+              {tgt > 0 && (
+                <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(tgt), background: TGT_TRACK }} />
+              )}
+              <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(ach), background: fill }} />
+              {/* Overshot the target: the bar has swallowed the track, so notch
+                  the goal back on top of it. */}
+              {over && (
+                <div className="absolute inset-y-0 w-[2px]" style={{ left: w(tgt), background: "rgba(255,255,255,0.9)" }} />
+              )}
+              <span className="absolute top-1/2 -translate-y-1/2 text-[9px] font-bold leading-none whitespace-nowrap"
+                style={{ left: `calc(${w(ach)} + 5px)`, color: fill }}>
+                {fmt(ach)}
+              </span>
+            </div>
+
+            <div className="w-[78px] shrink-0 text-right">
+              <p className={`text-sm font-black leading-none ${achColor(pct)}`}>
+                {pct != null ? `${pct}%` : "—"}
+              </p>
+              <p className="text-[9px] text-gray-400 mt-0.5">of {fmt(tgt)}</p>
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-4 flex-wrap pt-1">
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: OVER_COLOR }} />
+          On track — {ON_TRACK_PCT}% of target or better
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: VISIT_COLOR }} />
+          Behind — under {ON_TRACK_PCT}%
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: TGT_TRACK }} /> Target
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-[2px] h-3 bg-gray-400 rounded" /> Target mark, once beaten
+        </span>
       </div>
     </div>
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Log Book tab
-// ══════════════════════════════════════════════════════════════════════════════
-function LogsTab({ headers }: { headers: Record<string, string> }) {
-  const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[]; contact_modes: string[] } | null>(null);
-  const [months, setMonths] = useState<Period[]>([]);
-  const [month, setMonth] = useState("");
-  const [salesperson, setSalesperson] = useState("");
+function TargetsTab({ headers }: { headers: Record<string, string> }) {
+  const [periods, setPeriods] = useState<TgtPeriod[]>([]);
+  const [token, setToken] = useState("");
+  const [options, setOptions] = useState<{ oems: string[]; categories: string[]; salespersons: string[]; regions: string[] } | null>(null);
+  const [metric, setMetric] = useState<Metric>("value");
   const [oem, setOem] = useState("");
-  const [state, setState] = useState("");
-  const [mode, setMode] = useState("");
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [rows, setRows] = useState<LogRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState<{ total_logs: number; visits: number; calls: number; dealerships: number } | null>(null);
+  const [category, setCategory] = useState("");
+  const [salesperson, setSalesperson] = useState("");
+  const [region, setRegion] = useState("");
+  const [data, setData] = useState<TgtSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const perPage = 50;
+  const [empty, setEmpty] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [optRes, perRes] = await Promise.all([
-        fetch(`${API_URL}/oe-network/filter-options?scope=logs`, { headers }),
-        fetch(`${API_URL}/oe-network/periods`, { headers }),
+      const [perRes, optRes] = await Promise.all([
+        fetch(`${API_URL}/oe-network/targets/periods`, { headers }),
+        fetch(`${API_URL}/oe-network/targets/filter-options`, { headers }),
       ]);
       if (optRes.ok) setOptions(await optRes.json());
       if (perRes.ok) {
-        const p = await perRes.json();
-        setMonths(p.log_months);
-        if (p.log_months.length) setMonth(monthToken(p.log_months[p.log_months.length - 1]));
+        const p: TgtPeriod[] = await perRes.json();
+        setPeriods(p);
+        if (p.length) setToken(p[0].token);
+        else { setEmpty(true); setLoading(false); }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
-    if (month) {
-      const [y, m] = month.split("-");
-      params.set("year", y); params.set("month", m);
-    }
-    if (salesperson) params.set("salesperson", salesperson);
+  useEffect(() => {
+    if (!token) return;
+    const [fy, q] = token.split("-Q");
+    const params = new URLSearchParams({ fy_year: fy, quarter: q });
     if (oem) params.set("oem", oem);
-    if (state) params.set("state", state);
-    if (mode) params.set("contact_mode", mode);
-    if (q.trim()) params.set("q", q.trim());
-    const res = await fetch(`${API_URL}/oe-network/logs?${params}`, { headers });
-    if (res.ok) {
-      const data = await res.json();
-      setRows(data.data); setTotal(data.total); setSummary(data.summary);
-    }
-    setLoading(false);
+    if (category) params.set("category", category);
+    if (salesperson) params.set("salesperson", salesperson);
+    if (region) params.set("region", region);
+    setLoading(true);
+    (async () => {
+      const res = await fetch(`${API_URL}/oe-network/targets/summary?${params}`, { headers });
+      setData(res.ok ? await res.json() : null);
+      setLoading(false);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, salesperson, oem, state, mode, q, page]);
+  }, [token, oem, category, salesperson, region]);
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { setPage(1); }, [month, salesperson, oem, state, mode, q]);
-
-  const monthOptions = [
-    { value: "", label: "All time" },
-    ...months.map((p) => ({ value: monthToken(p), label: tokenLabel(monthToken(p)) })).reverse(),
-  ];
   const toOpts = (arr: string[] | undefined, all: string) =>
     [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
+  const hasFilters = Boolean(oem || category || salesperson || region);
+  const fmt = fmtBy(metric);
+  const k = data?.kpis;
+  const kv = k ? pick(k, metric) : null;
+
+  // A crore-scaled block can only express ₹0.01 Cr, i.e. ₹1 lakh — worth saying
+  // out loud when someone reconciles a total against the sheet to the rupee.
+  const croreOems = Object.entries(data?.value_scales ?? {})
+    .filter(([, s]) => s === "crores").map(([o]) => o);
+
+  if (empty) {
+    return (
+      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
+        No target data yet — register a quarter's target sheet from the <b>Sheets</b> tab.
+      </div>
+    );
+  }
+
+  const monthChart = (data?.by_month ?? []).map((m) => {
+    const v = pick(m, metric);
+    return { name: `${MONTH_SHORT[m.month - 1]} ${String(m.year).slice(2)}`, Target: v.tgt, Achieved: v.ach };
+  });
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <FilterBar>
-        <Select value={month} onChange={setMonth} options={monthOptions} placeholder="Month" />
-        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
-        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
-        <Select value={mode} onChange={setMode} options={toOpts(options?.contact_modes, "Visits + Calls")} placeholder="Mode" />
-        <div className="relative">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search dealership…"
-            className={`${inputClass} pl-8 w-44`} />
+        <Select value={token} onChange={setToken}
+          options={periods.map((p) => ({ value: p.token, label: p.label }))} placeholder="Quarter…" />
+        <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
+          {(["value", "nos"] as Metric[]).map((m) => (
+            <button key={m} onClick={() => setMetric(m)}
+              className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all ${
+                metric === m ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              {m === "value" ? "Value" : "Units"}
+            </button>
+          ))}
         </div>
-        {(salesperson || oem || state || mode || q) && (
-          <button onClick={() => { setSalesperson(""); setOem(""); setState(""); setMode(""); setQ(""); }}
+        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
+        <Select value={category} onChange={setCategory}
+          options={[{ value: "", label: "All products" },
+                    ...(options?.categories ?? []).map((c) => ({ value: c, label: c === "SC" ? "Seat Covers" : c === "MAT" ? "Mats" : c }))]}
+          placeholder="Product" />
+        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
+        <Select value={region} onChange={setRegion} options={toOpts(options?.regions, "All regions")} placeholder="Region" />
+        {hasFilters && (
+          <button onClick={() => { setOem(""); setCategory(""); setSalesperson(""); setRegion(""); }}
             className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
             <X size={12} /> Clear
           </button>
         )}
+        {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
+        <button onClick={() => window.print()}
+          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+          <Printer size={12} /> PDF
+        </button>
       </FilterBar>
 
-      {/* Summary chips */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Total Logged" value={summary?.total_logs ?? 0} icon={<History size={18} />} color="#a855f7" bg="#f5f3ff" />
-        <StatCard label="Visits" value={summary?.visits ?? 0} icon={<Footprints size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
-        <StatCard label="Calls" value={summary?.calls ?? 0} icon={<Phone size={18} />} color={CALL_COLOR} bg="#eff6ff" />
-        <StatCard label="Dealerships" value={summary?.dealerships ?? 0} icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
+      <div className="print-only">
+        <p className="text-sm font-bold text-gray-900">
+          Target vs Achievement · {data?.label ?? ""} · {metric === "value" ? "Value" : "Units"}
+          {oem && ` · ${oem}`}{category && ` · ${category}`}{salesperson && ` · ${salesperson}`}{region && ` · ${region}`}
+        </p>
       </div>
 
-      {/* Table */}
-      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        {loading ? (
-          <div className="py-10 flex justify-center"><div className="w-5 h-5 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" /></div>
-        ) : (
-          <>
+      {!data && !loading ? (
+        <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
+          No target data matches these filters.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label={metric === "value" ? "Target Value" : "Target Units"}
+              value={kv ? fmt(kv.tgt) : "—"} icon={<Target size={18} />} color="#a855f7" bg="#f5f3ff" />
+            <StatCard label={metric === "value" ? "Achieved Value" : "Achieved Units"}
+              value={kv ? fmt(kv.ach) : "—"} icon={<TrendingUp size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
+            <StatCard label="Achievement" value={kv?.pct != null ? `${kv.pct}%` : "—"}
+              sub={metric === "value" ? "on value" : "on units"}
+              icon={<Percent size={18} />} color={(kv?.pct ?? 0) >= ON_TRACK_PCT ? OVER_COLOR : "#f59e0b"}
+              bg={(kv?.pct ?? 0) >= ON_TRACK_PCT ? "#f0fdf4" : "#fffbeb"} />
+            <StatCard label="Gap"
+              value={kv ? `${kv.ach - kv.tgt >= 0 ? "+" : "−"}${fmt(Math.abs(kv.ach - kv.tgt))}` : "—"}
+              sub={kv && kv.ach >= kv.tgt ? "ahead of target" : "short of target"}
+              icon={<Building2 size={18} />} color={kv && kv.ach >= kv.tgt ? "#22c55e" : "#ef4444"}
+              bg={kv && kv.ach >= kv.tgt ? "#f0fdf4" : "#fef2f2"} />
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By Salesperson</h3>
+              <p className="text-[10px] text-gray-400 mb-1">Ranked by target size</p>
+              <TargetBulletChart rows={data?.by_salesperson ?? []} metric={metric} />
+            </div>
+
+            <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By OEM</h3>
+              <p className="text-[10px] text-gray-400 mb-1">TATA's seat covers and mats are clubbed — use the Product filter to split them</p>
+              <TargetBulletChart rows={data?.by_oem ?? []} metric={metric} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Month by Month</h3>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={monthChart} margin={{ top: 18, right: 8, left: -12, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval={0} />
+                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
+                    tickFormatter={(v: number) => (metric === "value" ? formatCompact(v).replace("₹", "") : fmtNos(v))} />
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }}
+                    formatter={(v: number) => fmt(v)} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Bar dataKey="Target" fill={TGT_TRACK} radius={[4, 4, 0, 0]}>
+                    <LabelList dataKey="Target" position="top" fill="#9ca3af" fontSize={9} fontWeight={700}
+                      formatter={(v: number) => fmt(v)} />
+                  </Bar>
+                  <Bar dataKey="Achieved" fill={VISIT_COLOR} radius={[4, 4, 0, 0]}>
+                    <LabelList dataKey="Achieved" position="top" fill="#6b7280" fontSize={9} fontWeight={700}
+                      formatter={(v: number) => fmt(v)} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By Region</h3>
+              <p className="text-[10px] text-gray-400 mb-1">Regions come from the sheet's own "NAME- REGION" column</p>
+              <TargetBulletChart rows={data?.by_region ?? []} metric={metric} />
+            </div>
+          </div>
+
+          {/* Product split — the detail behind the clubbed OEM view */}
+          <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">OEM × Product</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
-                    <th className="py-2 pr-3">Date</th>
-                    <th className="py-2 pr-3">Salesperson</th>
-                    <th className="py-2 pr-3">Mode</th>
                     <th className="py-2 pr-3">OEM</th>
-                    <th className="py-2 pr-3">Dealership</th>
-                    <th className="py-2 pr-3">City</th>
-                    <th className="py-2 pr-3">State</th>
-                    <th className="py-2 pr-3 text-right" title="Dealer's reported monthly car sales">Cars</th>
-                    <th className="py-2 pr-3 text-right" title="Dealer's reported monthly seat cover sales">Seat Covers</th>
-                    <th className="py-2 pr-3 text-right" title="Dealer's reported monthly mats sales">Mats</th>
-                    <th className="py-2">Remarks</th>
+                    <th className="py-2 pr-3">Product</th>
+                    <th className="py-2 pr-3 text-right">Target</th>
+                    <th className="py-2 pr-3 text-right">Achieved</th>
+                    <th className="py-2 pr-3 text-right">Gap</th>
+                    <th className="py-2 text-right">Achievement</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b border-gray-50 hover:bg-orange-50/40 align-top">
-                      <td className="py-2 pr-3 text-gray-500 whitespace-nowrap">{shortDate(r.visit_date)}</td>
-                      <td className="py-2 pr-3 font-semibold text-gray-700 whitespace-nowrap">{r.salesperson ?? "—"}</td>
-                      <td className="py-2 pr-3"><ModeBadge mode={r.contact_mode} /></td>
-                      <td className="py-2 pr-3 text-gray-600">{r.oem ?? "—"}</td>
-                      <td className="py-2 pr-3 text-gray-700 min-w-[140px]">{r.dealership}</td>
-                      <td className="py-2 pr-3 text-gray-600">{r.city ?? "—"}</td>
-                      <td className="py-2 pr-3 text-gray-600 whitespace-nowrap">{r.state ?? "—"}</td>
-                      <td className="py-2 pr-3 text-right text-gray-600">{r.car_sales ?? "—"}</td>
-                      <td className="py-2 pr-3 text-right text-gray-600">{r.seat_cover_sales ?? "—"}</td>
-                      <td className="py-2 pr-3 text-right text-gray-600">{r.mats_sales ?? "—"}</td>
-                      <td className="py-2 text-gray-500 max-w-[240px]">
-                        <span className="line-clamp-2" title={r.remarks ?? undefined}>{r.remarks ?? "—"}</span>
-                      </td>
-                    </tr>
-                  ))}
-                  {rows.length === 0 && (
-                    <tr><td colSpan={11} className="py-6 text-center text-gray-400">No log entries match these filters</td></tr>
-                  )}
+                  {(data?.by_oem_category ?? []).map((r, i) => {
+                    const v = pick(r, metric);
+                    return (
+                      <tr key={i} className="border-b border-gray-50 hover:bg-orange-50/40">
+                        <td className="py-2 pr-3 font-semibold text-gray-700">{r.oem}</td>
+                        <td className="py-2 pr-3 text-gray-500">
+                          {r.key === "SC" ? "Seat Covers" : r.key === "MAT" ? "Mats" : r.key ?? "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-right text-gray-600">{fmt(v.tgt)}</td>
+                        <td className="py-2 pr-3 text-right font-semibold" style={{ color: VISIT_COLOR }}>{fmt(v.ach)}</td>
+                        <td className={`py-2 pr-3 text-right font-semibold ${v.ach >= v.tgt ? "text-green-600" : "text-red-500"}`}>
+                          {v.ach - v.tgt >= 0 ? "+" : "−"}{fmt(Math.abs(v.ach - v.tgt))}
+                        </td>
+                        <td className={`py-2 text-right font-bold ${achColor(v.pct)}`}>
+                          {v.pct != null ? `${v.pct}%` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-            <Pagination page={page} total={total} perPage={perPage} onPage={setPage} />
-          </>
-        )}
-      </div>
+            {croreOems.length > 0 && metric === "value" && (
+              <p className="text-[10px] text-gray-400 mt-3">
+                {croreOems.join(", ")} are entered in the source sheet in crores to two decimals, so their money
+                figures carry a ±₹1 lakh rounding per cell. Unit counts are exact.
+              </p>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Sheets tab — registry + sync for both sheet types
+// Sheets tab — registry + sync for all three sheet types
 // ══════════════════════════════════════════════════════════════════════════════
 interface HistoryItem {
   id: string; sheet_type: string; source_label: string; rows_total: number;
   rows_inserted: number; rows_failed: number; rows_deleted: number;
   status: string; synced_at: string | null;
 }
+
+const SHEET_TYPE_LABELS: Record<string, string> = {
+  visit_plan: "Visit Plan", log_book: "Log Book", targets: "Targets",
+};
 
 function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const toast = useToast();
@@ -1365,6 +1491,11 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const [planYear, setPlanYear] = useState(String(now.getFullYear()));
   const [showAddLog, setShowAddLog] = useState(false);
   const [logLink, setLogLink] = useState("");
+  const [showAddTgt, setShowAddTgt] = useState(false);
+  const [tgtLink, setTgtLink] = useState("");
+  // Default to the quarter and FY the current month sits in (Indian FY, Apr–Mar).
+  const [tgtQuarter, setTgtQuarter] = useState(`Q${Math.floor(((now.getMonth() + 9) % 12) / 3) + 1}`);
+  const [tgtFy, setTgtFy] = useState(String(now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1));
   const [adding, setAdding] = useState(false);
 
   const loadSources = useCallback(async () => {
@@ -1414,8 +1545,8 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
     }
   };
 
-  const handleAdd = async (sheetType: "visit_plan" | "log_book") => {
-    const link = sheetType === "visit_plan" ? planLink : logLink;
+  const handleAdd = async (sheetType: "visit_plan" | "log_book" | "targets") => {
+    const link = sheetType === "visit_plan" ? planLink : sheetType === "targets" ? tgtLink : logLink;
     if (!link.trim()) return;
     setAdding(true);
     try {
@@ -1423,6 +1554,9 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
       if (sheetType === "visit_plan") {
         body.month = Number(planMonth);
         body.year = Number(planYear);
+      } else if (sheetType === "targets") {
+        body.quarter = tgtQuarter;
+        body.year = Number(tgtFy);   // FY start year
       }
       const res = await fetch(`${API_URL}/oe-network/sheet-sources`, {
         method: "POST", headers: { ...headers, "Content-Type": "application/json" },
@@ -1432,6 +1566,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
       if (!res.ok) throw new Error(data.detail ?? "Could not add sheet");
       toast.success("Sheet registered", data.label);
       if (sheetType === "visit_plan") { setShowAddPlan(false); setPlanLink(""); }
+      else if (sheetType === "targets") { setShowAddTgt(false); setTgtLink(""); }
       else { setShowAddLog(false); setLogLink(""); }
       await loadSources();
       // First sync right away, like every other sheet module.
@@ -1445,10 +1580,17 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 
   const planSources = sources.filter((s) => s.sheet_type === "visit_plan");
   const logSources = sources.filter((s) => s.sheet_type === "log_book");
+  const tgtSources = sources.filter((s) => s.sheet_type === "targets");
 
   const monthOptions = MONTH_FULL.map((m, i) => ({ value: String(i + 1), label: m }));
   const yearOptions = Array.from({ length: 4 }, (_, i) => now.getFullYear() - 2 + i)
     .map((y) => ({ value: String(y), label: String(y) }));
+  const quarterOptions = [
+    { value: "Q1", label: "Q1 — AMJ" }, { value: "Q2", label: "Q2 — JAS" },
+    { value: "Q3", label: "Q3 — OND" }, { value: "Q4", label: "Q4 — JFM" },
+  ];
+  const fyOptions = Array.from({ length: 4 }, (_, i) => now.getFullYear() - 2 + i)
+    .map((y) => ({ value: String(y), label: `FY${y % 100}-${(y + 1) % 100}` }));
 
   const statusIcon = (status: string | null) => {
     if (status === "Done") return <CheckCircle2 size={13} className="text-green-500" />;
@@ -1553,6 +1695,43 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         </div>
       </div>
 
+      {/* Quarterly targets */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Quarterly Targets</h3>
+            <p className="text-[10px] text-gray-400">
+              One sheet per quarter — OEM blocks are found by their headers, and money in crores is converted automatically
+            </p>
+          </div>
+          <button onClick={() => setShowAddTgt(!showAddTgt)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+            <Plus size={13} /> Add Quarter
+          </button>
+        </div>
+        <AnimatePresence>
+          {showAddTgt && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <div className="bg-orange-50/50 rounded-xl p-3 my-2 flex flex-col gap-2">
+                <input value={tgtLink} onChange={(e) => setTgtLink(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/…" className={inputClass} />
+                <div className="flex gap-2">
+                  <Select value={tgtQuarter} onChange={setTgtQuarter} options={quarterOptions} className="flex-1" />
+                  <Select value={tgtFy} onChange={setTgtFy} options={fyOptions} />
+                  <button onClick={() => handleAdd("targets")} disabled={adding || !tgtLink.trim()}
+                    className="text-xs font-semibold text-white px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+                    {adding ? "Adding…" : "Add & Sync"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {tgtSources.length
+          ? tgtSources.map(sourceRow)
+          : <p className="text-xs text-gray-400 py-3">No target sheets registered yet.</p>}
+      </div>
+
       {/* Last sync result */}
       {lastResult && (
         <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
@@ -1597,7 +1776,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
               {history.map((h) => (
                 <tr key={h.id} className="border-b border-gray-50">
                   <td className="py-2 pr-3 text-gray-700 font-medium">{h.source_label}</td>
-                  <td className="py-2 pr-3 text-gray-500">{h.sheet_type === "visit_plan" ? "Visit Plan" : "Log Book"}</td>
+                  <td className="py-2 pr-3 text-gray-500">{SHEET_TYPE_LABELS[h.sheet_type] ?? h.sheet_type}</td>
                   <td className="py-2 pr-3 text-right text-gray-600">{h.rows_inserted}</td>
                   <td className="py-2 pr-3 text-right text-gray-600">{h.rows_deleted}</td>
                   <td className="py-2 pr-3">
@@ -1623,19 +1802,20 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // Page shell
 // ══════════════════════════════════════════════════════════════════════════════
+// In-Depth is built but parked — add { id: "indepth", label: "In-Depth" } back
+// here to show the tab again. Raw plan/log row listings were dropped on purpose:
+// this page is for visualisation, and a flat filterable table is what the source
+// spreadsheet already does better.
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "indepth", label: "In-Depth" },
-  { id: "plans", label: "Visit Plans" },
-  { id: "logs", label: "Log Book" },
+  { id: "targets", label: "Targets" },
   { id: "sheets", label: "Sheets" },
 ];
 
 const TAB_SUBTITLES: Record<TabId, string> = {
   overview: "Plan coverage and field activity",
   indepth: "Dealer network health, plan adherence and attach rates",
-  plans: "Advance dealer visit plans by month",
-  logs: "Dealership visits and calls from the field team",
+  targets: "Quarterly target vs achievement by salesperson and OEM",
   sheets: "Connect and sync the source Google Sheets",
 };
 
@@ -1679,8 +1859,7 @@ export default function OENetworkPage() {
 
       {activeTab === "overview" && <OverviewTab headers={headers} />}
       {activeTab === "indepth" && <InDepthTab headers={headers} />}
-      {activeTab === "plans" && <PlansTab headers={headers} />}
-      {activeTab === "logs" && <LogsTab headers={headers} />}
+      {activeTab === "targets" && <TargetsTab headers={headers} />}
       {activeTab === "sheets" && <SheetsTab headers={headers} />}
     </div>
   );

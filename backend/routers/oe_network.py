@@ -1,10 +1,13 @@
 """
 AutoForm MIS — OE Network Sales Router
-Two sheet types under one module: monthly Advance Visit Plan spreadsheets
-(one per calendar month, salesperson tabs) and the continuous Log Book
-form-responses spreadsheet. Registry + manual sync follow the standard
-sheet_sources pattern; data endpoints are filter-first (plans list, logs list,
-log analytics, plan-vs-actual coverage per salesperson).
+Three sheet types under one module ("oe_network" permission key):
+  • oe_visit_plan — one spreadsheet per calendar month, one tab per salesperson
+  • oe_log_book   — one continuous Form-responses spreadsheet
+  • oe_targets    — one spreadsheet per quarter, stacked OEM blocks per tab
+Registry + manual sync follow the standard sheet_sources pattern; data endpoints
+are filter-first (plans list, logs list, log analytics, plan-vs-actual coverage,
+dealer directory, dealer-level plan adherence). Target analytics live in
+routers/oe_targets.py; this file owns the registry and sync for all three.
 """
 import re
 import uuid
@@ -19,6 +22,7 @@ from models import SheetSource, SyncLog, User
 from routers.auth import get_current_user
 from services.google_sheets import extract_sheet_id
 from services.oe_network_sync import parse_visit_plan, parse_log_book
+from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.permissions import require_module
 
 router = APIRouter(prefix="/oe-network", tags=["OE Network"])
@@ -26,9 +30,17 @@ router = APIRouter(prefix="/oe-network", tags=["OE Network"])
 MODULE_KEY = "oe_network"
 MODULE_PLAN = "oe_visit_plan"
 MODULE_LOG = "oe_log_book"
+MODULE_TGT = "oe_targets"
+OE_MODULES = (MODULE_PLAN, MODULE_LOG, MODULE_TGT)
+
+# sheet_sources.quarter is VARCHAR(2) holding 'Q1'..'Q4' (Depot-to-Distributor
+# set that convention); OE targets reuse it rather than add a second column.
+QUARTERS = ("Q1", "Q2", "Q3", "Q4")
 
 _MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
                 "July", "August", "September", "October", "November", "December"]
+
+_SHEET_TYPES = {MODULE_PLAN: "visit_plan", MODULE_LOG: "log_book", MODULE_TGT: "targets"}
 
 
 def _require_access(db: Session, current_user: User):
@@ -36,7 +48,7 @@ def _require_access(db: Session, current_user: User):
 
 
 def _sheet_type(module: str) -> str:
-    return "visit_plan" if module == MODULE_PLAN else "log_book"
+    return _SHEET_TYPES.get(module, module)
 
 
 # ── Salesperson matching (plan tabs say "PANKAJ", the form says "PANKAJ VIG") ──
@@ -79,9 +91,10 @@ def _dealer_match_score(a_tokens: set, b_tokens: set) -> int:
 
 class SheetSourceIn(BaseModel):
     sheet_url_or_id: str
-    sheet_type: str                      # 'visit_plan' | 'log_book'
-    year: Optional[int] = None           # visit_plan only
+    sheet_type: str                      # 'visit_plan' | 'log_book' | 'targets'
+    year: Optional[int] = None           # visit_plan: calendar year; targets: FY start year
     month: Optional[int] = None          # visit_plan only
+    quarter: Optional[str] = None        # targets only — 'Q1'..'Q4'
 
 
 @router.post("/sheet-sources")
@@ -92,6 +105,7 @@ def add_sheet_source(
 ):
     _require_access(db, current_user)
 
+    quarter = None
     if body.sheet_type == "visit_plan":
         if body.year is None or body.month is None:
             raise HTTPException(status_code=400, detail="Visit plan sheets need a month and a year")
@@ -107,8 +121,21 @@ def add_sheet_source(
         module = MODULE_LOG
         label = "OE Log Book"
         calendar_year, month = None, None
+    elif body.sheet_type == "targets":
+        if body.year is None or body.quarter is None:
+            raise HTTPException(status_code=400, detail="Target sheets need a quarter and a financial year")
+        if body.quarter not in QUARTERS:
+            raise HTTPException(status_code=400, detail="quarter must be one of Q1, Q2, Q3, Q4")
+        if not (2020 <= body.year <= 2100):
+            raise HTTPException(status_code=400, detail="year must be between 2020 and 2100")
+        module = MODULE_TGT
+        q_no = int(body.quarter[1])
+        # year is the FY START year: FY26-27 => 2026. Label carries the quarter
+        # tag the team actually says out loud ("AMJ"), not just "Q1".
+        label = f"Targets — {QUARTER_TAGS[q_no]} FY{body.year % 100:02d}-{(body.year + 1) % 100:02d}"
+        calendar_year, month, quarter = body.year, None, body.quarter
     else:
-        raise HTTPException(status_code=400, detail="sheet_type must be visit_plan or log_book")
+        raise HTTPException(status_code=400, detail="sheet_type must be visit_plan, log_book or targets")
 
     source = SheetSource(
         id=uuid.uuid4(),
@@ -117,6 +144,7 @@ def add_sheet_source(
         label=label,
         calendar_year=calendar_year,
         month=month,
+        quarter=quarter,
         created_by=current_user.id,
     )
     db.add(source)
@@ -139,7 +167,7 @@ def _source_out(db: Session, s: SheetSource) -> dict:
     return {
         "id": str(s.id), "sheet_id": s.sheet_id, "label": s.label,
         "sheet_type": _sheet_type(s.module),
-        "calendar_year": s.calendar_year, "month": s.month,
+        "calendar_year": s.calendar_year, "month": s.month, "quarter": s.quarter,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "last_synced_at": last_log.synced_at.isoformat() if last_log and last_log.synced_at else None,
         "last_sync_status": last_log.status if last_log else None,
@@ -154,8 +182,9 @@ def list_sheet_sources(
     _require_access(db, current_user)
     sources = (
         db.query(SheetSource)
-        .filter(SheetSource.module.in_((MODULE_PLAN, MODULE_LOG)))
-        .order_by(SheetSource.module, SheetSource.calendar_year.desc(), SheetSource.month.desc())
+        .filter(SheetSource.module.in_(OE_MODULES))
+        .order_by(SheetSource.module, SheetSource.calendar_year.desc(),
+                  SheetSource.month.desc(), SheetSource.quarter.desc())
         .all()
     )
     return [_source_out(db, s) for s in sources]
@@ -169,11 +198,11 @@ def delete_sheet_source(
 ):
     _require_access(db, current_user)
     source = db.query(SheetSource).filter(
-        SheetSource.id == source_id, SheetSource.module.in_((MODULE_PLAN, MODULE_LOG))
+        SheetSource.id == source_id, SheetSource.module.in_(OE_MODULES)
     ).first()
     if not source:
         raise HTTPException(status_code=404, detail="Sheet source not found")
-    table = "oe_visit_plans" if source.module == MODULE_PLAN else "oe_visit_logs"
+    table = _DATA_TABLES[source.module]
     rows_deleted = db.execute(
         text(f"SELECT COUNT(*) FROM {table} WHERE sheet_source_id = :sid"), {"sid": str(source.id)}
     ).scalar()
@@ -205,6 +234,24 @@ _LOG_INSERT = text("""
          :car_sales, :seat_cover_sales, :mats_sales, :remarks, :city, :state, :sync_log_id)
 """)
 
+_TGT_INSERT = text("""
+    INSERT INTO oe_targets
+        (id, sheet_source_id, fy_year, quarter, period_year, period_month,
+         oem, category, salesperson, region,
+         tgt_nos, tgt_value, ach_nos, ach_value, value_scale, sync_log_id)
+    VALUES
+        (:id, :sheet_source_id, :fy_year, :quarter, :period_year, :period_month,
+         :oem, :category, :salesperson, :region,
+         :tgt_nos, :tgt_value, :ach_nos, :ach_value, :value_scale, :sync_log_id)
+""")
+
+_DATA_TABLES = {
+    MODULE_PLAN: "oe_visit_plans",
+    MODULE_LOG: "oe_visit_logs",
+    MODULE_TGT: "oe_targets",
+}
+_INSERTS = {MODULE_PLAN: _PLAN_INSERT, MODULE_LOG: _LOG_INSERT, MODULE_TGT: _TGT_INSERT}
+
 
 def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
     log = SyncLog(
@@ -223,6 +270,10 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
             records, skipped_tabs, errors = parse_visit_plan(
                 source.sheet_id, source.calendar_year, source.month
             )
+        elif source.module == MODULE_TGT:
+            records, skipped_tabs, errors = parse_targets(
+                source.sheet_id, source.calendar_year, int(source.quarter[1])
+            )
         else:
             records, skipped_tabs, errors = parse_log_book(source.sheet_id)
     except Exception as e:
@@ -231,8 +282,8 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
         db.commit()
         raise HTTPException(status_code=502, detail=f"Could not sync from Google Sheets: {e}")
 
-    table = "oe_visit_plans" if source.module == MODULE_PLAN else "oe_visit_logs"
-    insert_sql = _PLAN_INSERT if source.module == MODULE_PLAN else _LOG_INSERT
+    table = _DATA_TABLES[source.module]
+    insert_sql = _INSERTS[source.module]
 
     # Full-replace in ONE transaction: rows removed from the sheet disappear
     # here too, and a mid-sync failure can never leave the table half-wiped.
@@ -285,7 +336,7 @@ def sync_sheet_source(
 ):
     _require_access(db, current_user)
     source = db.query(SheetSource).filter(
-        SheetSource.id == source_id, SheetSource.module.in_((MODULE_PLAN, MODULE_LOG))
+        SheetSource.id == source_id, SheetSource.module.in_(OE_MODULES)
     ).first()
     if not source:
         raise HTTPException(status_code=404, detail="Sheet source not found")
@@ -298,8 +349,8 @@ def sync_latest(
     current_user: User = Depends(get_current_user),
 ):
     """One-click refresh for the Overview: the log book keeps growing daily and
-    only the newest visit-plan month still changes, so those are the sheets
-    worth re-pulling — old plan months are frozen history."""
+    only the newest visit-plan month and target quarter still change, so those
+    are the sheets worth re-pulling — earlier periods are frozen history."""
     _require_access(db, current_user)
     sources = db.query(SheetSource).filter(SheetSource.module == MODULE_LOG).all()
     newest_plan = (
@@ -310,6 +361,14 @@ def sync_latest(
     )
     if newest_plan:
         sources.append(newest_plan)
+    newest_targets = (
+        db.query(SheetSource)
+        .filter(SheetSource.module == MODULE_TGT)
+        .order_by(SheetSource.calendar_year.desc(), SheetSource.quarter.desc())
+        .first()
+    )
+    if newest_targets:
+        sources.append(newest_targets)
     if not sources:
         raise HTTPException(status_code=400, detail="No sheets registered yet")
 
@@ -1099,11 +1158,11 @@ def sync_history(
 ):
     _require_access(db, current_user)
     # Map sheet_id → label so history rows say "Visit Plan — July 2026", not an opaque ID.
-    sources = db.query(SheetSource).filter(SheetSource.module.in_((MODULE_PLAN, MODULE_LOG))).all()
+    sources = db.query(SheetSource).filter(SheetSource.module.in_(OE_MODULES)).all()
     labels = {s.sheet_id: s.label for s in sources}
     logs = (
         db.query(SyncLog)
-        .filter(SyncLog.module.in_((MODULE_PLAN, MODULE_LOG)))
+        .filter(SyncLog.module.in_(OE_MODULES))
         .order_by(SyncLog.synced_at.desc())
         .limit(50)
         .all()
