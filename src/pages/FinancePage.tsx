@@ -173,15 +173,19 @@ export default function FinancePage() {
         <div className="text-[11px] text-gray-400">Generated {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
       </div>
 
-      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="no-print flex items-end justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="flex items-center gap-3"><span className="page-title-dark">FINANCE</span></h1>
-          <div className="flex items-center gap-2 mt-1">
-            <div className="w-8 h-0.5 bg-gray-800 rounded" />
-            <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Balance Sheet · Profit & Loss · Plant Operations, per company</p>
-          </div>
+      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="no-print">
+        <h1 className="flex items-center gap-3"><span className="page-title-dark">FINANCE</span></h1>
+        <div className="flex items-center gap-2 mt-1">
+          <div className="w-8 h-0.5 bg-gray-800 rounded" />
+          <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Balance Sheet · Profit & Loss · Plant Operations, per company</p>
         </div>
+      </motion.div>
+
+      {/* Statement switcher — sticky so it stays reachable while scrolling a long dashboard.
+          Its own scroll-column child (not nested in the header) so it stays pinned for the
+          whole page; h-14 + top-2 give it a fixed footprint that DashboardControls tops out below. */}
+      <div className="no-print sticky top-2 z-30 h-14 -mx-6 px-6 flex items-center justify-end bg-white/85 backdrop-blur border-b border-[#EAE3D6]">
         <div className="flex items-center bg-gray-100 rounded-xl p-1">
           {([["balance_sheet", "Balance Sheet"], ["profit_loss", "P&L"], ["plant_ops", "Plant Ops"]] as [Statement, string][]).map(([key, label]) => (
             <button key={key} onClick={() => setStatement(key)}
@@ -190,7 +194,7 @@ export default function FinancePage() {
             </button>
           ))}
         </div>
-      </motion.div>
+      </div>
 
       {/* Company selector (view) */}
       <div className="no-print flex items-center justify-between flex-wrap gap-3">

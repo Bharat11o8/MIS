@@ -24,6 +24,7 @@ from services.google_sheets import extract_sheet_id
 from services.oe_network_sync import parse_visit_plan, parse_log_book
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.permissions import require_module
+from services.remark_themes import classify as classify_remark, THEMES, is_theme
 
 router = APIRouter(prefix="/oe-network", tags=["OE Network"])
 
@@ -564,6 +565,153 @@ def list_logs(
             }
             for r in rows
         ],
+    }
+
+
+# ── Remarks / field activity ──────────────────────────────────────────────────
+# "What is everyone up to?" — the log book's free-text REMARKS are the field
+# team's own account of every visit and call. We tag each remark with themes
+# (order booked, order pushed, follow-up, catalogue shared…) so leadership can
+# read the gist across hundreds of notes, roll it up per salesperson, and still
+# drop into the raw feed. Theme tagging is done in Python (services/remark_themes),
+# so the whole filtered slice is pulled once and summarised in memory — the log
+# book is a few hundred rows a month, so this stays cheap.
+
+def _theme_list(counter: dict) -> list:
+    """Counter keyed by theme -> ordered [{key,label,count}] in THEMES order,
+    dropping themes with no hits."""
+    return [
+        {"key": key, "label": label, "count": counter[key]}
+        for key, label in THEMES if counter.get(key)
+    ]
+
+
+@router.get("/remarks")
+def remarks_activity(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    from_ym: Optional[str] = None,
+    to_ym: Optional[str] = None,
+    salesperson: Optional[str] = None,
+    oem: Optional[str] = None,
+    state: Optional[str] = None,
+    city: Optional[str] = None,
+    contact_mode: Optional[str] = None,
+    q: Optional[str] = Query(None, description="Dealership or remark text search"),
+    theme: Optional[str] = Query(None, description="Restrict the feed to one theme key"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(30, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Themes + per-salesperson rollup + paginated remark feed, in one call.
+
+    The KPIs, theme tallies and per-salesperson rollup are computed over the whole
+    filtered slice; only the feed narrows to `theme` and paginates. That keeps the
+    theme chips stable when one is clicked to filter the feed beneath them.
+    """
+    _require_access(db, current_user)
+    if theme and not is_theme(theme):
+        raise HTTPException(status_code=400, detail=f"Unknown theme: {theme!r}")
+
+    where = ["remarks IS NOT NULL", "remarks <> ''"]
+    params: dict = {}
+    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym)
+    _add_filters(where, params, {
+        "salesperson": salesperson, "oem": oem, "state": state,
+        "city": city, "contact_mode": contact_mode,
+    })
+    if q:
+        where.append("(dealership ILIKE :q OR remarks ILIKE :q)")
+        params["q"] = f"%{q}%"
+    where_sql = " AND ".join(where)
+
+    rows = db.execute(text(f"""
+        SELECT id, visit_date, salesperson, contact_mode, oem, dealership,
+               city, state, remarks
+        FROM oe_visit_logs WHERE {where_sql}
+        ORDER BY visit_date DESC, id DESC
+    """), params).fetchall()
+
+    # Classify once; reuse the tags for every downstream tally.
+    tags = {r.id: classify_remark(r.remarks) for r in rows}
+
+    theme_counter: dict = {}
+    for r in rows:
+        for t in tags[r.id]:
+            theme_counter[t] = theme_counter.get(t, 0) + 1
+
+    # Per-salesperson rollup — the spine of "what everyone is up to".
+    people: dict = {}
+    for r in rows:
+        sp = r.salesperson or "—"
+        p = people.get(sp)
+        if p is None:
+            p = people[sp] = {
+                "salesperson": sp, "remarks": 0, "visits": 0, "calls": 0,
+                "dealers": set(), "themes": {}, "latest": None,
+            }
+        p["remarks"] += 1
+        if r.contact_mode == "Visit":
+            p["visits"] += 1
+        elif r.contact_mode == "Calling":
+            p["calls"] += 1
+        if r.dealership:
+            p["dealers"].add(r.dealership.strip().lower())
+        for t in tags[r.id]:
+            p["themes"][t] = p["themes"].get(t, 0) + 1
+        # rows are date-desc, so the first one seen per person is the latest.
+        if p["latest"] is None:
+            p["latest"] = {
+                "visit_date": r.visit_date.isoformat(),
+                "dealership": r.dealership, "oem": r.oem,
+                "contact_mode": r.contact_mode, "remarks": r.remarks,
+                "themes": tags[r.id],
+            }
+
+    by_salesperson = sorted(
+        (
+            {
+                "salesperson": p["salesperson"],
+                "remarks": p["remarks"], "visits": p["visits"], "calls": p["calls"],
+                "dealers": len(p["dealers"]),
+                "top_themes": _theme_list(p["themes"])[:3],
+                "latest": p["latest"],
+            }
+            for p in people.values()
+        ),
+        key=lambda x: x["remarks"], reverse=True,
+    )
+
+    # Feed — narrow to the chosen theme, then paginate in memory.
+    feed_rows = [r for r in rows if not theme or theme in tags[r.id]]
+    total = len(feed_rows)
+    start = (page - 1) * per_page
+    page_rows = feed_rows[start:start + per_page]
+
+    return {
+        "kpis": {
+            "remarks": len(rows),
+            "dealers": len({r.dealership.strip().lower() for r in rows if r.dealership}),
+            "salespersons": len(people),
+            "visits": sum(1 for r in rows if r.contact_mode == "Visit"),
+            "calls": sum(1 for r in rows if r.contact_mode == "Calling"),
+        },
+        "themes": _theme_list(theme_counter),
+        "by_salesperson": by_salesperson,
+        "feed": {
+            "total": total, "page": page, "per_page": per_page,
+            "data": [
+                {
+                    "id": str(r.id), "visit_date": r.visit_date.isoformat(),
+                    "salesperson": r.salesperson, "contact_mode": r.contact_mode,
+                    "oem": r.oem, "dealership": r.dealership,
+                    "city": r.city, "state": r.state, "remarks": r.remarks,
+                    "themes": tags[r.id],
+                }
+                for r in page_rows
+            ],
+        },
     }
 
 

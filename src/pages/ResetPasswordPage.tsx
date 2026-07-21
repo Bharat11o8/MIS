@@ -87,7 +87,7 @@ export default function ResetPasswordPage() {
       <div
         className="absolute inset-0 z-0"
         style={{
-          backgroundImage: "url('../Assets/seat-cover-hero-4.webp')",
+          backgroundImage: "url('/seat-cover-hero-4.webp')",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundRepeat: "no-repeat",

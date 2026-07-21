@@ -415,12 +415,17 @@ export default function SalesPage() {
 
   // ── Sync Now ─────────────────────────────────────────────────────────────────
   const handleSync = async () => {
+    if (!ptdSelectedId) {
+      setSyncResult({
+        sync_id: "", rows_total: 0, rows_inserted: 0, rows_updated: 0, rows_failed: 0, rows_deleted: 0,
+        skipped_tabs: [], errors: ['Select a sheet to sync, or register one with "Add Sheet" first.'], status: "Error",
+      });
+      return;
+    }
     setSyncing(true);
     setSyncResult(null);
     try {
-      const url = ptdSelectedId
-        ? `${API_URL}/sales/sheet-sources/${ptdSelectedId}/sync`
-        : `${API_URL}/sales/sync`;
+      const url = `${API_URL}/sales/sheet-sources/${ptdSelectedId}/sync`;
       const res = await fetch(url, { method: "POST", headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sync failed");
@@ -567,7 +572,8 @@ export default function SalesPage() {
               </button>
               <button
                 onClick={handleSync}
-                disabled={syncing}
+                disabled={syncing || !ptdSelectedId}
+                title={!ptdSelectedId ? "Select a sheet to sync" : undefined}
                 className="flex items-center gap-2 text-xs font-semibold text-white px-4 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-orange-200 transition-all">
                 {syncing ? (
                   <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Syncing…</>

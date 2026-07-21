@@ -151,6 +151,40 @@ export function bucketValue(series: FinPoint[], kind: "stock" | "flow", view: Tr
   return hit ? hit.value : null;
 }
 
+// The bucket label a single point falls under — mirrors buildTimeline's own
+// grouping so a point's percent lands on the same bucket as its value.
+function pointBucketLabel(p: FinPoint, view: TrendView): string {
+  if (view === "monthly") return periodLabel(p);
+  const d = new Date(p.period_end_date);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  const fy = m >= 4 ? y : y - 1;
+  if (view === "quarterly") {
+    const q = m >= 4 ? Math.floor((m - 4) / 3) + 1 : 4;
+    return `Q${q} FY${String(fy + 1).slice(-2)}`;
+  }
+  return `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`;
+}
+
+// The sheet's OWN percent for a bucket. Percents are ratios the sheet computes
+// against a base it chooses (composition, % of Sales, …), so they must never be
+// summed or re-averaged across periods — a multi-month bucket takes the latest
+// point's percent, the same "keep the latest point in the bucket" rule
+// bucketStockSeriesWithPercent uses. In the monthly view (one point per bucket)
+// it's simply that month's percent as typed in the sheet. Prefers monthly
+// points (matching buildTimeline); falls back to an annual point for FYs that
+// only carry yearly data. Returns null when the sheet left the % cell blank.
+export function bucketPercent(series: FinPoint[], view: TrendView, label: string): number | null {
+  const pts = series.filter((p) => p.amount != null);
+  const monthlyHits = pts.filter((p) => p.period_type === "monthly" && pointBucketLabel(p, view) === label);
+  const pool = monthlyHits.length > 0
+    ? monthlyHits
+    : pts.filter((p) => p.period_type === "annual" && periodLabel(p) === label);
+  if (pool.length === 0) return null;
+  const latest = [...pool].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date)).slice(-1)[0];
+  return latest.percent ?? null;
+}
+
 // The ordered bucket labels a series produces at a given granularity — used to
 // populate the one universal period picker per tab.
 export function bucketLabelsOf(series: FinPoint[], kind: "stock" | "flow", view: TrendView): string[] {
@@ -234,7 +268,7 @@ export function BucketSelect({ labels, value, onChange }: { labels: string[]; va
 export function DashboardControls({ view, onView, labels, bucket, onBucket }:
   { view: TrendView; onView: (v: TrendView) => void; labels: string[]; bucket: string; onBucket: (v: string) => void }) {
   return (
-    <div className="no-print sticky top-2 z-10 flex items-center justify-between flex-wrap gap-2 bg-white/80 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2">
+    <div className="no-print sticky top-[64px] z-10 flex items-center justify-between flex-wrap gap-2 bg-white/80 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2">
       <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">View</span>
       <div className="flex items-center gap-2">
         <BucketToggle view={view} onChange={onView} />
@@ -332,7 +366,7 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
 function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
   { sub: FinSubSection; kind: "stock" | "flow"; view: TrendView; bucket: string; groupLabel: string; colorMap: Map<string, string> }) {
   const rows = useMemo(() => sub.line_items
-    .map((it) => ({ key: it.line_key, label: it.line_label, value: bucketValue(it.series, kind, view, bucket) ?? 0 }))
+    .map((it) => ({ key: it.line_key, label: it.line_label, value: bucketValue(it.series, kind, view, bucket) ?? 0, percent: bucketPercent(it.series, view, bucket) }))
     .filter((r) => r.value > 0)
     .sort((a, b) => b.value - a.value), [sub, kind, view, bucket]);
   const total = bucketValue(sub.total?.series ?? [], kind, view, bucket) ?? rows.reduce((s, r) => s + r.value, 0);
@@ -341,7 +375,7 @@ function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
   if (rows.length === 0) return <Card title={title} note={`Composition · ${bucket}`}><div className="text-[11px] text-gray-400 py-6">No positive values this period.</div></Card>;
 
   return (
-    <Card title={title} note={`Composition · ${bucket}`}>
+    <Card title={title} note={`Slice size by ₹ · % as per sheet · ${bucket}`}>
       <div className="flex items-center gap-4 flex-wrap">
         <div className="relative" style={{ width: 168, height: 168 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -363,7 +397,9 @@ function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
               <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: colorMap.get(r.key) }} />
               <span className="text-gray-600 truncate flex-1" title={r.label}>{r.label}</span>
               <span className="font-semibold text-gray-700" title={formatINR(r.value)}>{formatCompact(r.value)}</span>
-              <span className="text-gray-400 w-9 text-right">{total > 0 ? Math.round((r.value / total) * 100) : 0}%</span>
+              <span className="text-gray-400 w-12 text-right tabular-nums" title="Percentage as entered in the sheet">
+                {r.percent == null ? "—" : `${(r.percent * 100).toFixed(1)}%`}
+              </span>
             </div>
           ))}
         </div>

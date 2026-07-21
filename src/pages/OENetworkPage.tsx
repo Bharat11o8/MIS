@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   CarFront, Phone, Footprints, Building2, Users, RefreshCw, Plus, Trash2,
   Search, History, CheckCircle2, XCircle, Clock, Target, X,
-  Printer, ChevronRight, Percent, TrendingUp,
+  Printer, ChevronRight, Percent, TrendingUp, MessageSquare, Tag,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -107,7 +107,47 @@ interface TgtSummary {
 }
 interface TgtPeriod { fy_year: number; quarter: number; token: string; label: string }
 
-type TabId = "overview" | "indepth" | "targets" | "sheets";
+// ── Field Activity (remarks) ───────────────────────────────────────────────────
+interface RemarkTheme { key: string; label: string; count: number }
+interface RemarkLatest {
+  visit_date: string; dealership: string | null; oem: string | null;
+  contact_mode: string | null; remarks: string; themes: string[];
+}
+interface PersonRollup {
+  salesperson: string; remarks: number; visits: number; calls: number; dealers: number;
+  top_themes: RemarkTheme[]; latest: RemarkLatest | null;
+}
+interface RemarkFeedRow {
+  id: string; visit_date: string; salesperson: string | null; contact_mode: string | null;
+  oem: string | null; dealership: string | null; city: string | null; state: string | null;
+  remarks: string; themes: string[];
+}
+interface RemarksData {
+  kpis: { remarks: number; dealers: number; salespersons: number; visits: number; calls: number };
+  themes: RemarkTheme[];
+  by_salesperson: PersonRollup[];
+  feed: { total: number; page: number; per_page: number; data: RemarkFeedRow[] };
+}
+
+// Each theme reads in its own muted colour everywhere it appears (chips in the
+// feed, the rollup cards, and the theme filter row) so the eye can track a theme
+// across the page. Keys mirror services/remark_themes.py.
+const THEME_META: Record<string, { label: string; color: string; bg: string }> = {
+  order_booked: { label: "Order booked", color: "#16a34a", bg: "#f0fdf4" },
+  order_push: { label: "Order pushed", color: "#f46617", bg: "#fff4ed" },
+  follow_up: { label: "Follow-up", color: "#d97706", bg: "#fffbeb" },
+  product_pitch: { label: "Catalogue pitched", color: "#3b82f6", bg: "#eff6ff" },
+  back_order: { label: "Back order", color: "#dc2626", bg: "#fef2f2" },
+  stock: { label: "Stock", color: "#0d9488", bg: "#f0fdfa" },
+  payment_issue: { label: "Fund / payment", color: "#e11d48", bg: "#fff1f2" },
+  new_dealer: { label: "New dealer", color: "#a855f7", bg: "#f5f3ff" },
+  incentive: { label: "Incentive", color: "#6366f1", bg: "#eef2ff" },
+  market_feedback: { label: "Market", color: "#64748b", bg: "#f1f5f9" },
+  complaint: { label: "Concern", color: "#b91c1c", bg: "#fef2f2" },
+};
+const themeMeta = (key: string) => THEME_META[key] ?? { label: key, color: "#6b7280", bg: "#f9fafb" };
+
+type TabId = "overview" | "indepth" | "activity" | "targets" | "sheets";
 type Metric = "value" | "nos";
 type PeriodMode = "monthly" | "quarterly" | "yearly";
 
@@ -1133,6 +1173,350 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Field Activity tab — remark themes, per-salesperson rollup, full field log
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** A theme tag as it appears in the feed and rollup cards. */
+function ThemeChip({ themeKey, count }: { themeKey: string; count?: number }) {
+  const m = themeMeta(themeKey);
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap"
+      style={{ color: m.color, background: m.bg }}>
+      {m.label}{count != null && <span className="opacity-70">{count}</span>}
+    </span>
+  );
+}
+
+/** The clickable theme filter row — one chip per theme with its tally, the
+ *  active one lit. Clicking narrows the feed; clicking it again clears it. */
+function ThemeFilterRow({ themes, active, onPick }: {
+  themes: RemarkTheme[]; active: string; onPick: (k: string) => void;
+}) {
+  if (!themes.length) return <p className="text-xs text-gray-400 py-2">No themed remarks in this slice.</p>;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {themes.map((t) => {
+        const m = themeMeta(t.key);
+        const on = active === t.key;
+        return (
+          <button key={t.key} onClick={() => onPick(t.key)}
+            className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 transition-all"
+            style={{
+              borderColor: on ? m.color : "#f1f0ee",
+              background: on ? m.bg : "#fff",
+            }}
+            title={`${t.count} remark${t.count === 1 ? "" : "s"} — click to ${on ? "clear" : "filter"}`}>
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: m.color }} />
+            <span className="text-[11px] font-semibold" style={{ color: on ? m.color : "#374151" }}>{m.label}</span>
+            <span className="text-[11px] font-black" style={{ color: m.color }}>{t.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One field person's card — activity counts and what they're mostly doing
+ *  (top themes). Clicking scopes the whole tab to them. */
+function PersonCard({ p, active, onPick }: {
+  p: PersonRollup; active: boolean; onPick: () => void;
+}) {
+  return (
+    <button onClick={onPick}
+      className={`text-left bg-white border rounded-2xl p-4 shadow-sm transition-all hover:border-orange-200 ${
+        active ? "border-orange-300 ring-2 ring-orange-100" : "border-orange-100"
+      }`}>
+      <div className="flex items-center gap-2.5">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-100 to-orange-50 text-orange-500 flex items-center justify-center font-black text-sm shrink-0">
+          {(p.salesperson[0] || "?").toUpperCase()}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-gray-800 truncate" title={p.salesperson}>{p.salesperson}</p>
+          <p className="text-[10px] text-gray-400">
+            <b className="text-gray-600">{p.remarks}</b> notes · {p.dealers} dealer{p.dealers === 1 ? "" : "s"}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <span className="text-[10px] font-bold" style={{ color: VISIT_COLOR }}>{p.visits}V</span>
+          <span className="text-[10px] font-bold text-gray-300"> · </span>
+          <span className="text-[10px] font-bold" style={{ color: CALL_COLOR }}>{p.calls}C</span>
+        </div>
+      </div>
+
+      {p.top_themes.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-3">
+          {p.top_themes.map((t) => <ThemeChip key={t.key} themeKey={t.key} count={t.count} />)}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
+  const [logMonths, setLogMonths] = useState<Period[]>([]);
+  const [periodMode, setPeriodMode] = useState<PeriodMode>("monthly");
+  const [selected, setSelected] = useState("");
+  const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[]; contact_modes: string[] } | null>(null);
+
+  const [salesperson, setSalesperson] = useState("");
+  const [oem, setOem] = useState("");
+  const [state, setState] = useState("");
+  const [city, setCity] = useState("");
+  const [mode, setMode] = useState("");
+  const [theme, setTheme] = useState("");
+  const [q, setQ] = useState("");
+  const [qDeb, setQDeb] = useState("");
+  const [page, setPage] = useState(1);
+
+  const [data, setData] = useState<RemarksData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const t = setTimeout(() => setQDeb(q.trim()), 400);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  useEffect(() => {
+    (async () => {
+      const [perRes, optRes] = await Promise.all([
+        fetch(`${API_URL}/oe-network/periods`, { headers }),
+        fetch(`${API_URL}/oe-network/filter-options?scope=logs`, { headers }),
+      ]);
+      if (optRes.ok) setOptions(await optRes.json());
+      if (perRes.ok) {
+        const p = await perRes.json();
+        setLogMonths(p.log_months);
+        if (!p.log_months.length) setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Period option lists derived from the months that actually have logs.
+  const optionsByMode = useMemo<Record<PeriodMode, { value: string; label: string }[]>>(() => {
+    const sorted = [...logMonths].sort((a, b) => b.year - a.year || b.month - a.month);
+    const monthly = sorted.map((p) => ({ value: monthToken(p), label: tokenLabel(monthToken(p)) }));
+    const quarters = new Set<string>();
+    const fys = new Set<number>();
+    sorted.forEach((p) => {
+      const fy = fyOf(p.year, p.month);
+      quarters.add(quarterToken(fy, fqOf(p.month)));
+      fys.add(fy);
+    });
+    const quarterly = [...quarters].sort((a, b) => {
+      const [fa, qa] = a.split("-Q").map(Number);
+      const [fb, qb] = b.split("-Q").map(Number);
+      return fb - fa || qb - qa;
+    }).map((t) => ({ value: t, label: quarterLabel(t) }));
+    const yearly = [...fys].sort((a, b) => b - a).map((fy) => ({ value: String(fy), label: fyLabel(fy) }));
+    return { monthly, quarterly, yearly };
+  }, [logMonths]);
+
+  const periodOptions = optionsByMode[periodMode];
+  useEffect(() => {
+    // Land on the latest available period once the lists are built.
+    if (!selected && optionsByMode.monthly.length) setSelected(optionsByMode.monthly[0].value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optionsByMode]);
+
+  const switchMode = (m: PeriodMode) => {
+    setPeriodMode(m);
+    const first = optionsByMode[m][0];
+    if (first) setSelected(first.value);
+  };
+
+  // Any change to the slice resets to the first page of the feed.
+  useEffect(() => { setPage(1); }, [selected, periodMode, salesperson, oem, state, city, mode, theme, qDeb]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const [fromYm, toYm] = periodRange(periodMode, selected);
+    const params = new URLSearchParams({ from_ym: fromYm, to_ym: toYm, page: String(page), per_page: "30" });
+    if (salesperson) params.set("salesperson", salesperson);
+    if (oem) params.set("oem", oem);
+    if (state) params.set("state", state);
+    if (city) params.set("city", city);
+    if (mode) params.set("contact_mode", mode);
+    if (theme) params.set("theme", theme);
+    if (qDeb) params.set("q", qDeb);
+    setLoading(true);
+    (async () => {
+      const res = await fetch(`${API_URL}/oe-network/remarks?${params}`, { headers });
+      if (res.ok) setData(await res.json());
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, periodMode, salesperson, oem, state, city, mode, theme, qDeb, page]);
+
+  const toOpts = (arr: string[] | undefined, all: string) =>
+    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
+  const hasFilters = Boolean(salesperson || oem || state || city || mode || theme || q);
+  const clearFilters = () => {
+    setSalesperson(""); setOem(""); setState(""); setCity(""); setMode(""); setTheme(""); setQ("");
+  };
+
+  if (!loading && optionsByMode.monthly.length === 0) {
+    return (
+      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
+        No log book data yet — register and sync the log book from the <b>Sheets</b> tab.
+      </div>
+    );
+  }
+
+  const feed = data?.feed.data ?? [];
+
+  return (
+    <div className="flex flex-col gap-5">
+      <FilterBar>
+        <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
+          {(["monthly", "quarterly", "yearly"] as PeriodMode[]).map((m) => (
+            <button key={m} onClick={() => switchMode(m)}
+              className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg capitalize transition-all ${
+                periodMode === m ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              {m}
+            </button>
+          ))}
+        </div>
+        <Select value={selected} onChange={setSelected} options={periodOptions} placeholder="Period…" />
+        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
+        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
+        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
+        <Select value={city} onChange={setCity} options={toOpts(options?.cities, "All cities")} placeholder="City" />
+        <Select value={mode} onChange={setMode} options={toOpts(options?.contact_modes, "Visits + Calls")} placeholder="Mode" />
+        <div className="relative">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search remark or dealer…"
+            className={`${inputClass} pl-8 w-44`} />
+        </div>
+        {hasFilters && (
+          <button onClick={clearFilters}
+            className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
+            <X size={12} /> Clear
+          </button>
+        )}
+        {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
+        <button onClick={() => window.print()}
+          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+          <Printer size={12} /> PDF
+        </button>
+      </FilterBar>
+
+      <div className="print-only">
+        <p className="text-sm font-bold text-gray-900">
+          Field Activity · {periodOptions.find((o) => o.value === selected)?.label ?? ""}
+          {salesperson && ` · ${salesperson}`}{oem && ` · ${oem}`}{theme && ` · ${themeMeta(theme).label}`}
+          {qDeb && ` · “${qDeb}”`}
+        </p>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <StatCard label="Remarks" value={data?.kpis.remarks ?? 0} sub="field notes logged"
+          icon={<MessageSquare size={18} />} color="#f46617" bg="#fff4ed" />
+        <StatCard label="Dealers Touched" value={data?.kpis.dealers ?? 0}
+          icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
+        <StatCard label="People Active" value={data?.kpis.salespersons ?? 0}
+          icon={<Users size={18} />} color="#a855f7" bg="#f5f3ff" />
+        <StatCard label="Visits" value={data?.kpis.visits ?? 0}
+          icon={<Footprints size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
+        <StatCard label="Calls" value={data?.kpis.calls ?? 0}
+          icon={<Phone size={18} />} color={CALL_COLOR} bg="#eff6ff" />
+      </div>
+
+      {/* What's being reported — theme filter row */}
+      <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+              <Tag size={13} /> What the field is reporting
+            </h3>
+            <p className="text-[10px] text-gray-400">
+              Every remark auto-tagged by what it's about — click a theme to filter the log below. A note can carry more than one.
+            </p>
+          </div>
+          {theme && (
+            <button onClick={() => setTheme("")}
+              className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
+              <X size={12} /> Clear theme
+            </button>
+          )}
+        </div>
+        <ThemeFilterRow themes={data?.themes ?? []} active={theme} onPick={(k) => setTheme(theme === k ? "" : k)} />
+      </div>
+
+      {/* Per-salesperson rollup — "what is everyone up to" */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By Salesperson — click to focus</h3>
+          {salesperson && (
+            <button onClick={() => setSalesperson("")}
+              className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
+              <X size={12} /> Show everyone
+            </button>
+          )}
+        </div>
+        {(data?.by_salesperson ?? []).length === 0 ? (
+          <div className="bg-white border border-orange-100 rounded-2xl p-8 text-center text-xs text-gray-400">
+            No remarks for this selection.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {(data?.by_salesperson ?? []).map((p) => (
+              <PersonCard key={p.salesperson} p={p} active={salesperson === p.salesperson}
+                onPick={() => setSalesperson(salesperson === p.salesperson ? "" : p.salesperson)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Full field log */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+            <MessageSquare size={13} /> Field Log
+            {theme && <ThemeChip themeKey={theme} />}
+          </h3>
+          <p className="text-[10px] text-gray-400">{data?.feed.total.toLocaleString("en-IN") ?? 0} remarks</p>
+        </div>
+
+        <div className="flex flex-col divide-y divide-gray-50">
+          {feed.map((r) => (
+            <div key={r.id} className="py-3 flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-4">
+              <div className="flex items-center gap-2 sm:w-40 shrink-0">
+                <span className="text-[10px] text-gray-400 w-12 shrink-0">{shortDate(r.visit_date)}</span>
+                <ModeBadge mode={r.contact_mode} />
+              </div>
+              <div className="sm:w-36 shrink-0 min-w-0">
+                <p className="text-xs font-semibold text-gray-700 truncate" title={r.dealership ?? undefined}>{r.dealership ?? "—"}</p>
+                <p className="text-[10px] text-gray-400 truncate">
+                  {r.salesperson ? firstName(r.salesperson) : "—"}{r.oem && ` · ${r.oem}`}
+                </p>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] text-gray-700 leading-snug">{r.remarks}</p>
+                {r.themes.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {r.themes.map((t) => <ThemeChip key={t} themeKey={t} />)}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+          {feed.length === 0 && !loading && (
+            <p className="py-8 text-center text-xs text-gray-400">No remarks match these filters.</p>
+          )}
+        </div>
+
+        {data && (
+          <Pagination page={data.feed.page} total={data.feed.total} perPage={data.feed.per_page} onPage={setPage} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Targets tab — quarterly target vs achievement
 // ══════════════════════════════════════════════════════════════════════════════
 /** Units or money out of the same row — the API sends both. */
@@ -1808,6 +2192,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 // spreadsheet already does better.
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "activity", label: "Field Activity" },
   { id: "targets", label: "Targets" },
   { id: "sheets", label: "Sheets" },
 ];
@@ -1815,6 +2200,7 @@ const TABS: { id: TabId; label: string }[] = [
 const TAB_SUBTITLES: Record<TabId, string> = {
   overview: "Plan coverage and field activity",
   indepth: "Dealer network health, plan adherence and attach rates",
+  activity: "What the team is up to — remark themes, per-person rollup and the field log",
   targets: "Quarterly target vs achievement by salesperson and OEM",
   sheets: "Connect and sync the source Google Sheets",
 };
@@ -1859,6 +2245,7 @@ export default function OENetworkPage() {
 
       {activeTab === "overview" && <OverviewTab headers={headers} />}
       {activeTab === "indepth" && <InDepthTab headers={headers} />}
+      {activeTab === "activity" && <FieldActivityTab headers={headers} />}
       {activeTab === "targets" && <TargetsTab headers={headers} />}
       {activeTab === "sheets" && <SheetsTab headers={headers} />}
     </div>
