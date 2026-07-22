@@ -6,7 +6,7 @@ import {
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
-import { formatCompact, formatINR, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR } from "./format";
+import { formatINR, formatKpi, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR } from "./format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -73,9 +73,9 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
       <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KpiCard label={`Sales · ${effBucket}`} value={formatCompact(salesCh.value ?? 0)} exact={formatINR(salesCh.value ?? 0)} accent={REVENUE_COLOR} />
-        <KpiCard label={`Gross Margin · ${effBucket}`} value={formatCompact(grossCh.value ?? 0)} exact={formatINR(grossCh.value ?? 0)} accent={GROSS_PROFIT_COLOR} />
-        <KpiCard label={`PAT · ${effBucket}`} value={formatCompact(patCh.value ?? 0)} exact={formatINR(patCh.value ?? 0)} accent={NETT_PROFIT_COLOR} />
+        <KpiCard label={`Sales · ${effBucket}`} value={formatKpi(salesCh.value ?? 0)} exact={formatINR(salesCh.value ?? 0)} accent={REVENUE_COLOR} />
+        <KpiCard label={`Gross Margin · ${effBucket}`} value={formatKpi(grossCh.value ?? 0)} exact={formatINR(grossCh.value ?? 0)} accent={GROSS_PROFIT_COLOR} />
+        <KpiCard label={`PAT · ${effBucket}`} value={formatKpi(patCh.value ?? 0)} exact={formatINR(patCh.value ?? 0)} accent={NETT_PROFIT_COLOR} />
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? "#4E7D57" : "#B5483A" }} />
           <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel} Change</div>

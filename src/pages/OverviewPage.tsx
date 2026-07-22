@@ -19,7 +19,7 @@ interface ModuleTile {
 const TILES: ModuleTile[] = [
   {
     id: "sales",
-    label: "Sales",
+    label: "Sales (AFAC)",
     description: "Plant-to-depot dispatch and depot-to-distributor targets",
     icon: <TrendingUp size={24} />,
     path: "/dashboard/sales",
@@ -29,7 +29,7 @@ const TILES: ModuleTile[] = [
   },
   {
     id: "leads",
-    label: "Lead Analytics",
+    label: "Leads Analytics (AFAC)",
     description: "IVR, WhatsApp and Instagram lead pipeline",
     icon: <BarChart2 size={24} />,
     path: "/dashboard/leads",

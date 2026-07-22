@@ -18,11 +18,13 @@ export const ROLE_COLORS: Record<UserRole, string> = {
   staff: "bg-gray-100 text-gray-600",
 };
 
+// Roles offered when creating or editing a user. Deliberately just three:
+// Super Admin, Management, Staff. The older sales_head/leads_head/sales_rep
+// roles are retired from the picker but kept in ROLE_LABELS/ROLE_COLORS above so
+// any legacy user still assigned one keeps a proper badge until reassigned.
+// (Access is governed by per-module toggles now, not by role — see modules.ts.)
 export const ALL_ROLES: UserRole[] = [
   "superadmin",
   "management",
-  "sales_head",
-  "leads_head",
-  "sales_rep",
   "staff",
 ];

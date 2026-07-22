@@ -34,7 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "sales",
-    label: "Sales",
+    label: "Sales (AFAC)",
     icon: <TrendingUp size={16} />,
     path: "/dashboard/sales",
     section: "MODULES",
@@ -42,7 +42,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "leads",
-    label: "Lead Analytics",
+    label: "Leads Analytics (AFAC)",
     icon: <BarChart2 size={16} />,
     path: "/dashboard/leads",
     moduleKey: "leads",

@@ -9,6 +9,7 @@ import Select from "@/components/ui/Select";
 import BalanceSheetView from "@/pages/finance/BalanceSheetView";
 import ProfitLossView from "@/pages/finance/ProfitLossView";
 import PlantOpsView from "@/pages/finance/PlantOpsView";
+import CashFlowView from "@/pages/finance/CashFlowView";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -26,7 +27,8 @@ interface SyncHistoryItem {
   id: string; rows_total: number; rows_inserted: number; rows_updated: number;
   rows_failed: number; rows_deleted: number; status: string; synced_at: string;
 }
-type Statement = "balance_sheet" | "profit_loss" | "plant_ops";
+type Statement = "balance_sheet" | "profit_loss" | "plant_ops" | "cash_flow";
+type Tab = Statement | "sheets";
 
 export default function FinancePage() {
   const { token, user } = useAuth();
@@ -36,7 +38,7 @@ export default function FinancePage() {
 
   const [sources, setSources] = useState<SheetSourceItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
-  const [statement, setStatement] = useState<Statement>("balance_sheet");
+  const [activeTab, setActiveTab] = useState<Tab>("balance_sheet");
   const [refreshNonce, setRefreshNonce] = useState(0); // bumped after a sync to refetch the active view
 
   // Master data files (admin only)
@@ -162,7 +164,16 @@ export default function FinancePage() {
   };
 
   const companyLabel = sources.find((s) => s.id === selectedId)?.label ?? "";
-  const statementLabel = statement === "balance_sheet" ? "Balance Sheet" : statement === "profit_loss" ? "Profit & Loss" : "Plant Operations";
+  const statementLabel = activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow" : "Plant Operations";
+  const onSheetsTab = activeTab === "sheets";
+
+  const TABS: [Tab, string][] = [
+    ["balance_sheet", "Balance Sheet"],
+    ["profit_loss", "P&L"],
+    ["cash_flow", "Cash Flow"],
+    ["plant_ops", "Plant Ops"],
+    ...(isAdmin ? [["sheets", "Sheets"] as [Tab, string]] : []),
+  ];
 
   return (
     <div className="p-6 flex flex-col gap-6">
@@ -173,56 +184,66 @@ export default function FinancePage() {
         <div className="text-[11px] text-gray-400">Generated {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
       </div>
 
-      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="no-print">
-        <h1 className="flex items-center gap-3"><span className="page-title-dark">FINANCE</span></h1>
-        <div className="flex items-center gap-2 mt-1">
-          <div className="w-8 h-0.5 bg-gray-800 rounded" />
-          <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Balance Sheet · Profit & Loss · Plant Operations, per company</p>
+      {/* Header — title and the tab switcher share one row so they line up, and the
+          whole row is sticky so the tabs stay reachable while scrolling (a nested tab
+          bar can only stick within its own row, so the header itself is the sticky
+          element). The per-view VIEW controls sticky-stack just beneath it. */}
+      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+        className="no-print sticky top-0 z-30 -mx-6 px-6 py-3 bg-white/95 backdrop-blur flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="flex items-center gap-3"><span className="page-title-dark">FINANCE</span></h1>
+          <div className="flex items-center gap-2 mt-1">
+            <div className="w-8 h-0.5 bg-gray-800 rounded" />
+            <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Balance Sheet · Profit & Loss · Cash Flow · Plant Operations, per company</p>
+          </div>
         </div>
-      </motion.div>
-
-      {/* Statement switcher — sticky so it stays reachable while scrolling a long dashboard.
-          Its own scroll-column child (not nested in the header) so it stays pinned for the
-          whole page; h-14 + top-2 give it a fixed footprint that DashboardControls tops out below. */}
-      <div className="no-print sticky top-2 z-30 h-14 -mx-6 px-6 flex items-center justify-end bg-white/85 backdrop-blur border-b border-[#EAE3D6]">
-        <div className="flex items-center bg-gray-100 rounded-xl p-1">
-          {([["balance_sheet", "Balance Sheet"], ["profit_loss", "P&L"], ["plant_ops", "Plant Ops"]] as [Statement, string][]).map(([key, label]) => (
-            <button key={key} onClick={() => setStatement(key)}
-              className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${statement === key ? "bg-white text-orange-500 shadow-sm" : "text-gray-500"}`}>
+        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+          {TABS.map(([key, label]) => (
+            <button key={key} onClick={() => setActiveTab(key)}
+              className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${activeTab === key ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
               {label}
             </button>
           ))}
         </div>
-      </div>
+      </motion.div>
 
-      {/* Company selector (view) */}
-      <div className="no-print flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-2">
-          <Select
-            value={selectedId}
-            onChange={setSelectedId}
-            placeholder="Select a company…"
-            options={sources.map((s) => ({ value: s.id, label: s.label }))}
-            className="min-w-[180px]"
-          />
-          {isAdmin && selectedId && (
-            <button onClick={handleDeleteCompany}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all">
-              <Trash2 size={13} />
+      {/* Company selector (view) — hidden on the Sheets tab, which is config, not a company view */}
+      {!onSheetsTab && (
+        <div className="no-print flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <Select
+              value={selectedId}
+              onChange={setSelectedId}
+              placeholder="Select a company…"
+              options={sources.map((s) => ({ value: s.id, label: s.label }))}
+              className="min-w-[180px]"
+            />
+            {isAdmin && selectedId && (
+              <button onClick={handleDeleteCompany}
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all">
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setRefreshNonce((n) => n + 1); loadSources(); }}
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-orange-500 px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 transition-all"
+              title="Re-fetch the latest finance data from the server">
+              <RefreshCw size={13} /> Refresh
             </button>
-          )}
+            {selectedId && (
+              <button onClick={() => window.print()}
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+                <Printer size={13} /> Print / PDF
+              </button>
+            )}
+          </div>
         </div>
-        {selectedId && (
-          <button onClick={() => window.print()}
-            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
-            <Printer size={13} /> Print / PDF
-          </button>
-        )}
-      </div>
+      )}
 
-      {/* Data Sources — admin only */}
-      {isAdmin && (
+      {/* Data Sources — Sheets tab (admin only) */}
+      {isAdmin && onSheetsTab && (
         <div className="no-print bg-white border border-[#EAE3D6] rounded-2xl p-5 flex flex-col gap-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Database size={15} className="text-gray-400" /> Data Sources — master files</h2>
@@ -292,7 +313,7 @@ export default function FinancePage() {
       )}
 
       <AnimatePresence>
-        {syncResult && (
+        {onSheetsTab && syncResult && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
             className={`no-print rounded-2xl border p-5 ${syncResult.rows_failed === 0 ? "bg-green-50 border-green-200" : "bg-amber-50 border-amber-200"}`}>
             <div className="flex items-start gap-4">
@@ -323,19 +344,20 @@ export default function FinancePage() {
         )}
       </AnimatePresence>
 
-      {!selectedId && (
+      {!onSheetsTab && !selectedId && (
         <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
           {isAdmin
-            ? "No companies yet — register the master files above and click Sync to ingest every company tab."
+            ? "No companies yet — register the master files from the Sheets tab and click Sync to ingest every company tab."
             : "No companies available. Ask an admin to grant you access to a company's finance data."}
         </div>
       )}
 
-      {selectedId && statement === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-      {selectedId && statement === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-      {selectedId && statement === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+      {selectedId && activeTab === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+      {selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+      {selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+      {selectedId && activeTab === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
 
-      {isAdmin && (
+      {isAdmin && onSheetsTab && (
         <div className="no-print">
           <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-400" /> Sync History</h2>
           {!historyLoaded ? (

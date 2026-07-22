@@ -587,6 +587,11 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
               Data as of {formatDate(lastSynced)}
             </span>
           )}
+          <button onClick={() => setRefresh((x) => x + 1)} disabled={loading}
+            className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 transition-all"
+            title="Re-fetch this view (and its filters) from the server — no Google Sheets pull">
+            <RefreshCw size={11} /> Refresh
+          </button>
           <button onClick={handleSyncAll} disabled={syncing}
             className="flex items-center gap-1.5 text-[11px] font-semibold text-white px-3 py-1.5 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-50 transition-all"
             title="Re-pull the log book and the latest visit plan from Google Sheets">
@@ -1270,6 +1275,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
 
   const [data, setData] = useState<RemarksData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const t = setTimeout(() => setQDeb(q.trim()), 400);
@@ -1290,7 +1296,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshKey]);
 
   // Period option lists derived from the months that actually have logs.
   const optionsByMode = useMemo<Record<PeriodMode, { value: string; label: string }[]>>(() => {
@@ -1346,7 +1352,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, periodMode, salesperson, oem, state, city, mode, theme, qDeb, page]);
+  }, [selected, periodMode, salesperson, oem, state, city, mode, theme, qDeb, page, refreshKey]);
 
   const toOpts = (arr: string[] | undefined, all: string) =>
     [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
@@ -1396,8 +1402,13 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
           </button>
         )}
         {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
+        <button onClick={() => setRefreshKey((k) => k + 1)} disabled={loading}
+          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 transition-all"
+          title="Re-fetch this view (and its filters) from the server">
+          <RefreshCw size={11} /> Refresh
+        </button>
         <button onClick={() => window.print()}
-          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+          className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
           <Printer size={12} /> PDF
         </button>
       </FilterBar>
@@ -1626,6 +1637,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
   const [data, setData] = useState<TgtSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -1642,7 +1654,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     if (!token) return;
@@ -1659,7 +1671,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, oem, category, salesperson, region]);
+  }, [token, oem, category, salesperson, region, refreshKey]);
 
   const toOpts = (arr: string[] | undefined, all: string) =>
     [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
@@ -1715,8 +1727,13 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
           </button>
         )}
         {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
+        <button onClick={() => setRefreshKey((k) => k + 1)} disabled={loading}
+          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 transition-all"
+          title="Re-fetch this view (and its filters) from the server">
+          <RefreshCw size={11} /> Refresh
+        </button>
         <button onClick={() => window.print()}
-          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+          className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
           <Printer size={12} /> PDF
         </button>
       </FilterBar>
@@ -2191,7 +2208,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 // this page is for visualisation, and a flat filterable table is what the source
 // spreadsheet already does better.
 const TABS: { id: TabId; label: string }[] = [
-  { id: "overview", label: "Overview" },
+  { id: "overview", label: "Plan vs Actual" },
   { id: "activity", label: "Field Activity" },
   { id: "targets", label: "Targets" },
   { id: "sheets", label: "Sheets" },

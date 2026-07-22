@@ -67,7 +67,51 @@ REGISTERED_SECTIONS = {
     # Phase C — Working Capital Aging (§8) + Average Unit Cost (§12)
     "working_capital_aging",
     "average_unit_cost",
+    # Phase D — Cash Flow Statement (§15). NOTE: this section does NOT use the
+    # generic row walk below — it is parsed by _parse_cash_flow_rows (see there
+    # for why the generic sub-header/total heuristics don't fit a cash flow
+    # statement). Registering it here only gates it in; the dispatch is explicit.
+    "cash_flow_statement",
 }
+
+
+# ── Cash Flow Statement (§15) — structural classifier ────────────────────────
+# A cash flow statement is a standardized statement, not a free-form section, so
+# it is classified by LABEL STRUCTURE rather than by the generic "row with no
+# value in any period = sub-header" heuristic. Two reasons the generic walk fails
+# here:
+#   1. Sparse data: when only one month is populated, genuine line items that are
+#      blank that month (e.g. "Less: Direct Taxes Paid") would be misread as
+#      sub-headers and hijack the grouping of the rows beneath them.
+#   2. Its subtotals aren't literally "Total": they read "(A) NET CASH FROM ...",
+#      "Sub-total: ...", "CLOSING CASH & CASH EQUIVALENTS".
+#
+# Model: sub_section = the activity (operating / investing / financing), plus a
+# reconciliation tail (Net increase → Opening → Closing). The (A)/(B)/(C) activity
+# nets and Closing Cash are the one `total` per activity; intermediate
+# "Sub-total: …" rows stay as inline line items. Mirrors the sheet, never audits:
+# every figure (including the nets) is taken as-is, never recomputed.
+
+# Structural group headers inside an activity — context only, never stored.
+# Matched on the normalized label (see _cf_norm).
+_CF_GROUP_HEADERS = {
+    "net profit before tax", "add non cash adjustments", "changes in working capital",
+    "direct taxes", "capital expenditure", "investments long term", "equity", "borrowings",
+}
+# The (A)/(B)/(C) activity-net rows — the per-activity totals.
+_CF_NET_RE = re.compile(r"^\s*\(\s*([ABCabc])\s*\)")
+
+
+def _cf_norm(label: str) -> str:
+    """Normalize a label for structural matching: lowercase, punctuation → single
+    spaces, trimmed. "Investments & Long-Term" → "investments long term"."""
+    return re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+
+
+# The Balance Sheet's only genuine sub-headers (normalized). Any OTHER value-less
+# row in the balance-sheet section is a blank line item, not a sub-header — see
+# the guard in parse_finance_tab for why this matters.
+_BS_SUBHEADERS = {"sources of funds", "application of funds"}
 
 
 # ── Grid helpers (same idioms as every other sync service) ───────────────────
@@ -247,7 +291,9 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
             section_label = b.strip()
             section_key = _slugify(section_label)
             registered = section_key in REGISTERED_SECTIONS
-            sub_section = None
+            # Cash Flow opens on the first (implicit) activity — Operating; every
+            # other section starts with no sub-section until a sub-header sets one.
+            sub_section = "operating_activities" if section_key == "cash_flow_statement" else None
             ordinal = 0
             continue
 
@@ -257,6 +303,31 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         label = str(b).strip() if isinstance(b, str) and b.strip() else None
         if label is None:
             continue  # blank separator / spacer row
+
+        # §15 Cash Flow Statement — classified by label structure, not by value
+        # presence (see the _CF_* block above). sub_section carries the current
+        # activity; it is switched by the activity headers and by the (C) net.
+        if section_key == "cash_flow_statement":
+            n = _cf_norm(label)
+            if "cash flow from investing activities" in n:
+                sub_section = "investing_activities"   # activity header — context only
+                continue
+            if "cash flow from financing activities" in n:
+                sub_section = "financing_activities"   # activity header — context only
+                continue
+            net = _CF_NET_RE.match(label)
+            if net:                                    # (A)/(B)/(C) = that activity's one total
+                emit(label, "total")
+                if net.group(1).lower() == "c":
+                    sub_section = "reconciliation"     # Net increase → Opening → Closing follow (C)
+                continue
+            if "closing cash cash equivalents" in n:
+                emit(label, "total")                   # the reconciliation total
+                continue
+            if n in _CF_GROUP_HEADERS:
+                continue                               # structural group header — not stored
+            emit(label, "line_item")                   # incl. "Sub-total: …"; blank periods emit nothing
+            continue
 
         # A sub-header (e.g. "Current Assets", "Sources of Funds:") carries a
         # label but nothing in any amount OR percent cell. A real line item with
@@ -272,6 +343,17 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
             emit(label, "total")
             sub_section = None  # a total closes its sub-section
         elif not any_cell:
+            # A value-less labelled row is normally a sub-header. Guard: some
+            # sections have real line items that are blank in every loaded period
+            # (e.g. a company with no Share Capital / OD-CC balance this year).
+            # Those must NOT be mistaken for sub-headers — doing so hijacks the
+            # sub_section and mis-files the section's Total (observed on Balance
+            # Sheet company tabs: Sources of Funds ended up under `share_capital`
+            # / `od_cc_balance`, leaving the Sources KPI empty). For the balance
+            # sheet, only its two real sub-headers may set the grouping; any other
+            # blank row is just an empty line item and keeps the current grouping.
+            if section_key == "balance_sheet" and _cf_norm(label) not in _BS_SUBHEADERS:
+                continue
             sub_section = _slugify(label)  # sub-header — context only, not stored
         else:
             emit(label, "line_item")

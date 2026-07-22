@@ -20,20 +20,33 @@ export const NETT_PROFIT_COLOR = "#8B6A45"; // bronze
 export const GRID_LINE_COLOR = "#EAE3D6"; // warm, paper-toned axis/grid line
 export const AXIS_TEXT_COLOR = "#8F8A83"; // stone
 
+// Full rupee value, always to 2 decimals (the module-wide standard).
 export function formatINR(n: number) {
-  return "₹" + Math.round(n).toLocaleString("en-IN");
+  return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// KPI-card magnitude (2 dp). Per the user's rule: NEVER show lakhs — anything a
+// lakh or above reads in CRORE (so ₹19.6L → ₹0.20Cr); only sub-lakh values show
+// in thousands (₹K), plain rupees below ₹1,000. The exact figure is always in
+// the card's hover title.
+export function formatKpi(n: number) {
+  const abs = Math.abs(n);
+  if (abs >= 1e5) return `₹${(n / 1e7).toFixed(2)}Cr`;
+  if (abs >= 1e3) return `₹${(n / 1e3).toFixed(2)}K`;
+  return `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function formatCr(n: number) {
-  return `₹${(n / 1e7).toFixed(1)}Cr`;
+  return `₹${(n / 1e7).toFixed(2)}Cr`;
 }
 
-// Compact magnitude for tight chart labels — Cr above 1 crore, L above 1 lakh.
+// Compact magnitude for tight chart labels / tables — Cr above 1 crore, L above
+// 1 lakh, plain rupees below — all to 2 decimals.
 export function formatCompact(n: number) {
   const abs = Math.abs(n);
-  if (abs >= 1e7) return `₹${(abs / 1e7).toFixed(1)}Cr`;
-  if (abs >= 1e5) return `₹${(abs / 1e5).toFixed(1)}L`;
-  return `₹${Math.round(abs).toLocaleString("en-IN")}`;
+  if (abs >= 1e7) return `₹${(abs / 1e7).toFixed(2)}Cr`;
+  if (abs >= 1e5) return `₹${(abs / 1e5).toFixed(2)}L`;
+  return `₹${abs.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function formatPct(n: number | null | undefined, digits = 1) {

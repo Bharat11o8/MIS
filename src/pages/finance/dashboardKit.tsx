@@ -191,6 +191,15 @@ export function bucketLabelsOf(series: FinPoint[], kind: "stock" | "flow", view:
   return [...new Set(buildTimeline(series, kind, view).map((x) => x.label))];
 }
 
+// The actual period-end date of a bucket (the latest data point inside it) — so a
+// stock KPI can be labelled "as at <date>" rather than by the bucket name. This
+// makes clear that a quarter/year balance IS the period-end snapshot, not a sum.
+export function bucketEndDate(series: FinPoint[], view: TrendView, label: string): string | null {
+  const inBucket = series.filter((p) => p.amount != null && pointBucketLabel(p, view) === label);
+  if (inBucket.length === 0) return null;
+  return [...inBucket].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date)).slice(-1)[0].period_end_date;
+}
+
 // Value at the selected bucket plus the previous bucket (for a like-for-like
 // period-over-period delta at the current granularity — never crossing the seam).
 export function bucketChange(series: FinPoint[], kind: "stock" | "flow", view: TrendView, bucket: string):
@@ -268,7 +277,7 @@ export function BucketSelect({ labels, value, onChange }: { labels: string[]; va
 export function DashboardControls({ view, onView, labels, bucket, onBucket }:
   { view: TrendView; onView: (v: TrendView) => void; labels: string[]; bucket: string; onBucket: (v: string) => void }) {
   return (
-    <div className="no-print sticky top-[64px] z-10 flex items-center justify-between flex-wrap gap-2 bg-white/80 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2">
+    <div className="no-print sticky top-[68px] z-10 flex items-center justify-between flex-wrap gap-2 bg-white/90 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2 shadow-sm">
       <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">View</span>
       <div className="flex items-center gap-2">
         <BucketToggle view={view} onChange={onView} />

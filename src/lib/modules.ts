@@ -3,8 +3,8 @@ export type ModuleKey = "sales" | "leads" | "finance" | "oe_network";
 export const ALL_MODULES: ModuleKey[] = ["sales", "leads", "finance", "oe_network"];
 
 export const MODULE_LABELS: Record<ModuleKey, string> = {
-  sales: "Sales",
-  leads: "Lead Analytics",
+  sales: "Sales (AFAC)",
+  leads: "Leads Analytics (AFAC)",
   finance: "Finance",
   oe_network: "OE Network",
 };

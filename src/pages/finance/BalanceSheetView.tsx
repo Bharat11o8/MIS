@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, RatiosPanel,
-  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange,
+  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange, bucketEndDate,
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
-import { formatCompact, formatINR, SOURCES_COLOR, APPLICATION_COLOR, SUCCESS_COLOR, DANGER_COLOR } from "./format";
+import { formatINR, formatKpi, SOURCES_COLOR, APPLICATION_COLOR, SUCCESS_COLOR, DANGER_COLOR } from "./format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -14,6 +14,12 @@ function findTotalSeries(groups: FinGroup[], sectionKey: string, subKey: string)
   const g = groups.find((x) => x.section_key === sectionKey);
   const sub = g?.sub_sections.find((s) => s.key === subKey);
   return sub?.total?.series ?? [];
+}
+
+// ISO date → "30 Jun 2026" (UTC, so a period-end date never slips a day by tz).
+function fmtAsAt(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { sheetSourceId: string; refreshNonce?: number }) {
@@ -61,14 +67,22 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
   const changeLabel = view === "monthly" ? "MoM Change" : view === "quarterly" ? "QoQ Change" : "YoY Change";
   const gap = srcCh.value != null && appCh.value != null ? srcCh.value - appCh.value : null;
   const balanced = gap != null && Math.abs(gap) < 1;
+  // A balance sheet is a point-in-time snapshot: the quarter/year figure is the
+  // balance AT period-end, not a sum. Label the KPIs with that as-at date so the
+  // "same value across views" is self-explanatory rather than looking wrong.
+  const asAt = fmtAsAt(bucketEndDate(sources, view, effBucket));
+  const asAtTxt = asAt ? `as at ${asAt}` : effBucket;
 
   return (
     <div className="flex flex-col gap-6">
       <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
 
+      <p className="text-[11px] text-gray-400 -mb-2">
+        Balance-sheet figures are point-in-time snapshots — a quarter or year shows the balance <b>as at</b> its period-end date, not a sum of months.
+      </p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KpiCard label={`Sources of Funds · ${effBucket}`} value={srcCh.value != null ? formatCompact(srcCh.value) : "—"} exact={srcCh.value != null ? formatINR(srcCh.value) : undefined} accent={SOURCES_COLOR} />
-        <KpiCard label={`Application of Funds · ${effBucket}`} value={appCh.value != null ? formatCompact(appCh.value) : "—"} exact={appCh.value != null ? formatINR(appCh.value) : undefined} accent={APPLICATION_COLOR} />
+        <KpiCard label={`Sources of Funds · ${asAtTxt}`} value={srcCh.value != null ? formatKpi(srcCh.value) : "—"} exact={srcCh.value != null ? formatINR(srcCh.value) : undefined} accent={SOURCES_COLOR} />
+        <KpiCard label={`Application of Funds · ${asAtTxt}`} value={appCh.value != null ? formatKpi(appCh.value) : "—"} exact={appCh.value != null ? formatINR(appCh.value) : undefined} accent={APPLICATION_COLOR} />
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? SUCCESS_COLOR : DANGER_COLOR }} />
           <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel}</div>
@@ -81,7 +95,7 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: balanced ? SUCCESS_COLOR : DANGER_COLOR }} />
           <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Balance Check</div>
           <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: balanced ? SUCCESS_COLOR : DANGER_COLOR }}>
-            {balanced ? "Balanced" : gap != null ? formatCompact(Math.abs(gap)) : "—"}
+            {balanced ? "Balanced" : gap != null ? formatKpi(Math.abs(gap)) : "—"}
           </div>
           <div className="text-[11px] font-medium text-gray-400 mt-0.5">
             {balanced ? "Sources = Application" : gap != null ? `Off by ${formatINR(Math.abs(gap))}` : "No data"}

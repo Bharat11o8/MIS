@@ -34,6 +34,7 @@ _MN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "No
 BALANCE_SHEET_SECTIONS = ["balance_sheet", "inventories", "working_capital", "working_capital_aging"]
 PROFIT_LOSS_SECTIONS = ["sales_accounts", "profit_loss_a_c", "production_cost", "employee_s_cost"]
 PLANT_OPS_SECTIONS = ["units", "average_unit_cost"]
+CASH_FLOW_SECTIONS = ["cash_flow_statement"]
 
 # Key Financial Ratios (section "ratios") split across the two statement tabs by
 # their category sub-section. Balance-sheet-driven ratios on the BS tab;
@@ -54,6 +55,11 @@ _SUB_LABELS = {
     "sales": "Sales", "productions": "Production",
     # Working Capital Aging (§8) sub-headers
     "inventory": "Inventory", "debtors": "Debtors", "creditors": "Creditors",
+    # Cash Flow Statement (§15) activities
+    "operating_activities": "Operating Activities",
+    "investing_activities": "Investing Activities",
+    "financing_activities": "Financing Activities",
+    "reconciliation": "Net Change & Cash Position",
 }
 
 
@@ -543,10 +549,18 @@ def _plant_ops_analytics(db: Session, sid: str) -> dict:
     return {"statement": "plant_ops", "kind": "flow", "kpis": {}, "groups": groups, "periods": periods}
 
 
+def _cash_flow_analytics(db: Session, sid: str) -> dict:
+    # A flow statement, like P&L. The activity nets (A)/(B)/(C) and Closing Cash
+    # arrive as each sub-section's `total`, so the frontend derives the headline
+    # KPIs from the groups directly (period-switchable) — no server-side KPI math.
+    groups, periods = _collect_groups(db, sid, CASH_FLOW_SECTIONS)
+    return {"statement": "cash_flow", "kind": "flow", "kpis": {}, "groups": groups, "periods": periods}
+
+
 @router.get("/analytics")
 def finance_analytics(
     sheet_source_id: str = Query(...),
-    statement: str = Query(..., pattern="^(balance_sheet|profit_loss|plant_ops)$"),
+    statement: str = Query(..., pattern="^(balance_sheet|profit_loss|plant_ops|cash_flow)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -561,6 +575,8 @@ def finance_analytics(
         return _balance_sheet_analytics(db, sheet_source_id)
     if statement == "plant_ops":
         return _plant_ops_analytics(db, sheet_source_id)
+    if statement == "cash_flow":
+        return _cash_flow_analytics(db, sheet_source_id)
     return _profit_loss_analytics(db, sheet_source_id)
 
 
