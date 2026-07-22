@@ -38,4 +38,6 @@ desktop.ini
 npm-debug.log*
 Assets
 
+# ── Local ops notes (not for the repo) ───────────────────────────────────────
 AI_CHATBOT_PLAN.md
+SSH_KEY_SETUP.md
