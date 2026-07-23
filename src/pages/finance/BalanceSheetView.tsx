@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, RatiosPanel,
-  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange, bucketEndDate,
+  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange, bucketEndDate, bucketPercent,
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
@@ -70,6 +70,9 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
   // A balance sheet is a point-in-time snapshot: the quarter/year figure is the
   // balance AT period-end, not a sum. Label the KPIs with that as-at date so the
   // "same value across views" is self-explanatory rather than looking wrong.
+  // The sheet's own composition % for each side, as typed — never recomputed.
+  const srcShare = bucketPercent(sources, view, effBucket);
+  const appShare = bucketPercent(application, view, effBucket);
   const asAt = fmtAsAt(bucketEndDate(sources, view, effBucket));
   const asAtTxt = asAt ? `as at ${asAt}` : effBucket;
 
@@ -81,8 +84,8 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
         Balance-sheet figures are point-in-time snapshots — a quarter or year shows the balance <b>as at</b> its period-end date, not a sum of months.
       </p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KpiCard label={`Sources of Funds · ${asAtTxt}`} value={srcCh.value != null ? formatKpi(srcCh.value) : "—"} exact={srcCh.value != null ? formatINR(srcCh.value) : undefined} accent={SOURCES_COLOR} />
-        <KpiCard label={`Application of Funds · ${asAtTxt}`} value={appCh.value != null ? formatKpi(appCh.value) : "—"} exact={appCh.value != null ? formatINR(appCh.value) : undefined} accent={APPLICATION_COLOR} />
+        <KpiCard label={`Sources of Funds · ${asAtTxt}`} value={srcCh.value != null ? formatKpi(srcCh.value) : "—"} exact={srcCh.value != null ? formatINR(srcCh.value) : undefined} accent={SOURCES_COLOR} share={srcShare} shareOf="of the balance sheet" />
+        <KpiCard label={`Application of Funds · ${asAtTxt}`} value={appCh.value != null ? formatKpi(appCh.value) : "—"} exact={appCh.value != null ? formatINR(appCh.value) : undefined} accent={APPLICATION_COLOR} share={appShare} shareOf="of the balance sheet" />
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? SUCCESS_COLOR : DANGER_COLOR }} />
           <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel}</div>

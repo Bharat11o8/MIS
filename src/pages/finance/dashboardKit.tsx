@@ -8,13 +8,13 @@
 // current mix as a donut, how that mix shifts over time as a stacked area, the
 // numbers + each line's mini-trend as a sparkline table, and what moved most as
 // a movers list — four different facts, never the same number replotted.
-import { useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import {
   ResponsiveContainer, ComposedChart, Area, Bar, BarChart, Line, LineChart,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from "recharts";
 import {
-  formatCompact, formatINR, formatPct, GRID_LINE_COLOR, AXIS_TEXT_COLOR,
+  formatCompact, formatINR, formatPct, formatShare, GRID_LINE_COLOR, AXIS_TEXT_COLOR,
   SUCCESS_COLOR, DANGER_COLOR, NEUTRAL_COLOR, SOURCES_COLOR, REVENUE_COLOR,
   GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR, APPLICATION_COLOR,
 } from "./format";
@@ -233,14 +233,32 @@ export function Card({ title, note, right, children }: { title?: string; note?: 
   );
 }
 
-export function KpiCard({ label, value, deltaPct, deltaPeriod, accent = SOURCES_COLOR, exact }:
-  { label: string; value: string; deltaPct?: number | null; deltaPeriod?: string | null; accent?: string; exact?: string }) {
+export function KpiCard({ label, value, deltaPct, deltaPeriod, accent = SOURCES_COLOR, exact, share, shareOf }:
+  { label: string; value: string; deltaPct?: number | null; deltaPeriod?: string | null; accent?: string;
+    exact?: string;
+    /** The sheet's own ratio for this line (0-1), e.g. % of Sales. Rendered as a
+     *  chip beside the value. Null/undefined when the sheet left the % blank —
+     *  never computed here, so nothing invented. */
+    share?: number | null;
+    /** What the share is a percentage OF, e.g. "of Sales". */
+    shareOf?: string }) {
   const dc = deltaPct == null ? NEUTRAL_COLOR : deltaPct >= 0 ? SUCCESS_COLOR : DANGER_COLOR;
   return (
     <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
       <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: accent }} />
       <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</div>
-      <div className="text-2xl font-bold text-gray-800 mt-1 tracking-tight" title={exact}>{value}</div>
+      <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+        <span className="text-2xl font-bold text-gray-800 tracking-tight" title={exact}>{value}</span>
+        {share != null && (
+          <span
+            className="text-[11px] font-bold px-1.5 py-0.5 rounded-md whitespace-nowrap"
+            style={{ background: `${accent}14`, color: accent }}
+            title={shareOf ? `${formatShare(share)} ${shareOf}` : formatShare(share)}
+          >
+            {formatShare(share)}
+          </span>
+        )}
+      </div>
       {deltaPct !== undefined && (
         <div className="text-[11px] font-semibold mt-0.5" style={{ color: dc }}>
           {formatPct(deltaPct)}{deltaPeriod ? <span className="text-gray-400 font-medium"> · {deltaPeriod}</span> : null}
@@ -274,11 +292,29 @@ export function BucketSelect({ labels, value, onChange }: { labels: string[]; va
 
 // One universal control bar per tab: the granularity everything renders at, plus
 // which bucket the snapshot views (donut / bridge / KPIs) point to.
-export function DashboardControls({ view, onView, labels, bucket, onBucket }:
-  { view: TrendView; onView: (v: TrendView) => void; labels: string[]; bucket: string; onBucket: (v: string) => void }) {
+/** Lets FinancePage inject the company selector into every view's sticky
+ *  controls bar — and tell it how far down to stick — without threading props
+ *  through all four views. `top` is measured from the page header's real
+ *  height so the bar never overlaps it. */
+export const StickyLeadingContext = createContext<{ leading: ReactNode; top: number }>({
+  leading: null,
+  top: 68,
+});
+
+export function DashboardControls({ view, onView, labels, bucket, onBucket, leading }:
+  { view: TrendView; onView: (v: TrendView) => void; labels: string[]; bucket: string;
+    onBucket: (v: string) => void;
+    /** Rendered in place of the "View" label — used to surface the company
+     *  selector once the page's own selector has scrolled out of sight. */
+    leading?: ReactNode }) {
+  const { leading: injected, top } = useContext(StickyLeadingContext);
+  const lead = leading ?? injected;
   return (
-    <div className="no-print sticky top-[68px] z-10 flex items-center justify-between flex-wrap gap-2 bg-white/90 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2 shadow-sm">
-      <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">View</span>
+    <div
+      className="no-print sticky z-20 flex items-center justify-between flex-wrap gap-2 bg-white/90 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2 shadow-sm"
+      style={{ top }}
+    >
+      {lead ?? <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">View</span>}
       <div className="flex items-center gap-2">
         <BucketToggle view={view} onChange={onView} />
         <BucketSelect labels={labels} value={bucket} onChange={onBucket} />
@@ -337,7 +373,15 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
     const a = buildTimeline(primary, kind, view);
     const b = secondary ? buildTimeline(secondary, kind, view) : [];
     const bByLabel = new Map(b.map((x) => [x.label, x.value]));
-    return a.map((x) => ({ label: x.label, primary: x.value, secondary: bByLabel.get(x.label) ?? null }));
+    return a.map((x) => ({
+      label: x.label,
+      primary: x.value,
+      secondary: bByLabel.get(x.label) ?? null,
+      // The sheet's own share for each series at this bucket, surfaced in the
+      // tooltip. Null wherever the sheet left the % blank.
+      primaryPct: bucketPercent(primary, view, x.label),
+      secondaryPct: secondary ? bucketPercent(secondary, view, x.label) : null,
+    }));
   }, [primary, secondary, kind, view]);
 
   return (
@@ -356,7 +400,13 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
             <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={{ stroke: GRID_LINE_COLOR }} />
             <YAxis tickFormatter={(v) => formatCompact(v)} tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={false} width={64} />
-            <Tooltip formatter={(v: any, n: any) => [formatINR(Number(v)), n === "primary" ? primaryLabel : secondaryLabel]}
+            <Tooltip
+              formatter={(v: any, n: any, item: any) => {
+                const pct = n === "primary" ? item?.payload?.primaryPct : item?.payload?.secondaryPct;
+                const money = formatINR(Number(v));
+                return [pct != null ? `${money} · ${formatShare(pct)}` : money,
+                  n === "primary" ? primaryLabel : secondaryLabel];
+              }}
               contentStyle={{ fontSize: 12, borderRadius: 10, border: `1px solid ${GRID_LINE_COLOR}` }} />
             {kind === "stock" ? (
               <Area type="monotone" dataKey="primary" name="primary" stroke={SOURCES_COLOR} strokeWidth={2} fill="url(#finPrimaryFill)" />

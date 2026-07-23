@@ -54,6 +54,16 @@ export function formatPct(n: number | null | undefined, digits = 1) {
   return `${n > 0 ? "+" : ""}${n.toFixed(digits)}%`;
 }
 
+// The sheet's own ratio for a line (composition / % of Sales / …). Stored as a
+// 0-1 fraction, shown unsigned — unlike formatPct, which signs a period delta.
+// Small non-zero shares keep two decimals so a 0.4% line doesn't read as "0.0%".
+export function formatShare(n: number | null | undefined) {
+  if (n === null || n === undefined) return "—";
+  const pct = n * 100;
+  const digits = Math.abs(pct) > 0 && Math.abs(pct) < 1 ? 2 : 1;
+  return `${pct.toFixed(digits)}%`;
+}
+
 export function formatSignedINR(n: number | null | undefined) {
   if (n === null || n === undefined) return "—";
   return `${n >= 0 ? "+" : "-"}${formatINR(Math.abs(n))}`;

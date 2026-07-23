@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, ProfitBridgeCard, MarginTrendCard,
-  RatiosPanel, WatchListCard, SectionHeading, bucketLabelsOf, bucketChange,
+  RatiosPanel, WatchListCard, SectionHeading, bucketLabelsOf, bucketChange, bucketPercent,
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
-import { formatINR, formatKpi, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR } from "./format";
+import { formatINR, formatKpi, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR, SUCCESS_COLOR } from "./format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -51,6 +51,7 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
 
   const sales = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/sales_accounts") : []), [data]);
   const gross = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/gross_margin") : []), [data]);
+  const pbitda = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/pbitda") : []), [data]);
   const pat = useMemo(() => (data ? findItemSeries(data.groups, "profit_loss_a_c/pat") : []), [data]);
   const plGroup = useMemo(() => data?.groups.find((g) => g.section_key === "profit_loss_a_c") ?? null, [data]);
   const bucketLabels = useMemo(() => bucketLabelsOf(sales, "flow", view), [sales, view]);
@@ -63,7 +64,13 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
   // KPIs at the selected bucket/granularity so they track the control.
   const salesCh = bucketChange(sales, "flow", view, effBucket);
   const grossCh = bucketChange(gross, "flow", view, effBucket);
+  const pbitdaCh = bucketChange(pbitda, "flow", view, effBucket);
   const patCh = bucketChange(pat, "flow", view, effBucket);
+  // The sheet's own "% of Sales" for each line, as typed — never recomputed.
+  const salesShare = bucketPercent(sales, view, effBucket);
+  const grossShare = bucketPercent(gross, view, effBucket);
+  const pbitdaShare = bucketPercent(pbitda, view, effBucket);
+  const patShare = bucketPercent(pat, view, effBucket);
   const changePct = salesCh.value != null && salesCh.prevValue != null && salesCh.prevValue > 0
     ? Math.round(((salesCh.value - salesCh.prevValue) / salesCh.prevValue) * 1000) / 10 : null;
   const changeLabel = view === "monthly" ? "MoM Sales" : view === "quarterly" ? "QoQ Sales" : "YoY Sales";
@@ -72,10 +79,13 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
     <div className="flex flex-col gap-6">
       <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KpiCard label={`Sales · ${effBucket}`} value={formatKpi(salesCh.value ?? 0)} exact={formatINR(salesCh.value ?? 0)} accent={REVENUE_COLOR} />
-        <KpiCard label={`Gross Margin · ${effBucket}`} value={formatKpi(grossCh.value ?? 0)} exact={formatINR(grossCh.value ?? 0)} accent={GROSS_PROFIT_COLOR} />
-        <KpiCard label={`PAT · ${effBucket}`} value={formatKpi(patCh.value ?? 0)} exact={formatINR(patCh.value ?? 0)} accent={NETT_PROFIT_COLOR} />
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
+        <KpiCard label={`Sales · ${effBucket}`} value={formatKpi(salesCh.value ?? 0)} exact={formatINR(salesCh.value ?? 0)} accent={REVENUE_COLOR} share={salesShare} shareOf="of Sales" />
+        <KpiCard label={`Gross Margin · ${effBucket}`} value={formatKpi(grossCh.value ?? 0)} exact={formatINR(grossCh.value ?? 0)} accent={GROSS_PROFIT_COLOR} share={grossShare} shareOf="of Sales" />
+        {/* SOURCES_COLOR (the bridge's PBITDA colour) is the same steel blue as
+            Sales, so use the green profit tone to keep the cards distinguishable. */}
+        <KpiCard label={`PBITDA · ${effBucket}`} value={formatKpi(pbitdaCh.value ?? 0)} exact={formatINR(pbitdaCh.value ?? 0)} accent={SUCCESS_COLOR} share={pbitdaShare} shareOf="of Sales" />
+        <KpiCard label={`PAT · ${effBucket}`} value={formatKpi(patCh.value ?? 0)} exact={formatINR(patCh.value ?? 0)} accent={NETT_PROFIT_COLOR} share={patShare} shareOf="of Sales" />
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? "#4E7D57" : "#B5483A" }} />
           <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel} Change</div>

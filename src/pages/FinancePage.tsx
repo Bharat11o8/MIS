@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   RefreshCw, Plus, ChevronDown, ChevronUp, CheckCircle2, XCircle, Clock, History, Trash2, Printer, Database,
@@ -10,6 +10,7 @@ import BalanceSheetView from "@/pages/finance/BalanceSheetView";
 import ProfitLossView from "@/pages/finance/ProfitLossView";
 import PlantOpsView from "@/pages/finance/PlantOpsView";
 import CashFlowView from "@/pages/finance/CashFlowView";
+import { StickyLeadingContext } from "@/pages/finance/dashboardKit";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -40,6 +41,17 @@ export default function FinancePage() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [activeTab, setActiveTab] = useState<Tab>("balance_sheet");
   const [refreshNonce, setRefreshNonce] = useState(0); // bumped after a sync to refetch the active view
+
+  // Once the page's own company selector scrolls out of view, a compact copy of
+  // it takes over the sticky controls bar so switching company never needs a
+  // scroll back to the top.
+  const selectorRef = useRef<HTMLDivElement | null>(null);
+  const [selectorVisible, setSelectorVisible] = useState(true);
+
+  // The sticky header wraps at narrow widths, so its height is measured rather
+  // than hardcoded — the controls bar sticks directly beneath whatever it is.
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const [headerH, setHeaderH] = useState(76);
 
   // Master data files (admin only)
   const [masters, setMasters] = useState<MasterItem[]>([]);
@@ -85,6 +97,31 @@ export default function FinancePage() {
   }, [token, isAdmin]);
 
   useEffect(() => { loadSources(); loadMasters(); loadHistory(); }, [loadSources, loadMasters, loadHistory]);
+
+  // Track the sticky header's height so the controls bar can sit flush under it
+  // instead of overlapping when the header wraps to two rows.
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeaderH(el.offsetHeight));
+    ro.observe(el);
+    setHeaderH(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  // Watch the real selector; the sticky stand-in appears only once it's gone.
+  // rootMargin's top offset matches the sticky bar so the swap happens exactly
+  // as the selector slides under it, not before.
+  useEffect(() => {
+    const el = selectorRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => setSelectorVisible(entry.isIntersecting),
+      { rootMargin: `-${headerH + 48}px 0px 0px 0px`, threshold: 0 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [activeTab, headerH]);
 
   const handleAddMaster = async () => {
     if (!newLink.trim() || !newLabel.trim()) return;
@@ -167,6 +204,18 @@ export default function FinancePage() {
   const statementLabel = activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow" : "Plant Operations";
   const onSheetsTab = activeTab === "sheets";
 
+  // Fed to the views' sticky controls bar via context. null keeps the plain
+  // "View" label, so nothing changes until the real selector scrolls away.
+  const stickyCompanySelector = selectorVisible ? null : (
+    <Select
+      value={selectedId}
+      onChange={setSelectedId}
+      placeholder="Select a company…"
+      options={sources.map((s) => ({ value: s.id, label: s.label }))}
+      className="min-w-[150px]"
+    />
+  );
+
   const TABS: [Tab, string][] = [
     ["balance_sheet", "Balance Sheet"],
     ["profit_loss", "P&L"],
@@ -188,7 +237,7 @@ export default function FinancePage() {
           whole row is sticky so the tabs stay reachable while scrolling (a nested tab
           bar can only stick within its own row, so the header itself is the sticky
           element). The per-view VIEW controls sticky-stack just beneath it. */}
-      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+      <motion.div ref={headerRef} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
         className="no-print sticky top-0 z-30 -mx-6 px-6 py-3 bg-white/95 backdrop-blur flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="flex items-center gap-3"><span className="page-title-dark">FINANCE</span></h1>
@@ -210,7 +259,7 @@ export default function FinancePage() {
 
       {/* Company selector (view) — hidden on the Sheets tab, which is config, not a company view */}
       {!onSheetsTab && (
-        <div className="no-print flex items-center justify-between flex-wrap gap-3">
+        <div ref={selectorRef} className="no-print flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <Select
               value={selectedId}
@@ -352,10 +401,12 @@ export default function FinancePage() {
         </div>
       )}
 
-      {selectedId && activeTab === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-      {selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-      {selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-      {selectedId && activeTab === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+      <StickyLeadingContext.Provider value={{ leading: stickyCompanySelector, top: headerH + 8 }}>
+        {selectedId && activeTab === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {selectedId && activeTab === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+      </StickyLeadingContext.Provider>
 
       {isAdmin && onSheetsTab && (
         <div className="no-print">
