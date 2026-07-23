@@ -21,6 +21,11 @@ backend/.env
 # ── Local data sheets (customer data — never commit) ─────────────────────────
 Local_sheets/
 
+# ── Local-only docs & scripts (contain VPS/internal details — never commit) ───
+DEPLOY.md
+DEV_AND_DEPLOY.md
+tunnel-vps-db.ps1
+
 # ── IDE & tooling ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/

@@ -14,6 +14,7 @@ import ExportPage from "@/pages/ExportPage";
 import { ToastProvider } from "@/components/ui/Toast";
 import ProfilePage from "@/pages/ProfilePage";
 import UsersPage from "@/pages/UsersPage";
+import VisitLogFormPage from "@/pages/VisitLogFormPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, mustChangePassword } = useAuth();
@@ -38,6 +39,8 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      {/* Public — shared with OEM salespeople by link. No auth, no dashboard. */}
+      <Route path="/visit-log" element={<VisitLogFormPage />} />
       <Route
         path="/login"
         element={
