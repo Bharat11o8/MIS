@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network, oe_targets
+from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network, oe_targets, visit_log
 
 load_dotenv()
 
@@ -35,6 +35,7 @@ app.include_router(finance.router)
 app.include_router(sheets.router)
 app.include_router(oe_network.router)
 app.include_router(oe_targets.router)
+app.include_router(visit_log.router)  # public — no auth (shared form link)
 
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/", tags=["Health"])

@@ -64,16 +64,49 @@ const SALESPEOPLE = Object.keys(SALESPERSON_EMAILS);
 const OEMS = ["KIA", "MSIL", "HYUNDAI", "TOYOTA", "TATA", "MAHINDRA"];
 const CONTACT_MODES = ["Visit", "Calling"];
 
-/** MSIL is the odd one out: it has no Mats Sales figure, but does need the
- *  dealership's channel (Arena / Nexa). Every other OEM is the reverse. */
+/** MSIL-only fields: the dealership's channel (Arena / Nexa), asked right under
+ *  the OEM, and the monthly mats figure. Neither is asked for other OEMs. */
 const MSIL = "MSIL";
 const MSIL_CHANNELS = ["Arena", "Nexa"];
 
 const REMARK_CATEGORIES = ["Product Feedback", "Replacement", "Sales", "Others"];
 
-// TODO(data): dealership master list, keyed by state. Empty for now — the field
-// falls back to free text until the real list is supplied.
-const DEALERSHIPS_BY_STATE: Record<string, string[]> = {};
+// Dealership master list, keyed by the geo API's state names so it lines up
+// with the State field. Names only — the rep picks the City separately.
+const DEALERSHIPS_BY_STATE: Record<string, string[]> = {
+  "Andaman and Nicobar Islands": ["RUKMANI MOTORS"],
+  "Andhra Pradesh": ["BHARGAVI", "JAYABHERI AUTOMOTIVES", "JAYALAKSHMI AUTOMOBILES", "M.S.A. MOTORS", "NIVYA AUTOMOBILES", "NOVELTY REDDY & REDDY MOTORS", "REDDY & REDDY MOTORS", "S B MOTOR CORPORATION", "SANTOSH AUTOMOTORS", "SATTI BABU MOTORS", "VARUN MOTORS"],
+  "Arunachal Pradesh": ["D Y MOTORS"],
+  "Assam": ["BAJRANG CAR WORLD", "BHARATI MOTORS", "BIMAL AUTO AGENCY", "JAINCO", "JAY BEE AUTO AGENCIES", "MITTAL AUTO ZONE", "PALLAVI MOTORS", "PODDAR CAR WORLD", "RD MOTORS", "SAIKIA AUTO", "VISHAL CAR WORLD"],
+  "Bihar": ["ALANKAR AUTO", "DMC CARS", "GS MOTORS", "HORIZON AUTOMOBILES", "KARLO AUTOMOBILES", "PEARL CARS", "RAJIV AUTOMOBILES", "RAJKRISHNA MOTORS", "RAMKRSIHNA MOTORS", "REESHAV AUTOMOBILES", "SEEMANCHAL MOTORS", "SHREE GOPAL AUTO"],
+  "Chhattisgarh": ["CHOUHAN AUTOMOBILES", "HDN MOTORS", "M SQUARE MOTORS", "MAHAMAYA AUTO CARS", "SATYA AUTOMOBILES", "SKY AUTOMOBILES", "SPARSH AUTO", "VISHWABHARTI AUTOMOBILES"],
+  "Delhi": ["AAA VEHICLEADES", "COMPETENT", "D D MOTORS", "MAGIC AUTO", "PREM MOTORS", "RANA MOTOR", "ROHAN MOTORS", "SAYA AUTOMOBILES", "SHREYASH AUTOMOTIVES", "SINGLA LINK AGENCY", "T R SAWHNEY"],
+  "Goa": ["CHOWGULE", "SAI POINT CARS PVT LTD", "SAI SERVICE"],
+  "Gujarat": ["ALPHA AUTOLINK", "AMAR CARS", "ATUL MOTOR", "B. M. AUTOLINK", "COMET MOTORS", "DHRU", "DREAMVEHICLES", "K D MOTORS", "KATARIA AUTOMOBILES", "KIRAN MOTOR", "NANDA AUTOMOBILES", "PEGASUS", "PERFECT AUTO SERVICE", "POPULAR WHEELERS", "RAVIRATNA MOTORS", "RB CARS", "STARLINE CARS", "TANU MOTORS", "UDAY AUTOLINK", "VIMCO MOTORS"],
+  "Haryana": ["AUTO GALLERY", "AUTO NATION", "AUTO VIBES LLP", "AUTOVOUGE", "DINCO 4 WHEELS", "EAKANSH MOTORS", "FAIR DEAL CARS", "JAGMOHAN MOTOR", "KARNAL MOTORS", "PASCO AUTOMOBILES", "PLATINUM MOTOCORP", "SARAOGI AUTOMOBILES", "SHAKTI MOTORS", "SWASTIK MOTOCORP", "TCS & ASSOCIATES", "UNIQUE AUTOLEAD"],
+  "Himachal Pradesh": ["COMPETENT", "GOYAL MOTORS"],
+  "Jammu and Kashmir": ["COMPETENT", "JAMKASH VEHICLEADES", "JAMKASH VEHICLEADES (KASHMIR)", "JAMMU MOTORS", "KANGRA VEHICLEADES", "KATHROO MOTORS", "NSF VEHICLES", "PEAKS AUTO"],
+  "Jharkhand": ["CAR ONE", "HILLTOP MOTORS", "HINDUSTAN AUTO AGENCY", "MOTOR WORLD", "PEBCO MOTORS", "PREMSONS MOTOR UDYOG", "RELIABLE INDUSTRIES", "TULSYAN MOTOR"],
+  "Karnataka": ["ABHARAN MOTORS", "AVANISH MOTORS", "BHARATH AUTO CARS", "BIMAL AUTO AGENCY", "K.P.F. PVT. LTD.", "KALYANI MOTORS", "KATARIA AUTOMOBILES", "LAHOTI MOTORS", "MANDOVI MOTORS", "MUNEER CARS", "POPULAR VEHICLES", "PRATHAM MOTORS", "PRN AUTOMOTIVE", "REVANKAR MOTOR", "RNS MOTORS", "SAKETH AUTOMOBILES", "SANVIT AUTOMOTIVES LLP", "SHANTESHA MOTORS", "SHRUTI MOTORS", "SREE LAKSHMI", "SURAKSHA CAR", "VARUN MOTORS", "VENKAT MOTORS", "VIJAY MOTOWINGS"],
+  "Kerala": ["A M MOTORS", "A.V.G.MOTORS", "BRD CAR WORLD", "GEORGE MAIJO", "INDUS MOTOR", "KVR AUTOCARS", "POPULAR VEHICLES", "SAI SERVICE", "SARATHY AUTO CARS"],
+  "Ladakh": ["DRUK AUTO"],
+  "Madhya Pradesh": ["ADINATH MOTORS", "CITY CARS", "DAGA MOTORS", "INFINITY CARS", "JEEWAN MOTORS", "KAMTHI MOTORS", "KATHED MOTOCORP", "KTL AUTOMOBILES", "MAA GAYATRI AUTOMOBILES", "NIKUNJ MOTORS", "NIMAR MOTORS", "OCEAN MOTORS", "PANDYA AUTOMOBILES", "PATEL MOTORS", "PREM MOTORS", "RAJRUP MOTOR JUNCTION", "RANA MOTOR", "RUKMANI MOTORS", "SATYAM MOTORS", "SHUBH MOTORS", "SRISATYASAI AUTOMOBILES", "STANDARD AUTO", "UNITARA MOTORS", "YUG CARS"],
+  "Maharashtra": ["AHER AUTOPRIME LLP", "ARUN MOTORS", "ARYA CARS", "ASPA BANDSONS AUTO", "AUTOMOTIVE MANUFACTURERS", "AUTOMOTIVE MANUFACTURERS PVT. LTD.", "CHAVAN", "CHOWGULE", "EXCEL AUTOVISTA", "FORT POINT AUTOMOTIVE", "HIMALAYA CARS", "JAGRUT MOTORS", "KANKARIYA AUTOMOBILES", "KHANDELWAL AUTOWHEELS", "KHANDESH MOTORS LLP", "KOTHARI WHEELS", "KR MOTORS KOLKOHUR", "MAHALAXMI AUTOMOTIVES", "MANRAJ AUTOMOBILES", "MY CAR", "NAVNIT MOTORS", "PAGARIYA AUTO", "SAI SERVICE", "SARAYU INVESTMENT", "SEHGAL AUTORIDERS", "SEVA AUTOMOTIVE", "SHAAN CARS", "SHIVAM AUTO ZONE", "SIDDHI WHEELS", "SIMRAN MOTORS", "SUMAN KIRTI CAR", "SUPREME AUTOMOBILES", "TRISTAR", "VELOX MOTORS", "VITESSE PVT LTD", "WONDER CAR"],
+  "Manipur": ["EASTERN MOTORS", "SAMADON ENTERPRISE"],
+  "Meghalaya": ["BANALARI WORLD CARS", "RANI MOTORS"],
+  "Mizoram": ["GIG MOTORS"],
+  "Nagaland": ["PROGRESSIVE MOTORS", "SEYIE AUTO"],
+  "Odisha": ["APARNAA MOTORS", "JYOTE MOTORS", "LEGEND CARS", "NARAYANI MOTORS", "ODYSEY", "ORBIT MOTORS", "SKY AUTOMOBILES", "TUSHI MOTORS"],
+  "Punjab": ["AUTOPACE", "BABA AUTO", "CM AUTO SALES", "CM AUTOMOBILES", "GULZAR MOTOR", "HIRA AUTOMOBILE", "HOSHIARPUR AUTOMOBILES", "JAYCEE MOTORS", "JUJHAR MOTOR", "LOVELY AUTOS", "MAPSKO AUTO INDIA", "MARWAH AUTOS", "MAX AUTO", "MODERN AUTOMOBILES", "NAVDESH AUTOS", "PATHANKOT VEHICLEADES", "PLUTON DREAMWORKS", "REMIRA MOTORS", "SWANI MOTORS", "TARA AUTOMOBILES", "TRICITY AUTOS"],
+  "Rajasthan": ["AJMER AUTO", "AURIC MOTORS", "BHATIA AND COMPANY", "CHAMPION CARS", "DUDI AUTOMOBILES", "FORTUNE CARS", "JAMU AUTOMOBILES", "K.P. AUTOMOTIVES", "KTL PVT. LTD.", "LMJ SERVICES", "M.G. MOTORS", "NAVNEET MOTORS", "PREM MOTORS", "RELAN MOTORS", "SANGA AUTONATION", "SATNAM MOTOCORP", "SHRI KRISHNA AUTOSALES", "SHRI MANGALAM AUTO", "SUWALKA MOTORS", "TECHNOY", "TM MOTORS", "VIPUL MOTORS"],
+  "Sikkim": ["ENTEL MOTORS"],
+  "Tamil Nadu": ["A.I.ENTERPRISES", "AADHI CARS", "ABT LIMITED", "ASIR AUTOMOBILES", "ATHEN CARS", "CARS INDIA PVT. LTD.", "CRESCO", "GANESH CARS", "JAI KRISHNAA AUTOSALES", "KHIVRAJ MOTORS", "MEENAKSHI AUTO ZONE", "PILLAI & SONS MOTOR COMPANY", "PLA MOTORS", "POPULAR VEHICLES", "RAJALAKSHMI CARS", "S M CAR", "SHENBAKA CARS", "SIVA AUTOMOTIVE TRADING", "SRE SHASHTI CAR", "SREE SARADHAMBAL AUTOMOBILES", "SRI AMMAN CARS", "SRI CITY AUTO", "THRIVENI CAR", "VISHNU CARS"],
+  "Telangana": ["ACER MOTORS", "ADARSHA AUTO WORLD", "AUTOFIN LIMITED", "GEM MOTORS (INDIA)", "JAYABHERI AUTOMOTIVES", "MITHRA AUTO AGENCIES", "PAVAN MOTORS", "POPULAR VEHICLES", "SAI SERVICE", "SRI JAYARAMA MOTORS", "WIN MOTORS"],
+  "Tripura": ["JAIN UDYOG", "PALLAVI MOTORS"],
+  "Uttar Pradesh": ["AGR AUTOMOBILES", "AKANKSHA AUTOMOBILES", "AMITDEEP MOTORS", "ANAND MOTOR", "ANIL MOTORS", "ARBIT AUTOMOBILES", "BRIGHT 4 WHEEL SALES", "BRIGHT 4 WHEEL SALES PRAYAGRAJ", "CONCEPT CARS", "CORAL MOTORS", "DEEP MOTORS", "DEV MOTORS", "FAIR DEAL CARS", "GLOBUS", "KAVISHA MOTORS", "KIRTIKUNJ AUTOMOBILES", "KTL PVT. LTD.", "KULDEEP MOTORS", "MEGA MOTORS", "MERAK VEHICLES", "MOTORCRAFT INDIA", "MY CAR", "NANDANI MOTORS", "ONE UP MOTORS INDIA", "PREM MOTORS", "RADHA GOVIND AUTOMOBILES", "REGENT AUTOMOBILES", "SARASWATI MOTORS", "SB CARS", "SKUNIVERSE AUTOMOBILE", "SMARTWHEELS", "SNV AUTOMOBILES", "STAR CARS", "SUMITRA DS MOTORS", "SURI AUTOMOBILES", "TANYA AUTOMOBILES", "UMA MOTORS", "VARANASI MOTORS", "VELOCITY CARS", "VIPUL MOTORS"],
+  "Uttarakhand": ["AKANKSHA AUTOMOBILES", "D D MOTORS", "FUTURE AUTO WHEELS", "NAINITAL MOTORS", "PREM MOTORS", "ROHAN MOTORS", "SHAKUMBARI AUTOMOBILES"],
+  "West Bengal": ["BEE KAY AUTO", "BHANDARI", "DEWARS GARAGE", "J.K. WHEELS", "JYOTE MOTORS (BENGAL)", "MACHINO TECHNO (SALES)", "ONE AUTO", "OSL MOTOCORP", "PODDAR CAR WORLD", "PREMIER CAR WORLD", "SAINATH AUTOLINKS", "SANEI MOTORS", "SEVOKE MOTORS", "STARBURST MOTORS", "SWG CAR WORLD"],
+};
 
 /** Fallback so the State field still works if the geo API is unreachable. */
 const INDIAN_STATES_FALLBACK = [
@@ -98,6 +131,7 @@ interface FormState {
   dealership: string;
   address: string;
   contact_person: string;
+  contact_number: string;
   designation: string;
   car_sales: string;
   seat_cover_sales: string;
@@ -133,6 +167,7 @@ const EMPTY: FormState = {
   dealership: "",
   address: "",
   contact_person: "",
+  contact_number: "",
   designation: "",
   car_sales: "",
   seat_cover_sales: "",
@@ -151,6 +186,7 @@ const FIELD_LABELS: Record<keyof FormState, string> = {
   dealership: "Dealership",
   address: "Address",
   contact_person: "Contact Person",
+  contact_number: "Contact Number",
   designation: "Designation",
   car_sales: "Monthly Car Sales",
   seat_cover_sales: "Monthly Seat Cover Sales",
@@ -158,14 +194,23 @@ const FIELD_LABELS: Record<keyof FormState, string> = {
   channel: "Arena / Nexa",
 };
 
+// Every always-visible field is required. Derived/auto fields (email, visit_date)
+// and conditional ones (channel, mats_sales — MSIL only; photo — Visit only) are
+// validated separately in handleSubmit so they aren't demanded when hidden.
 const REQUIRED: (keyof FormState)[] = [
   "salesperson",
   "oem",
   "contact_mode",
   "visit_date",
   "state",
-  "city",
   "dealership",
+  "city",
+  "address",
+  "contact_person",
+  "contact_number",
+  "designation",
+  "car_sales",
+  "seat_cover_sales",
 ];
 
 // ─── Field styling ───────────────────────────────────────────────────────────
@@ -493,13 +538,13 @@ export default function VisitLogFormPage() {
   const setStateField = (value: string) =>
     setForm((f) => ({ ...f, state: value, city: "", dealership: "" }));
 
-  // MSIL swaps Mats Sales for the Arena/Nexa channel — clear whichever no
-  // longer applies so a stale value can't be submitted.
+  // Channel and mats are both MSIL-only — drop them when the OEM changes away
+  // so a stale value can't ride along on a non-MSIL submission.
   const setOem = (value: string) =>
     setForm((f) => ({
       ...f,
       oem: value,
-      mats_sales: value === MSIL ? "" : f.mats_sales,
+      mats_sales: value === MSIL ? f.mats_sales : "",
       channel: value === MSIL ? f.channel : "",
     }));
 
@@ -509,8 +554,7 @@ export default function VisitLogFormPage() {
     if (value !== "Visit") setPhoto(null);
   };
 
-  const isMsil = form.oem === MSIL;
-  const showMats = !!form.oem && !isMsil;   // every OEM except MSIL
+  const isMsil = form.oem === MSIL;   // gates both the channel and mats fields
   const showPhoto = form.contact_mode === "Visit";
 
   const dealershipOptions = form.state ? DEALERSHIPS_BY_STATE[form.state] ?? [] : [];
@@ -544,8 +588,24 @@ export default function VisitLogFormPage() {
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
+    // A valid Indian mobile: 10 digits starting 6-9. (Emptiness is caught above.)
+    if (!/^[6-9]\d{9}$/.test(form.contact_number)) {
+      setError("Contact number must be a 10-digit mobile starting 6–9.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     if (isMsil && !form.channel) {
       setError("Please select Arena or Nexa.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (isMsil && !form.mats_sales.trim()) {
+      setError("Please enter Monthly Mats Sales.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (showPhoto && !photo) {
+      setError("Please add a photo for a Visit.");
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
@@ -682,6 +742,40 @@ export default function VisitLogFormPage() {
                     value={form.oem}
                     onChange={setOem}
                   />
+                  {/* MSIL-only, and asked immediately after the OEM it belongs to. */}
+                  <AnimatePresence initial={false}>
+                    {isMsil && (
+                      <motion.div
+                        key="channel"
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="flex flex-col gap-2 overflow-hidden"
+                      >
+                        <Label required>{FIELD_LABELS.channel}</Label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {MSIL_CHANNELS.map((c) => {
+                            const on = form.channel === c;
+                            return (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => set("channel", on ? "" : c)}
+                                className={`h-[52px] px-3 rounded-2xl text-base font-medium border transition-colors flex items-center justify-center gap-2 ${
+                                  on
+                                    ? "bg-orange-50 border-orange-300 text-orange-700"
+                                    : "bg-white border-gray-200 text-gray-600"
+                                }`}
+                              >
+                                {on && <Check size={16} className="text-orange-500" />}
+                                {c}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                   <SelectField
                     label={FIELD_LABELS.contact_mode}
                     required
@@ -715,6 +809,18 @@ export default function VisitLogFormPage() {
                     onChange={setStateField}
                     placeholder="Search state…"
                   />
+                  {/* Dealership sits right under State — it's filtered by State,
+                      and City is picked independently below. */}
+                  <SearchableField
+                    label={FIELD_LABELS.dealership}
+                    required
+                    options={dealershipOptions}
+                    value={form.dealership}
+                    onChange={(v) => set("dealership", v)}
+                    placeholder="Search dealership…"
+                    disabled={!form.state}
+                    hint="Select a state first"
+                  />
                   <SearchableField
                     label={FIELD_LABELS.city}
                     required
@@ -729,21 +835,11 @@ export default function VisitLogFormPage() {
                 </div>
               </Section>
 
-              {/* ── Dealership (filtered by State, not City) ── */}
+              {/* ── Dealership details ── */}
               <Section title="Dealership" icon={<Building2 size={14} />}>
                 <div className="flex flex-col gap-4">
-                  <SearchableField
-                    label={FIELD_LABELS.dealership}
-                    required
-                    options={dealershipOptions}
-                    value={form.dealership}
-                    onChange={(v) => set("dealership", v)}
-                    placeholder="Search dealership…"
-                    disabled={!form.state}
-                    hint="Select a state first"
-                  />
                   <div className="flex flex-col gap-2">
-                    <Label>{FIELD_LABELS.address}</Label>
+                    <Label required>{FIELD_LABELS.address}</Label>
                     <textarea
                       rows={2}
                       className={areaBase}
@@ -753,7 +849,7 @@ export default function VisitLogFormPage() {
                     />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label>{FIELD_LABELS.contact_person}</Label>
+                    <Label required>{FIELD_LABELS.contact_person}</Label>
                     <textarea
                       rows={2}
                       className={areaBase}
@@ -763,7 +859,19 @@ export default function VisitLogFormPage() {
                     />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label>{FIELD_LABELS.designation}</Label>
+                    <Label required>{FIELD_LABELS.contact_number}</Label>
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      maxLength={10}
+                      className={fieldBase}
+                      value={form.contact_number}
+                      onChange={(e) => set("contact_number", e.target.value.replace(/\D/g, ""))}
+                      placeholder="10-digit mobile number"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label required>{FIELD_LABELS.designation}</Label>
                     <textarea
                       rows={2}
                       className={areaBase}
@@ -779,7 +887,7 @@ export default function VisitLogFormPage() {
               <Section title="Dealer's Monthly Figures" icon={<TrendingUp size={14} />}>
                 <div className="flex flex-col gap-4">
                   <div className="flex flex-col gap-2">
-                    <Label>{FIELD_LABELS.car_sales}</Label>
+                    <Label required>{FIELD_LABELS.car_sales}</Label>
                     <input
                       type="number" inputMode="numeric" min="0"
                       className={fieldBase}
@@ -789,7 +897,7 @@ export default function VisitLogFormPage() {
                     />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label>{FIELD_LABELS.seat_cover_sales}</Label>
+                    <Label required>{FIELD_LABELS.seat_cover_sales}</Label>
                     <input
                       type="number" inputMode="numeric" min="0"
                       className={fieldBase}
@@ -798,10 +906,9 @@ export default function VisitLogFormPage() {
                       placeholder="0"
                     />
                   </div>
-                  {/* Every OEM except MSIL reports mats; MSIL reports its
-                      channel (Arena / Nexa) instead. */}
-                  <AnimatePresence initial={false} mode="wait">
-                    {showMats && (
+                  {/* Mats is an MSIL-only line. */}
+                  <AnimatePresence initial={false}>
+                    {isMsil && (
                       <motion.div
                         key="mats"
                         initial={{ opacity: 0, height: 0 }}
@@ -809,7 +916,7 @@ export default function VisitLogFormPage() {
                         exit={{ opacity: 0, height: 0 }}
                         className="flex flex-col gap-2 overflow-hidden"
                       >
-                        <Label>{FIELD_LABELS.mats_sales}</Label>
+                        <Label required>{FIELD_LABELS.mats_sales}</Label>
                         <input
                           type="number" inputMode="numeric" min="0"
                           className={fieldBase}
@@ -817,37 +924,6 @@ export default function VisitLogFormPage() {
                           onChange={(e) => set("mats_sales", e.target.value)}
                           placeholder="0"
                         />
-                      </motion.div>
-                    )}
-                    {isMsil && (
-                      <motion.div
-                        key="channel"
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="flex flex-col gap-2 overflow-hidden"
-                      >
-                        <Label required>{FIELD_LABELS.channel}</Label>
-                        <div className="grid grid-cols-2 gap-2">
-                          {MSIL_CHANNELS.map((c) => {
-                            const on = form.channel === c;
-                            return (
-                              <button
-                                key={c}
-                                type="button"
-                                onClick={() => set("channel", on ? "" : c)}
-                                className={`h-[52px] px-3 rounded-2xl text-base font-medium border transition-colors flex items-center justify-center gap-2 ${
-                                  on
-                                    ? "bg-orange-50 border-orange-300 text-orange-700"
-                                    : "bg-white border-gray-200 text-gray-600"
-                                }`}
-                              >
-                                {on && <Check size={16} className="text-orange-500" />}
-                                {c}
-                              </button>
-                            );
-                          })}
-                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -912,7 +988,7 @@ export default function VisitLogFormPage() {
                     exit={{ opacity: 0, height: 0 }}
                     className="overflow-hidden"
                   >
-                    <Section title="Photo" icon={<ImagePlus size={14} />}>
+                    <Section title="Photo *" icon={<ImagePlus size={14} />}>
                       {photoPreview ? (
                         <div className="relative rounded-2xl overflow-hidden border border-gray-200">
                           <img src={photoPreview} alt="Selected" className="w-full max-h-72 object-cover" />
