@@ -53,20 +53,41 @@ def extract_sheet_id(raw: str) -> str:
     return m.group(1) if m else raw
 
 
-def get_drive_service():
-    """Drive client for uploading the visit-log photo.
+def _oauth_user_creds():
+    """Build user OAuth credentials from a stored refresh token, if configured.
 
-    A service account has no Drive storage of its own, so it cannot own files in a
-    personal My Drive folder ("Service Accounts do not have storage quota"). Two
-    ways around it, chosen by env:
-
-      • VISIT_LOG_DRIVE_AS_USER set  → domain-wide delegation: the SA impersonates
-        that Workspace user, and uploads use THAT user's quota and ownership. This
-        lets photos land in the existing Google-Form My Drive folder. Requires a
-        Workspace admin to authorize the SA's client id for DRIVE_UPLOAD_SCOPES.
-      • unset                        → plain SA credentials. Works only when the
-        target folder is in a Shared Drive (files owned by the drive, no quota).
+    A service account has no Drive storage of its own, so it can't own files in a
+    personal My Drive folder. Uploading AS a real user (whose account owns the
+    folder) sidesteps that — the file uses that user's quota, exactly like the
+    Google Form does. The one-time consent is done by scripts/oauth_authorize.py,
+    which prints these three env values. Returns None when not configured, so the
+    caller falls back to the service account.
     """
+    client_id = (os.getenv("DRIVE_OAUTH_CLIENT_ID") or "").strip()
+    client_secret = (os.getenv("DRIVE_OAUTH_CLIENT_SECRET") or "").strip()
+    refresh_token = (os.getenv("DRIVE_OAUTH_REFRESH_TOKEN") or "").strip()
+    if not (client_id and client_secret and refresh_token):
+        return None
+    from google.oauth2.credentials import Credentials as UserCredentials
+    return UserCredentials(
+        token=None,
+        refresh_token=refresh_token,
+        client_id=client_id,
+        client_secret=client_secret,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=DRIVE_UPLOAD_SCOPES,
+    )
+
+
+def get_drive_service():
+    """Drive client for uploading the visit-log photo. Prefers user OAuth (uploads
+    owned by a real account, into a My Drive folder — see _oauth_user_creds), then
+    domain-wide delegation (VISIT_LOG_DRIVE_AS_USER), then the plain service
+    account (only works for a Shared Drive, which has no per-user quota)."""
+    user_creds = _oauth_user_creds()
+    if user_creds is not None:
+        return build("drive", "v3", credentials=user_creds, cache_discovery=False)
+
     info = load_service_account_info()
     creds = service_account.Credentials.from_service_account_info(info, scopes=DRIVE_UPLOAD_SCOPES)
     as_user = (os.getenv("VISIT_LOG_DRIVE_AS_USER") or "").strip()
