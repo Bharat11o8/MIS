@@ -15,10 +15,12 @@ SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Read + write — used only by the visit-log form, which appends response rows.
 # Every sync path stays on the read-only scope above.
 SHEETS_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-# Drive upload for the visit-log photo. drive.file only grants access to files the
-# service account itself creates — the least privilege that still lets it drop a
-# photo into the shared responses folder.
-DRIVE_UPLOAD_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# Drive upload for the visit-log photo. Full `drive` scope is needed because the
+# target is a PRE-EXISTING folder (the Google Form's "(File responses)"), and
+# drive.file can only touch folders/files this app itself created — it 403s with
+# "Insufficient permissions for the specified parent" on the Form's folder. We
+# upload as a real user who owns that folder, so `drive` is appropriate.
+DRIVE_UPLOAD_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 _SHEET_ID_RE = re.compile(r"/d/([a-zA-Z0-9_-]{20,})")
 

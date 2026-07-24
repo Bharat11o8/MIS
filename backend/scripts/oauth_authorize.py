@@ -30,9 +30,10 @@ folder, owned by that user.
 """
 import sys
 
-# drive.file = only files this app creates. Least privilege that still lets it
-# drop a photo into a folder the user has shared/owns.
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# Full drive scope — the target is the Google Form's pre-existing "(File
+# responses)" folder, which drive.file cannot write to (it only allows folders
+# this app created). We upload as the folder's owner, so drive is appropriate.
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 def main():

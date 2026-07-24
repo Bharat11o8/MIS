@@ -84,9 +84,13 @@ def submit_visit_log(
     car_sales: str = Form(""),
     seat_cover_sales: str = Form(""),
     mats_sales: str = Form(""),
-    remarks: str = Form(""),
     channel: str = Form(""),
-    remark_categories: str = Form(""),
+    # Each remark category has its own sheet column (L-O); the form sends one
+    # field per category. Keys match the frontend's remarkKey().
+    remark_product_feedback: str = Form(""),
+    remark_replacement: str = Form(""),
+    remark_sales: str = Form(""),
+    remark_others: str = Form(""),
     photo: UploadFile | None = File(None),
 ):
     sheet_id = os.getenv("VISIT_LOG_SHEET_ID")
@@ -118,7 +122,10 @@ def submit_visit_log(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Photo upload failed: {e}")
 
-    # A..V, exactly matching the sheet's current header order (Channel at O).
+    # A..X, matching the LIVE log-book header order exactly (24 columns). Each
+    # remark category has its own column (L-O); the generic "Remarks" column (K)
+    # is left blank now that categories are split out. "Total Car Sales / Total
+    # Seat Covers" wording differs from the form's labels but positions match.
     row = [
         timestamp,                       # A Timestamp
         _fmt_date_ddmmyyyy(visit_date),  # B Visit Date / Calling Date
@@ -127,21 +134,23 @@ def submit_visit_log(
         contact_person,                  # E Contact Person
         contact_number,                  # F Contact No.
         designation,                     # G Designation
-        car_sales,                       # H Monthly Car Sales
-        seat_cover_sales,                # I Monthly Seat Covers Sales
-        mats_sales,                      # J Monthly Mats Sales
-        remarks,                         # K Remarks
-        photo_link,                      # L Upload Photo (Drive link, or "")
-        email,                           # M Email address
-        oem,                             # N OEM
-        channel,                         # O Channel (Arena/Nexa; blank if not MSIL)
-        salesperson,                     # P Sales Person's Name
-        contact_mode,                    # Q Visit / Calling
-        city,                            # R City
-        state,                           # S State
-        "",                              # T Dealers Name (empty)
-        "",                              # U Column 18
-        month_abbr,                      # V Column 1
+        car_sales,                       # H Total Car Sales
+        seat_cover_sales,                # I Total Seat Covers Sales
+        mats_sales,                      # J Mats Sales
+        "",                              # K Remarks (unused; split into L-O)
+        remark_product_feedback,         # L Product Feedback
+        remark_replacement,              # M Replacement
+        remark_sales,                    # N Sales
+        remark_others,                   # O Others
+        photo_link,                      # P Upload Photo (Drive link, or "")
+        email,                           # Q Email address
+        oem,                             # R OEM
+        channel,                         # S Channel (Arena/Nexa; blank if not MSIL)
+        salesperson,                     # T Sales Person's Name
+        contact_mode,                    # U Visit / Calling
+        city,                            # V City
+        state,                           # W State
+        month_abbr,                      # X Column 1 (month abbrev, e.g. "Jul")
     ]
 
     try:

@@ -7,7 +7,7 @@
  * input uses a >=16px font (anything smaller makes iOS Safari zoom on focus).
  *
  * Conditional behaviour (per spec):
- *   • Mats Sales  — only when OEM is MSIL
+ *   • Mats Sales  — every OEM except MSIL (MSIL reports channel instead)
  *   • Photo       — only when the contact mode is "Visit" (gallery only)
  *   • Email       — derived from the chosen name, submitted silently
  *   • City        — filtered by the chosen State
@@ -64,12 +64,16 @@ const SALESPEOPLE = Object.keys(SALESPERSON_EMAILS);
 const OEMS = ["KIA", "MSIL", "HYUNDAI", "TOYOTA", "TATA", "MAHINDRA"];
 const CONTACT_MODES = ["Visit", "Calling"];
 
-/** MSIL-only fields: the dealership's channel (Arena / Nexa), asked right under
- *  the OEM, and the monthly mats figure. Neither is asked for other OEMs. */
+/** MSIL is handled specially: it reports the dealership's channel (Arena / Nexa,
+ *  asked right under the OEM) and does NOT report mats. Every other OEM reports
+ *  monthly mats and has no channel. */
 const MSIL = "MSIL";
 const MSIL_CHANNELS = ["Arena", "Nexa"];
 
 const REMARK_CATEGORIES = ["Product Feedback", "Replacement", "Sales", "Others"];
+// "Product Feedback" -> "product_feedback" — the form-field / backend key for
+// this category's own column. Keep in sync with the backend's Form(...) params.
+const remarkKey = (c: string) => c.toLowerCase().replace(/[^a-z0-9]+/g, "_");
 
 // Dealership master list, keyed by the geo API's state names so it lines up
 // with the State field. Names only — the rep picks the City separately.
@@ -195,7 +199,8 @@ const FIELD_LABELS: Record<keyof FormState, string> = {
 };
 
 // Every always-visible field is required. Derived/auto fields (email, visit_date)
-// and conditional ones (channel, mats_sales — MSIL only; photo — Visit only) are
+// and conditional ones (channel — MSIL only; mats_sales — all but MSIL; photo —
+// Visit only) are
 // validated separately in handleSubmit so they aren't demanded when hidden.
 const REQUIRED: (keyof FormState)[] = [
   "salesperson",
@@ -538,14 +543,15 @@ export default function VisitLogFormPage() {
   const setStateField = (value: string) =>
     setForm((f) => ({ ...f, state: value, city: "", dealership: "" }));
 
-  // Channel and mats are both MSIL-only — drop them when the OEM changes away
-  // so a stale value can't ride along on a non-MSIL submission.
+  // MSIL is the odd one out: it gets the Arena/Nexa channel, NOT mats. Every
+  // other OEM gets mats and no channel. Clear whichever no longer applies when
+  // the OEM changes so a stale value can't ride along.
   const setOem = (value: string) =>
     setForm((f) => ({
       ...f,
       oem: value,
-      mats_sales: value === MSIL ? f.mats_sales : "",
       channel: value === MSIL ? f.channel : "",
+      mats_sales: value === MSIL ? "" : f.mats_sales,
     }));
 
   // Photo is Visit-only; drop it if they switch to Calling.
@@ -554,7 +560,8 @@ export default function VisitLogFormPage() {
     if (value !== "Visit") setPhoto(null);
   };
 
-  const isMsil = form.oem === MSIL;   // gates both the channel and mats fields
+  const isMsil = form.oem === MSIL;                    // channel field
+  const showMats = !!form.oem && !isMsil;              // mats field (all except MSIL)
   const showPhoto = form.contact_mode === "Visit";
 
   const dealershipOptions = form.state ? DEALERSHIPS_BY_STATE[form.state] ?? [] : [];
@@ -569,14 +576,6 @@ export default function VisitLogFormPage() {
       return { ...r, [cat]: "" };
     });
 
-  /** "Product Feedback: xxx | Sales: yyy" — one cell, matching the sheet. */
-  const combinedRemarks = useMemo(
-    () =>
-      REMARK_CATEGORIES.filter((c) => c in remarks)
-        .map((c) => `${c}: ${remarks[c].trim()}`)
-        .join(" | "),
-    [remarks]
-  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -599,7 +598,7 @@ export default function VisitLogFormPage() {
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
-    if (isMsil && !form.mats_sales.trim()) {
+    if (showMats && !form.mats_sales.trim()) {
       setError("Please enter Monthly Mats Sales.");
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
@@ -629,8 +628,9 @@ export default function VisitLogFormPage() {
       Object.entries({ ...form, visit_date: todayISO() }).forEach(([k, v]) =>
         body.append(k, v)
       );
-      body.append("remarks", combinedRemarks);
-      body.append("remark_categories", chosen.join(", "));
+      // Each remark category has its own sheet column, so send them separately
+      // (the backend maps by these exact keys). Unselected categories send "".
+      REMARK_CATEGORIES.forEach((c) => body.append(`remark_${remarkKey(c)}`, remarks[c] ?? ""));
       if (photo) body.append("photo", photo);
 
       const res = await fetch(`${API_URL}/visit-log/submit`, { method: "POST", body });
@@ -906,9 +906,9 @@ export default function VisitLogFormPage() {
                       placeholder="0"
                     />
                   </div>
-                  {/* Mats is an MSIL-only line. */}
+                  {/* Mats is for every OEM except MSIL. */}
                   <AnimatePresence initial={false}>
-                    {isMsil && (
+                    {showMats && (
                       <motion.div
                         key="mats"
                         initial={{ opacity: 0, height: 0 }}
