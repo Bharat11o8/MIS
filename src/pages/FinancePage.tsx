@@ -240,7 +240,7 @@ export default function FinancePage() {
       <motion.div ref={headerRef} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
         className="no-print sticky top-0 z-30 -mx-6 px-6 py-3 bg-white/95 backdrop-blur flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="flex items-center gap-3"><span className="page-title-dark">FINANCE</span></h1>
+          <h1 className="flex items-center gap-3"><span className="page-title-dark">Financial Review</span></h1>
           <div className="flex items-center gap-2 mt-1">
             <div className="w-8 h-0.5 bg-gray-800 rounded" />
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />

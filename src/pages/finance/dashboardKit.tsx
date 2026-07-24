@@ -363,6 +363,64 @@ export function Sparkline({ values, color = SOURCES_COLOR, width = 68, height = 
   );
 }
 
+// ── Shared line-chart styling ────────────────────────────────────────────────
+// One place for the "advanced" look — gradient area fills, glossy dots, and a
+// refined tooltip — so every trend chart in the module reads the same.
+
+/** <defs> of soft top→transparent gradients, one per series colour. Reference a
+ *  fill as url(#<idPrefix>-<i>). */
+function GradientDefs({ colors, idPrefix, strong = false }: { colors: string[]; idPrefix: string; strong?: boolean }) {
+  const top = strong ? 0.38 : 0.22;
+  const mid = strong ? 0.12 : 0.05;
+  return (
+    <defs>
+      {colors.map((c, i) => (
+        <linearGradient key={i} id={`${idPrefix}-${i}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={c} stopOpacity={top} />
+          <stop offset="65%" stopColor={c} stopOpacity={mid} />
+          <stop offset="100%" stopColor={c} stopOpacity={0} />
+        </linearGradient>
+      ))}
+    </defs>
+  );
+}
+
+/** A filled dot with a white ring — the "marker" look, on every point. */
+function makeDot(color: string) {
+  return (props: any) => {
+    const { cx, cy, value } = props;
+    if (cx == null || cy == null || value == null) return <g />;
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={4} fill={color} stroke="#fff" strokeWidth={1.5} />
+      </g>
+    );
+  };
+}
+
+/** Bigger dot on hover so the active point stands out. */
+function makeActiveDot(color: string) {
+  return (props: any) => {
+    const { cx, cy } = props;
+    if (cx == null || cy == null) return <g />;
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={7} fill={color} fillOpacity={0.18} />
+        <circle cx={cx} cy={cy} r={4.5} fill={color} stroke="#fff" strokeWidth={2} />
+      </g>
+    );
+  };
+}
+
+/** Rounded, shadowed tooltip container used across the trend charts. */
+const TREND_TOOLTIP_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  borderRadius: 12,
+  border: `1px solid ${GRID_LINE_COLOR}`,
+  boxShadow: "0 8px 24px rgba(20,22,26,0.12)",
+  padding: "8px 12px",
+};
+
 // ── Trend chart (area for stock, bars + optional line for flow) ──────────────
 export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secondary, secondaryLabel, view }:
   {
@@ -407,13 +465,14 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
                 return [pct != null ? `${money} · ${formatShare(pct)}` : money,
                   n === "primary" ? primaryLabel : secondaryLabel];
               }}
-              contentStyle={{ fontSize: 12, borderRadius: 10, border: `1px solid ${GRID_LINE_COLOR}` }} />
+              contentStyle={TREND_TOOLTIP_STYLE} />
             {kind === "stock" ? (
-              <Area type="monotone" dataKey="primary" name="primary" stroke={SOURCES_COLOR} strokeWidth={2} fill="url(#finPrimaryFill)" />
+              <Area type="monotone" dataKey="primary" name="primary" stroke={SOURCES_COLOR} strokeWidth={2.5} fill="url(#finPrimaryFill)"
+                dot={makeDot(SOURCES_COLOR)} activeDot={makeActiveDot(SOURCES_COLOR)} />
             ) : (
               <Bar dataKey="primary" name="primary" fill={SOURCES_COLOR} radius={[3, 3, 0, 0]} maxBarSize={44} />
             )}
-            {secondary && <Line type="monotone" dataKey="secondary" name="secondary" stroke={DANGER_COLOR} strokeWidth={2} dot={{ r: 2 }} />}
+            {secondary && <Line type="monotone" dataKey="secondary" name="secondary" stroke={DANGER_COLOR} strokeWidth={2.5} dot={makeDot(DANGER_COLOR)} activeDot={makeActiveDot(DANGER_COLOR)} />}
           </ComposedChart>
         </ResponsiveContainer>
       )}
@@ -699,16 +758,19 @@ export function MarginTrendCard({ salesSeries, grossSeries, patSeries, view }:
     <Card title="Margins" note="Gross Margin and PAT as a % of Sales.">
       {data.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
         <ResponsiveContainer width="100%" height={230}>
-          <LineChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+            <GradientDefs colors={[SUCCESS_COLOR, NETT_PROFIT_COLOR]} idPrefix="marginFill" />
             <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={{ stroke: GRID_LINE_COLOR }} />
             <YAxis tickFormatter={(v) => `${Math.round(v)}%`} tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={false} width={44} />
             <ReferenceLine y={0} stroke={GRID_LINE_COLOR} />
             <Tooltip formatter={(v: any, n: any) => [v == null ? "—" : `${Number(v).toFixed(1)}%`, n === "gross" ? "Gross Margin" : "PAT"]}
-              contentStyle={{ fontSize: 12, borderRadius: 10, border: `1px solid ${GRID_LINE_COLOR}` }} />
-            <Line type="monotone" dataKey="gross" name="gross" stroke={SUCCESS_COLOR} strokeWidth={2} dot={{ r: 2 }} />
-            <Line type="monotone" dataKey="pat" name="pat" stroke={NETT_PROFIT_COLOR} strokeWidth={2} dot={{ r: 2 }} />
-          </LineChart>
+              contentStyle={TREND_TOOLTIP_STYLE} />
+            <Area type="monotone" dataKey="gross" name="gross" stroke={SUCCESS_COLOR} strokeWidth={2.5}
+              fill="url(#marginFill-0)" dot={makeDot(SUCCESS_COLOR)} activeDot={makeActiveDot(SUCCESS_COLOR)} connectNulls />
+            <Area type="monotone" dataKey="pat" name="pat" stroke={NETT_PROFIT_COLOR} strokeWidth={2.5}
+              fill="url(#marginFill-1)" dot={makeDot(NETT_PROFIT_COLOR)} activeDot={makeActiveDot(NETT_PROFIT_COLOR)} connectNulls />
+          </ComposedChart>
         </ResponsiveContainer>
       )}
     </Card>
@@ -1047,16 +1109,18 @@ export function AgingPanel({ group, view, bucket }: { group: FinGroup; view: Tre
       <Card title="Overdue Share Trend" note="Share of each pool sitting beyond 90 days, over time. Rising lines on Inventory or Debtors mean aging is worsening.">
         {trend.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
           <ResponsiveContainer width="100%" height={230}>
-            <LineChart data={trend} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+            <ComposedChart data={trend} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+              <GradientDefs colors={trendCats.map((t) => t.color)} idPrefix="overdueFill" strong />
               <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
               <XAxis dataKey="label" tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={{ stroke: GRID_LINE_COLOR }} />
               <YAxis tickFormatter={(v) => `${Math.round(v)}%`} tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={false} width={44} />
               <Tooltip formatter={(v: any, n: any) => [v == null ? "—" : `${Number(v).toFixed(1)}%`, trendCats.find((t) => t.key === n)?.label ?? n]}
-                contentStyle={{ fontSize: 12, borderRadius: 10, border: `1px solid ${GRID_LINE_COLOR}` }} />
-              {trendCats.map((t) => (
-                <Line key={t.key} type="monotone" dataKey={t.key} name={t.key} stroke={t.color} strokeWidth={2} dot={{ r: 2 }} connectNulls />
+                contentStyle={TREND_TOOLTIP_STYLE} />
+              {trendCats.map((t, i) => (
+                <Area key={t.key} type="monotone" dataKey={t.key} name={t.key} stroke={t.color} strokeWidth={2.5}
+                  fill={`url(#overdueFill-${i})`} dot={makeDot(t.color)} activeDot={makeActiveDot(t.color)} connectNulls />
               ))}
-            </LineChart>
+            </ComposedChart>
           </ResponsiveContainer>
         )}
         <div className="flex items-center gap-4 flex-wrap mt-3 text-[11px]">
@@ -1135,16 +1199,18 @@ export function UnitCostPanel({ group, view, bucket }: { group: FinGroup; view: 
       <Card title="Unit Cost Trend" note="How each product's cost per unit moves over time — a rising line is cost inflation.">
         {trend.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
           <ResponsiveContainer width="100%" height={230}>
-            <LineChart data={trend} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+            <ComposedChart data={trend} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+              <GradientDefs colors={legend.map((l) => l.color)} idPrefix="unitCostFill" strong />
               <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
               <XAxis dataKey="label" tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={{ stroke: GRID_LINE_COLOR }} />
               <YAxis tickFormatter={(v) => formatCompact(v)} tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={false} width={54} />
               <Tooltip formatter={(v: any, n: any) => [v == null ? "—" : formatINR(Number(v)), legend.find((l) => l.key === n)?.label ?? n]}
-                contentStyle={{ fontSize: 12, borderRadius: 10, border: `1px solid ${GRID_LINE_COLOR}` }} />
-              {legend.map((l) => (
-                <Line key={l.key} type="monotone" dataKey={l.key} name={l.key} stroke={l.color} strokeWidth={2} dot={{ r: 2 }} connectNulls />
+                contentStyle={TREND_TOOLTIP_STYLE} />
+              {legend.map((l, i) => (
+                <Area key={l.key} type="monotone" dataKey={l.key} name={l.key} stroke={l.color} strokeWidth={2.5}
+                  fill={`url(#unitCostFill-${i})`} dot={makeDot(l.color)} activeDot={makeActiveDot(l.color)} connectNulls />
               ))}
-            </LineChart>
+            </ComposedChart>
           </ResponsiveContainer>
         )}
         <div className="flex items-center gap-4 flex-wrap mt-3 text-[11px]">
