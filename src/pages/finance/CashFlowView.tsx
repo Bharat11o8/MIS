@@ -83,6 +83,16 @@ function OperatingCashBridge({ rows, period }: { rows: { label: string; value: n
   );
 }
 
+// The sheet prefixes every WC line with "Increase / (Decrease) in" or the
+// mirror "(Increase) / Decrease in". That direction is already shown by the
+// green/red bars, so strip it for a readable label (full text stays in the
+// hover title).
+function shortWcLabel(label: string): string {
+  return label
+    .replace(/^\s*\(?\s*increase\s*\)?\s*\/\s*\(?\s*decrease\s*\)?\s*in\s+/i, "")
+    .trim() || label;
+}
+
 // ── Working-capital drivers — which items released vs trapped cash this period ─
 function WorkingCapitalDrivers({ items, period }: { items: { label: string; value: number }[]; period: string }) {
   if (items.length === 0) return (
@@ -100,7 +110,7 @@ function WorkingCapitalDrivers({ items, period }: { items: { label: string; valu
           const w = (Math.abs(it.value) / maxAbs) * 100;
           return (
             <div key={it.label} className="flex items-center gap-2 text-[12px]">
-              <span className="w-44 shrink-0 text-gray-600 truncate" title={it.label}>{it.label}</span>
+              <span className="w-52 shrink-0 text-gray-600 leading-tight" title={it.label}>{shortWcLabel(it.label)}</span>
               <div className="flex-1 flex items-center">
                 <div className="w-1/2 flex justify-end">
                   {!pos && <div className="h-3.5 rounded-l-full" style={{ width: `${w}%`, background: DANGER_COLOR, opacity: 0.8 }} />}
