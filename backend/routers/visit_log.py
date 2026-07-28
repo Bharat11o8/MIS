@@ -16,9 +16,12 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from googleapiclient.errors import HttpError
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from database import get_db
 from services.google_sheets import get_sheets_service_rw, upload_photo_to_folder
 
 router = APIRouter(prefix="/visit-log", tags=["OE Visit Log"])
@@ -169,3 +172,71 @@ def submit_visit_log(
         raise HTTPException(status_code=500, detail=f"Submit failed: {e}")
 
     return {"status": "ok"}
+
+
+# ─────────────────────────── Dealership master list ───────────────────────────
+# Backs the form's dealership dropdown, which used to be a hardcoded constant in
+# the frontend. Both routes are public for the same reason /submit is: reps open
+# a shared link with no login. Adding a dealer only affects this dropdown — it
+# never touches the log-book sheet, which is still written only by /submit.
+
+def _clean(s: str) -> str:
+    """Collapse internal whitespace and trim. Field entries arrive with stray
+    spaces and inconsistent casing far more often than the seeded rows did."""
+    return " ".join((s or "").split())
+
+
+@router.get("/dealerships")
+def list_dealerships(db: Session = Depends(get_db)):
+    """Every active dealer, shaped as {OEM: {State: [names]}} — the exact form
+    the frontend's dropdown already consumes, so the client keeps its existing
+    lookup logic and only swaps the constant for this payload."""
+    rows = db.execute(text("""
+        SELECT oem, state, name
+        FROM oe_dealerships
+        WHERE is_active
+        ORDER BY oem, state, name
+    """)).fetchall()
+
+    by_oem: dict[str, dict[str, list[str]]] = {}
+    for r in rows:
+        by_oem.setdefault(r.oem, {}).setdefault(r.state, []).append(r.name)
+    return by_oem
+
+
+@router.post("/dealerships")
+def add_dealership(
+    oem: str = Form(...),
+    state: str = Form(...),
+    name: str = Form(...),
+    added_by: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Add one dealer from the form's inline "+ Add new dealership" panel.
+
+    City is deliberately not collected here — the form has its own City field
+    right after Dealership, so asking for it twice would be redundant.
+
+    Idempotent by (oem, state, UPPER(name)): re-adding an existing dealer returns
+    it as already_exists rather than erroring, so a rep who double-taps or who
+    adds a name that is already there just proceeds with their visit log.
+    """
+    oem, state, name = _clean(oem), _clean(state), _clean(name)
+    if not oem or not state or not name:
+        raise HTTPException(status_code=422, detail="OEM, state and dealership name are required.")
+
+    try:
+        row = db.execute(text("""
+            INSERT INTO oe_dealerships (oem, state, name, source, added_by)
+            VALUES (:oem, :state, :name, 'form', NULLIF(:added_by, ''))
+            ON CONFLICT (oem, state, UPPER(name)) DO NOTHING
+            RETURNING id
+        """), {"oem": oem, "state": state,
+               "name": name, "added_by": _clean(added_by)}).fetchone()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Could not save the dealership: {e}")
+
+    return {"status": "ok", "name": name, "oem": oem,
+            "state": state, "already_exists": row is None}

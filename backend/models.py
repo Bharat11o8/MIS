@@ -183,6 +183,26 @@ class OETarget(Base):
     created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
+class OEDealership(Base):
+    """Master dealer list backing the visit-log form's dropdown
+    (see migrate_phase13_oe_dealerships.sql). Unlike the other oe_* tables these
+    rows are app-owned master data, not sheet-ingested, so there is no
+    sheet_source_id. Uniqueness is (oem, state, UPPER(name)) — the same dealer
+    name may legitimately exist in two states."""
+    __tablename__ = "oe_dealerships"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    oem        = Column(String(50), nullable=False)
+    state      = Column(String(100), nullable=False)
+    city       = Column(String(100), nullable=True)
+    name       = Column(String(200), nullable=False)
+    source     = Column(String(20), nullable=False, default="form")   # 'seed' | 'form'
+    added_by   = Column(String(150), nullable=True)
+    is_active  = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class UserModuleAccess(Base):
     __tablename__ = "user_module_access"
 
