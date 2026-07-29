@@ -73,7 +73,9 @@ def _fmt_date_ddmmyyyy(iso: str) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-def _send_confirmation_email(to_email: str, salesperson: str, fields: list[tuple[str, str]]) -> None:
+def _send_confirmation_email(
+    to_email: str, salesperson: str, fields: list[tuple[str, str]], link_labels: set[str] = frozenset()
+) -> None:
     """Mirrors the Google Form's "send respondents a copy" — the rep gets an
     email of what they just submitted. Best-effort only: called after the
     sheet write already succeeded, and a failure here must never fail the
@@ -90,22 +92,27 @@ def _send_confirmation_email(to_email: str, salesperson: str, fields: list[tuple
     if not smtp_user or not smtp_pass:
         return
 
+    def _cell(label: str, value: str) -> str:
+        if label in link_labels:
+            return f'<a href="{value}" style="color:#f46617;text-decoration:underline;">View photo</a>'
+        return value
+
     rows_html = "".join(
         f'<tr><td style="padding:6px 12px;color:#9ca3af;font-size:12px;font-weight:700;'
         f'text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap;vertical-align:top;">{label}</td>'
-        f'<td style="padding:6px 12px;color:#374151;font-size:14px;">{value or "—"}</td></tr>'
+        f'<td style="padding:6px 12px;color:#374151;font-size:14px;">{_cell(label, value)}</td></tr>'
         for label, value in fields if value
     )
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Amato Automotive MIS — Visit Log Submitted"
+    msg["Subject"] = "Amato Automotive OEM Log Book Response"
     msg["From"] = f"Amato Automotive MIS <{smtp_from}>"
     msg["To"] = to_email
 
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
       <div style="background:#111827;padding:28px 32px;">
-        <p style="color:#fff;font-size:11px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;margin:0;">Amato Automotive · MIS</p>
+        <p style="color:#fff;font-size:11px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;margin:0;">Amato Automotive OEM Log Book Response</p>
       </div>
       <div style="padding:32px;">
         <p style="color:#374151;font-size:15px;margin:0 0 8px;">Hi {salesperson},</p>
@@ -254,7 +261,8 @@ def submit_visit_log(
                 ("Replacement", remark_replacement),
                 ("Sales", remark_sales),
                 ("Others", remark_others),
-            ])
+                ("Photo", photo_link),
+            ], link_labels={"Photo"})
         except Exception:
             pass  # confirmation email is a courtesy, not a requirement
 
