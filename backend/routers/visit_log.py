@@ -13,7 +13,10 @@ code change.
 Photo upload (sheet column L) is deferred to a later phase; this writes text only.
 """
 import os
+import smtplib
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
@@ -68,6 +71,62 @@ def _fmt_date_ddmmyyyy(iso: str) -> str:
     except (ValueError, TypeError):
         return iso  # pass through anything unexpected rather than dropping it
     return d.strftime("%d/%m/%Y")
+
+
+def _send_confirmation_email(to_email: str, salesperson: str, fields: list[tuple[str, str]]) -> None:
+    """Mirrors the Google Form's "send respondents a copy" — the rep gets an
+    email of what they just submitted. Best-effort only: called after the
+    sheet write already succeeded, and a failure here must never fail the
+    submission or be retried into a duplicate sheet row.
+
+    Uses its own mailbox (VISIT_LOG_EMAIL_*) rather than the auth OTP one
+    (EMAIL_*, see routers/auth.py) — different sender identity and quota, and
+    a suspended/rate-limited field-rep mailbox shouldn't be able to affect
+    password-reset delivery, or vice versa.
+    """
+    smtp_user = os.getenv("VISIT_LOG_EMAIL_USER", "")
+    smtp_pass = os.getenv("VISIT_LOG_EMAIL_PASS", "")
+    smtp_from = os.getenv("VISIT_LOG_EMAIL_FROM", smtp_user)
+    if not smtp_user or not smtp_pass:
+        return
+
+    rows_html = "".join(
+        f'<tr><td style="padding:6px 12px;color:#9ca3af;font-size:12px;font-weight:700;'
+        f'text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap;vertical-align:top;">{label}</td>'
+        f'<td style="padding:6px 12px;color:#374151;font-size:14px;">{value or "—"}</td></tr>'
+        for label, value in fields if value
+    )
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Amato Automotive MIS — Visit Log Submitted"
+    msg["From"] = f"Amato Automotive MIS <{smtp_from}>"
+    msg["To"] = to_email
+
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+      <div style="background:#111827;padding:28px 32px;">
+        <p style="color:#fff;font-size:11px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;margin:0;">Amato Automotive · MIS</p>
+      </div>
+      <div style="padding:32px;">
+        <p style="color:#374151;font-size:15px;margin:0 0 8px;">Hi {salesperson},</p>
+        <p style="color:#6b7280;font-size:14px;line-height:1.6;margin:0 0 20px;">
+          Your visit log entry has been recorded. Here's a copy of what you submitted:
+        </p>
+        <table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:10px;overflow:hidden;">
+          {rows_html}
+        </table>
+      </div>
+      <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
+        <p style="color:#9ca3af;font-size:11px;margin:0;">© {datetime.now().year} Amato Automotive · This is an automated message, please do not reply.</p>
+      </div>
+    </div>
+    """
+    msg.attach(MIMEText(html, "html"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_from, to_email, msg.as_string())
 
 
 @router.post("/submit")
@@ -170,6 +229,34 @@ def submit_visit_log(
         raise HTTPException(status_code=502, detail=f"Could not write to the sheet: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Submit failed: {e}")
+
+    # Confirmation email — mirrors the Google Form's "send respondents a copy".
+    # Best-effort: the sheet row is already saved, so a mail failure here must
+    # not surface as a submit failure or invite a retry that double-writes the sheet.
+    if email:
+        try:
+            _send_confirmation_email(email, salesperson, [
+                ("OEM", oem),
+                ("Dealership", dealership),
+                ("Address", address),
+                ("City", city),
+                ("State", state),
+                ("Contact Person", contact_person),
+                ("Contact Number", contact_number),
+                ("Designation", designation),
+                ("Visit / Calling", contact_mode),
+                ("Visit Date", _fmt_date_ddmmyyyy(visit_date)),
+                ("Channel", channel),
+                ("Total Car Sales", car_sales),
+                ("Total Seat Covers Sales", seat_cover_sales),
+                ("Mats Sales", mats_sales),
+                ("Product Feedback", remark_product_feedback),
+                ("Replacement", remark_replacement),
+                ("Sales", remark_sales),
+                ("Others", remark_others),
+            ])
+        except Exception:
+            pass  # confirmation email is a courtesy, not a requirement
 
     return {"status": "ok"}
 
