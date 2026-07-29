@@ -34,6 +34,13 @@ PLAN_REQUIRED_HEADERS = {"DATE", "ASM NAME", "OEM", "DEALER VISIT PLAN", "CITY",
 
 LOG_REQUIRED_HEADERS = {"VISIT DATE / CALLING DATE", "DEALERSHIP NAME", "SALES PERSON'S NAME"}
 # header text → record field (required + optional columns)
+#
+# REMARKS is the original Google Form's single free-text column. The visit-log
+# form (which replaced that Google Form) instead writes one category per column
+# — PRODUCT FEEDBACK / REPLACEMENT / SALES / OTHERS — and leaves REMARKS blank.
+# Both layouts can appear in the same sheet (old rows vs. new-form rows), so all
+# five are read and combined into one `remarks` string below rather than picking
+# one column and losing whichever format didn't use it.
 LOG_COLUMNS = {
     "VISIT DATE / CALLING DATE": "visit_date",
     "DEALERSHIP NAME": "dealership",
@@ -43,12 +50,39 @@ LOG_COLUMNS = {
     "TOTAL SEAT COVERS SALES": "seat_cover_sales",
     "MATS SALES": "mats_sales",
     "REMARKS": "remarks",
+    "PRODUCT FEEDBACK": "remark_product_feedback",
+    "REPLACEMENT": "remark_replacement",
+    "SALES": "remark_sales",
+    "OTHERS": "remark_others",
     "OEM": "oem",
     "SALES PERSON'S NAME": "salesperson",
     "VISIT / CALLING": "contact_mode",
     "CITY": "city",
     "STATE": "state",
 }
+
+# Category label prefixes used when combining the split remark columns into one
+# display string, e.g. "Product Feedback: ...; Sales: ...".
+_REMARK_CATEGORY_LABELS = [
+    ("remark_product_feedback", "Product Feedback"),
+    ("remark_replacement", "Replacement"),
+    ("remark_sales", "Sales"),
+    ("remark_others", "Others"),
+]
+
+
+def _combine_remarks(cell_values: dict) -> Optional[str]:
+    """Old-format rows carry one blob in REMARKS; new-form rows split it across
+    4 category columns and leave REMARKS blank. Prefer whichever is present —
+    a row is never both, but being defensive costs nothing here."""
+    parts = [
+        f"{label}: {cell_values[field]}"
+        for field, label in _REMARK_CATEGORY_LABELS
+        if cell_values.get(field)
+    ]
+    if parts:
+        return "; ".join(parts)
+    return cell_values.get("remarks")
 
 # Standard Indian state aliases — key is the value with everything but letters
 # removed, uppercased. Only well-known abbreviations/misspellings; anything not
@@ -280,6 +314,13 @@ def parse_log_book(sheet_id: str):
             errors.append(f"row {r} ({dealership}): missing/unreadable visit date — skipped")
             continue
         contact_mode = _clean(cell(line, "contact_mode"))
+        remarks = _combine_remarks({
+            "remarks": _clean(cell(line, "remarks")),
+            "remark_product_feedback": _clean(cell(line, "remark_product_feedback")),
+            "remark_replacement": _clean(cell(line, "remark_replacement")),
+            "remark_sales": _clean(cell(line, "remark_sales")),
+            "remark_others": _clean(cell(line, "remark_others")),
+        })
         records.append({
             "visit_date": visit_date,
             "log_year": visit_date.year,
@@ -293,7 +334,7 @@ def parse_log_book(sheet_id: str):
             "car_sales": _to_number(cell(line, "car_sales")),
             "seat_cover_sales": _to_number(cell(line, "seat_cover_sales")),
             "mats_sales": _to_number(cell(line, "mats_sales")),
-            "remarks": _clean(cell(line, "remarks")),
+            "remarks": remarks,
             "city": _cut(_clean(cell(line, "city")), 100),
             "state": _cut(normalize_state(cell(line, "state")), 100),
         })
