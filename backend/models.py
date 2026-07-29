@@ -154,6 +154,10 @@ class OEVisitLog(Base):
     remarks          = Column(Text, nullable=True)
     city             = Column(String(100), nullable=True)
     state            = Column(String(100), nullable=True)
+    # 1-indexed sheet row (see services/oe_network_sync.py:parse_log_book) —
+    # the sort tiebreaker for same-day rows, since `id` is a random UUID with
+    # no relationship to the order rows appear in the sheet.
+    sheet_row        = Column(Integer, nullable=True)
     sync_log_id      = Column(UUID(as_uuid=True), ForeignKey("sync_logs.id", ondelete="SET NULL"), nullable=True)
     created_at       = Column(TIMESTAMP(timezone=True), server_default=func.now())
 

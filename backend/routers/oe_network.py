@@ -228,11 +228,11 @@ _LOG_INSERT = text("""
     INSERT INTO oe_visit_logs
         (id, sheet_source_id, visit_date, log_year, log_month, salesperson,
          contact_mode, oem, dealership, address, designation,
-         car_sales, seat_cover_sales, mats_sales, remarks, city, state, sync_log_id)
+         car_sales, seat_cover_sales, mats_sales, remarks, city, state, sheet_row, sync_log_id)
     VALUES
         (:id, :sheet_source_id, :visit_date, :log_year, :log_month, :salesperson,
          :contact_mode, :oem, :dealership, :address, :designation,
-         :car_sales, :seat_cover_sales, :mats_sales, :remarks, :city, :state, :sync_log_id)
+         :car_sales, :seat_cover_sales, :mats_sales, :remarks, :city, :state, :sheet_row, :sync_log_id)
 """)
 
 _TGT_INSERT = text("""
@@ -543,7 +543,7 @@ def list_logs(
         SELECT id, visit_date, salesperson, contact_mode, oem, dealership, address, designation,
                car_sales, seat_cover_sales, mats_sales, remarks, city, state
         FROM oe_visit_logs WHERE {where_sql}
-        ORDER BY visit_date DESC, id
+        ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
         LIMIT :limit OFFSET :offset
     """), params).fetchall()
 
@@ -630,7 +630,7 @@ def remarks_activity(
         SELECT id, visit_date, salesperson, contact_mode, oem, dealership,
                city, state, remarks
         FROM oe_visit_logs WHERE {where_sql}
-        ORDER BY visit_date DESC, id DESC
+        ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
     """), params).fetchall()
 
     # Classify once; reuse the tags for every downstream tally.
@@ -1007,13 +1007,13 @@ def dealer_directory(
     params["offset"] = (page - 1) * per_page
     rows = db.execute(text(f"""
         SELECT
-            (ARRAY_AGG(dealership ORDER BY visit_date DESC, id DESC))[1] AS dealer_name,
-            (ARRAY_AGG(oem ORDER BY visit_date DESC, id DESC) FILTER (WHERE oem IS NOT NULL))[1] AS oem,
-            (ARRAY_AGG(city ORDER BY visit_date DESC, id DESC) FILTER (WHERE city IS NOT NULL))[1] AS city,
-            (ARRAY_AGG(state ORDER BY visit_date DESC, id DESC) FILTER (WHERE state IS NOT NULL))[1] AS state,
-            (ARRAY_AGG(salesperson ORDER BY visit_date DESC, id DESC) FILTER (WHERE salesperson IS NOT NULL))[1] AS last_salesperson,
-            (ARRAY_AGG(contact_mode ORDER BY visit_date DESC, id DESC))[1] AS last_mode,
-            (ARRAY_AGG(remarks ORDER BY visit_date DESC, id DESC) FILTER (WHERE remarks IS NOT NULL AND remarks <> ''))[1] AS last_remark,
+            (ARRAY_AGG(dealership ORDER BY visit_date DESC, sheet_row DESC NULLS LAST))[1] AS dealer_name,
+            (ARRAY_AGG(oem ORDER BY visit_date DESC, sheet_row DESC NULLS LAST) FILTER (WHERE oem IS NOT NULL))[1] AS oem,
+            (ARRAY_AGG(city ORDER BY visit_date DESC, sheet_row DESC NULLS LAST) FILTER (WHERE city IS NOT NULL))[1] AS city,
+            (ARRAY_AGG(state ORDER BY visit_date DESC, sheet_row DESC NULLS LAST) FILTER (WHERE state IS NOT NULL))[1] AS state,
+            (ARRAY_AGG(salesperson ORDER BY visit_date DESC, sheet_row DESC NULLS LAST) FILTER (WHERE salesperson IS NOT NULL))[1] AS last_salesperson,
+            (ARRAY_AGG(contact_mode ORDER BY visit_date DESC, sheet_row DESC NULLS LAST))[1] AS last_mode,
+            (ARRAY_AGG(remarks ORDER BY visit_date DESC, sheet_row DESC NULLS LAST) FILTER (WHERE remarks IS NOT NULL AND remarks <> ''))[1] AS last_remark,
             MAX(visit_date) AS last_contact,
             (CURRENT_DATE - MAX(visit_date)) AS days_since,
             COUNT(*) AS total,
@@ -1066,7 +1066,7 @@ def dealer_history(
                car_sales, seat_cover_sales, mats_sales, remarks, city, state
         FROM oe_visit_logs
         WHERE LOWER(dealership) = LOWER(:name)
-        ORDER BY visit_date DESC, id DESC
+        ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
         LIMIT 100
     """), {"name": name}).fetchall()
     return {

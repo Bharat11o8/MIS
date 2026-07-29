@@ -337,6 +337,7 @@ def parse_log_book(sheet_id: str):
             "remarks": remarks,
             "city": _cut(_clean(cell(line, "city")), 100),
             "state": _cut(normalize_state(cell(line, "state")), 100),
+            "sheet_row": r,
         })
 
     return records, skipped_tabs, errors
