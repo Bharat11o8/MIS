@@ -227,12 +227,16 @@ _PLAN_INSERT = text("""
 _LOG_INSERT = text("""
     INSERT INTO oe_visit_logs
         (id, sheet_source_id, visit_date, log_year, log_month, salesperson,
-         contact_mode, oem, dealership, address, designation,
-         car_sales, seat_cover_sales, mats_sales, remarks, city, state, sheet_row, sync_log_id)
+         contact_mode, oem, dealership, address, contact_person, contact_number, designation,
+         car_sales, seat_cover_sales, mats_sales, remarks,
+         remark_product_feedback, remark_replacement, remark_sales, remark_others,
+         channel, email, photo_link, city, state, sheet_row, sync_log_id)
     VALUES
         (:id, :sheet_source_id, :visit_date, :log_year, :log_month, :salesperson,
-         :contact_mode, :oem, :dealership, :address, :designation,
-         :car_sales, :seat_cover_sales, :mats_sales, :remarks, :city, :state, :sheet_row, :sync_log_id)
+         :contact_mode, :oem, :dealership, :address, :contact_person, :contact_number, :designation,
+         :car_sales, :seat_cover_sales, :mats_sales, :remarks,
+         :remark_product_feedback, :remark_replacement, :remark_sales, :remark_others,
+         :channel, :email, :photo_link, :city, :state, :sheet_row, :sync_log_id)
 """)
 
 _TGT_INSERT = text("""
@@ -386,6 +390,14 @@ def sync_latest(
 
 
 # ── Shared filter plumbing ────────────────────────────────────────────────────
+
+# oe_visit_logs keeps `remarks` (the old single-blob column, from before the
+# visit-log form existed) and the 4 new-form categories
+# (remark_product_feedback / remark_replacement / remark_sales /
+# remark_others) as fully separate fields everywhere — never merged. A row
+# submitted through the new form leaves `remarks` NULL; its text lives only
+# in whichever category columns the rep filled in.
+
 
 def _add_filters(where: list, params: dict, mapping: dict):
     """mapping: {sql_column: value} — adds an equality clause per non-empty value."""

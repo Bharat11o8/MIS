@@ -15,6 +15,7 @@ import { ToastProvider } from "@/components/ui/Toast";
 import ProfilePage from "@/pages/ProfilePage";
 import UsersPage from "@/pages/UsersPage";
 import VisitLogFormPage from "@/pages/VisitLogFormPage";
+import MyVisitsPage from "@/pages/MyVisitsPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, mustChangePassword } = useAuth();
@@ -41,6 +42,8 @@ function AppRoutes() {
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       {/* Public — shared with OEM salespeople by link. No auth, no dashboard. */}
       <Route path="/visit-log" element={<VisitLogFormPage />} />
+      {/* Public — ASM self-service, OTP-only login, own data only. No dashboard. */}
+      <Route path="/my-visits" element={<MyVisitsPage />} />
       <Route
         path="/login"
         element={

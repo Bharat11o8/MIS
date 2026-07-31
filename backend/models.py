@@ -146,12 +146,23 @@ class OEVisitLog(Base):
     oem              = Column(String(50), nullable=True)
     dealership       = Column(String(200), nullable=False)
     address          = Column(String(255), nullable=True)
+    contact_person   = Column(String(150), nullable=True)
+    contact_number   = Column(String(30), nullable=True)
     designation      = Column(String(100), nullable=True)
     # Dealer's own monthly figures (units) — aggregate as averages, never sums.
     car_sales        = Column(Numeric(12, 2), nullable=True)
     seat_cover_sales = Column(Numeric(12, 2), nullable=True)
     mats_sales       = Column(Numeric(12, 2), nullable=True)
-    remarks          = Column(Text, nullable=True)
+    # Old single-blob remark (rows submitted before the visit-log form existed).
+    # The 4 category columns below are separate, never merged into this one.
+    remarks                 = Column(Text, nullable=True)
+    remark_product_feedback = Column(Text, nullable=True)
+    remark_replacement      = Column(Text, nullable=True)
+    remark_sales             = Column(Text, nullable=True)
+    remark_others            = Column(Text, nullable=True)
+    channel          = Column(String(20), nullable=True)   # Arena/Nexa; MSIL only, else blank
+    email            = Column(String(150), nullable=True)  # ASM's email, as submitted
+    photo_link       = Column(Text, nullable=True)          # Drive link, when a photo was uploaded
     city             = Column(String(100), nullable=True)
     state            = Column(String(100), nullable=True)
     # 1-indexed sheet row (see services/oe_network_sync.py:parse_log_book) —
@@ -205,6 +216,31 @@ class OEDealership(Base):
     is_active  = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AsmPortalUser(Base):
+    """Identity for the ASM self-service portal (see
+    migrate_phase15_asm_portal.sql) — a separate, lightweight OTP-only login
+    for field reps to view/export their own visit-log rows. Not a `User` row:
+    no password, no role, no access outside their own salesperson's data."""
+    __tablename__ = "asm_portal_users"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email       = Column(String(150), nullable=False, unique=True)
+    salesperson = Column(String(100), nullable=False)
+    is_active   = Column(Boolean, nullable=False, default=True)
+    created_at  = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class AsmPortalOtp(Base):
+    __tablename__ = "asm_portal_otps"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email      = Column(String(150), nullable=False)
+    otp        = Column(String(6), nullable=False)
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    used_at    = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
 class UserModuleAccess(Base):
