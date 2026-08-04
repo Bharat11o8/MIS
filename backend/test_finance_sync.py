@@ -11,15 +11,24 @@ line items).
 Run:  venv/Scripts/python.exe test_finance_sync.py
 """
 import os
+from datetime import date
+
 import openpyxl
 
-from services.finance_sync import parse_finance_workbook_grids
+from services.finance_sync import (
+    REGISTERED_SECTIONS, parse_finance_tab, parse_finance_workbook_grids,
+)
 
 DUMMY_DIR = r"D:\MIS\Local_sheets\Finance_new"
 MONTHLY_XLSX = "Monthly Complete Financial Dashboard Dummy Data.xlsx"
 YEARLY_XLSX = "Yearly Complete Financial Dashboard Dummy Data.xlsx"
 
-PHASE_A = {
+# The statement sections that must always parse. Asserted as a SUBSET rather than
+# an exact set: finance keeps adding sections to the template, and an equality
+# check here silently rotted once Phase B registered ratios/units (it had been
+# failing for weeks before anyone ran it). Nothing outside the registry may be
+# emitted, which is the property actually worth guarding.
+CORE_SECTIONS = {
     "sales_accounts", "profit_loss_a_c", "balance_sheet", "inventories",
     "working_capital", "production_cost", "employee_s_cost",
 }
@@ -43,9 +52,10 @@ def test_parse():
     assert not errors, f"unexpected parse errors: {errors}"
     assert records, "no records parsed"
 
-    # (a) all seven Phase A sections captured, and nothing outside the registry
+    # (a) every core statement section captured, and nothing outside the registry
     sections = {r["section_key"] for r in records}
-    assert sections == PHASE_A, f"section mismatch: {sections} vs {PHASE_A}"
+    assert CORE_SECTIONS <= sections, f"missing core sections: {CORE_SECTIONS - sections}"
+    assert sections <= REGISTERED_SECTIONS, f"parsed unregistered sections: {sections - REGISTERED_SECTIONS}"
 
     # (b) cadence auto-detection: yearly tab → 3 annual FY points; monthly → 3 months
     annual_periods = {(r["period_start_date"], r["period_end_date"]) for r in records if r["period_type"] == "annual"}
@@ -95,5 +105,56 @@ def test_parse():
           f"{len(annual_periods)} FY + {len(monthly_periods)} monthly periods")
 
 
+def test_units_segments():
+    """§7 UNITS: the live sheet splits Sales/Production into 4w and 2w blocks and
+    nests an "Others" group inside the 2w ones. Two regressions are guarded here,
+    both observed on real company tabs before the fix:
+
+      * "Others" appearing under BOTH a sales and a production block collapsed
+        onto one line_key (units/others/lifestyle), so the production figure
+        silently overwrote the sales one on upsert.
+      * A line item that is blank in every loaded period (a company with no Mats
+        this quarter) was promoted to a sub-header and hijacked the grouping of
+        every row beneath it, filing real figures under units/mats/other.
+    """
+    grid = [
+        [None, "COMPANY'S NAME", "TEST CO", None],
+        [None, "Particulars", date(2026, 6, 15), "%"],
+        [7, "UNITS", None, None],
+        [None, "Sales 4w", None, None],
+        [None, "Seat Cover", 100, None],
+        [None, "Mats", None, None],        # blank line item — must NOT regroup
+        [None, "Other", 200, None],
+        [None, "Sales 2w", None, None],
+        [None, "Seat Cover", 300, None],
+        [None, "Others", None, None],      # nested group under Sales 2w
+        [None, "Lifestyle", 400, None],
+        [None, "Productions 2w", None, None],
+        [None, "Others", None, None],      # nested group under Productions 2w
+        [None, "Lifestyle", 500, None],
+    ]
+    records, errors = parse_finance_tab(grid, "TEST CO")
+    assert not errors, f"unexpected errors: {errors}"
+    by_key = {r["line_key"]: r["amount"] for r in records}
+
+    # The blank "Mats" row must not have hijacked the grouping.
+    assert by_key.get("units/sales_4w/seat_cover") == 100, by_key
+    assert by_key.get("units/sales_4w/other") == 200, "blank row hijacked the sub-section"
+    assert "units/mats/other" not in by_key, "blank line item was treated as a sub-header"
+
+    # The two "Others" groups must stay distinct, keeping both figures.
+    assert by_key.get("units/sales_2w/seat_cover") == 300, by_key
+    assert by_key.get("units/sales_2w/others/lifestyle") == 400, by_key
+    assert by_key.get("units/productions_2w/others/lifestyle") == 500, by_key
+    assert "units/others/lifestyle" not in by_key, "nested group lost its parent segment"
+
+    # No record may collide on the sync's uniqueness key.
+    triples = [(r["line_key"], r["period_start_date"], r["period_end_date"]) for r in records]
+    assert len(triples) == len(set(triples)), "colliding (line_key, period) rows"
+
+    print(f"OK — units segments: {len(records)} records, {len(set(r['sub_section'] for r in records))} sub-sections")
+
+
 if __name__ == "__main__":
     test_parse()
+    test_units_segments()

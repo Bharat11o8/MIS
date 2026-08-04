@@ -619,7 +619,26 @@ export function TopMoversCard({ group }: { group: FinGroup }) {
 // as a false month-vs-year comparison. Same bucketing as the trend charts, so
 // the columns are always like-for-like. Sparkline + light heatmap keep it from
 // reading like a raw spreadsheet.
-function LineItemTable({ group, kind, view }: { group: FinGroup; kind: "stock" | "flow"; view: TrendView }) {
+// ₹ vs % is a genuinely different dimension rather than a different time slice,
+// so it keeps a local toggle — the one documented exception to the "one
+// universal control per tab" rule. The % shown is always the sheet's own.
+export type ValueMode = "amount" | "percent";
+
+export function ValueModeToggle({ mode, onChange }: { mode: ValueMode; onChange: (m: ValueMode) => void }) {
+  return (
+    <div className="flex items-center bg-gray-100 rounded-lg p-0.5 no-print">
+      {([["amount", "₹"], ["percent", "%"]] as [ValueMode, string][]).map(([v, label]) => (
+        <button key={v} onClick={() => onChange(v)}
+          className={`text-[11px] font-bold px-2.5 py-1 rounded-md transition-all ${mode === v ? "bg-white text-gray-800 shadow-sm" : "text-gray-500"}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function LineItemTable({ group, kind, view, mode = "amount" }:
+  { group: FinGroup; kind: "stock" | "flow"; view: TrendView; mode?: ValueMode }) {
   const rows: { label: string; series: FinPoint[]; bold: boolean; indent: boolean }[] = [];
   for (const sub of group.sub_sections) {
     if (sub.label) rows.push({ label: sub.label, series: [], bold: true, indent: false });
@@ -639,9 +658,16 @@ function LineItemTable({ group, kind, view }: { group: FinGroup; kind: "stock" |
     return distinct.slice(-8);
   }, [group, kind, view]);
 
-  const bucketed = useMemo(() =>
+  const bucketed = useMemo((): (Map<string, number | null> | null)[] =>
     rows.map((r) => (r.series.length ? new Map(buildTimeline(r.series, kind, view).map((x) => [x.label, x.value])) : null)),
     [rows, kind, view]);
+
+  // The sheet's OWN percent per bucket — bucketPercent applies the same "latest
+  // point in the bucket" rule used elsewhere, so a quarter/year % is a figure
+  // the sheet actually typed, never a re-average of monthly percentages.
+  const bucketedPct = useMemo((): (Map<string, number | null> | null)[] =>
+    rows.map((r) => (r.series.length ? new Map(cols.map((c) => [c, bucketPercent(r.series, view, c)])) : null)),
+    [rows, view, cols]);
 
   return (
     <div className="overflow-x-auto">
@@ -657,9 +683,9 @@ function LineItemTable({ group, kind, view }: { group: FinGroup; kind: "stock" |
           </thead>
           <tbody>
             {rows.map((r, i) => {
-              const m = bucketed[i];
+              const m = mode === "percent" ? bucketedPct[i] : bucketed[i];
               const vals = m ? cols.map((c) => m.get(c)).filter((v): v is number => v != null) : [];
-              const rowMax = Math.max(1, ...vals.map(Math.abs));
+              const rowMax = Math.max(mode === "percent" ? Number.MIN_VALUE : 1, ...vals.map(Math.abs));
               return (
                 <tr key={i} className="border-b border-gray-100">
                   <td className={`py-2 pr-3 sticky left-0 bg-white ${r.bold ? "font-bold text-gray-800" : "text-gray-600"} ${r.indent ? "pl-3" : ""}`}>{r.label}</td>
@@ -669,8 +695,9 @@ function LineItemTable({ group, kind, view }: { group: FinGroup; kind: "stock" |
                     const shade = v != null && !r.bold ? Math.min(0.14, (Math.abs(v) / rowMax) * 0.14) : 0;
                     return (
                       <td key={c} className={`py-2 px-3 text-right whitespace-nowrap ${r.bold ? "font-semibold text-gray-800" : "text-gray-600"}`}
-                        style={{ background: shade ? `rgba(78,101,117,${shade})` : undefined }} title={v != null ? formatINR(v) : ""}>
-                        {v != null ? formatCompact(v) : "—"}
+                        style={{ background: shade ? `rgba(78,101,117,${shade})` : undefined }}
+                        title={v != null && mode === "amount" ? formatINR(v) : ""}>
+                        {v == null ? "—" : mode === "percent" ? formatShare(v) : formatCompact(v)}
                       </td>
                     );
                   })}
@@ -709,14 +736,27 @@ export function ProfitBridgeCard({ group, view, bucket }: { group: FinGroup; vie
       <div className="flex flex-col gap-1">
         {anchors.map((a, i) => {
           const pct = (a.value / sales) * 100;
+          const barW = Math.max(pct, 2);
+          // Rounding to whole percent turns a real 0.26% into a meaningless
+          // "0%", so thin levels keep enough precision to stay a number.
+          const pctText = pct >= 10 ? `${Math.round(pct)}%` : pct >= 1 ? `${pct.toFixed(1)}%` : `${pct.toFixed(2)}%`;
+          // Below ~8% the bar is too narrow to hold its own label, so the label
+          // moves outside it rather than being clipped to an unreadable sliver.
+          const labelInside = pct >= 8;
           return (
             <div key={a.slug}>
               <div className="flex items-center gap-3 py-1.5">
                 <div className="w-28 shrink-0 text-[12px] font-semibold text-gray-700">{a.label}</div>
-                <div className="flex-1 h-6 bg-gray-50 rounded-md overflow-hidden">
-                  <div className="h-full rounded-md flex items-center justify-end pr-2" style={{ width: `${Math.max(pct, 2)}%`, background: a.color }}>
-                    <span className="text-[10px] font-bold text-white/90">{Math.round(pct)}%</span>
+                <div className="relative flex-1 h-6 bg-gray-50 rounded-md overflow-hidden">
+                  <div className="h-full rounded-md flex items-center justify-end pr-2" style={{ width: `${barW}%`, background: a.color }}>
+                    {labelInside && <span className="text-[10px] font-bold text-white/90">{pctText}</span>}
                   </div>
+                  {!labelInside && (
+                    <span className="absolute top-0 h-full flex items-center text-[10px] font-bold text-gray-500"
+                      style={{ left: `calc(${barW}% + 6px)` }}>
+                      {pctText}
+                    </span>
+                  )}
                 </div>
                 <div className="w-24 shrink-0 text-right text-[13px] font-bold text-gray-800" title={formatINR(a.value)}>{formatCompact(a.value)}</div>
               </div>
@@ -995,6 +1035,13 @@ export function ReconciliationPanel({ ties }: { ties: ReconTie[] }) {
 // ── Group block: donut + mix-over-time per additive sub-section, movers, table ─
 export function GroupBlock({ group, view, bucket, kind }: { group: FinGroup; view: TrendView; bucket: string; kind: "stock" | "flow" }) {
   const additive = group.sub_sections.filter((s) => s.total);
+  const [valueMode, setValueMode] = useState<ValueMode>("amount");
+  // Only offer the % view where the sheet actually typed percentages — an empty
+  // toggle that blanks the whole table would read as a bug.
+  const hasPercent = useMemo(() => group.sub_sections.some((s) =>
+    s.line_items.some((it) => it.series.some((p) => p.percent != null)) ||
+    (s.total?.series.some((p) => p.percent != null) ?? false)
+  ), [group]);
   return (
     <div className="flex flex-col gap-4">
       <SectionHeading>{group.section_label}</SectionHeading>
@@ -1009,8 +1056,12 @@ export function GroupBlock({ group, view, bucket, kind }: { group: FinGroup; vie
           </div>
         );
       })}
-      <Card title={`${group.section_label} — detail`} note="Values at the current granularity; use the View control at the top to switch.">
-        <LineItemTable group={group} kind={kind} view={view} />
+      <Card title={`${group.section_label} — detail`}
+        note={valueMode === "percent"
+          ? "The sheet's own percentages at the current granularity; use the View control at the top to switch period."
+          : "Values at the current granularity; use the View control at the top to switch."}
+        right={hasPercent ? <ValueModeToggle mode={valueMode} onChange={setValueMode} /> : undefined}>
+        <LineItemTable group={group} kind={kind} view={view} mode={valueMode} />
       </Card>
     </div>
   );

@@ -52,7 +52,17 @@ _SUB_LABELS = {
     "application_of_funds": "Application of Funds",
     "current_assets": "Current Assets",
     "current_liabilities": "Current Liabilities",
+    # §7 Units — the sheet splits every company into 4-wheeler and 2-wheeler
+    # blocks, with a nested "Others" group inside each 2w block. The bare
+    # sales/productions keys are the older single-block layout, still used by
+    # the test masters.
     "sales": "Sales", "productions": "Production",
+    "sales_4w": "Sales — 4 Wheeler", "sales_2w": "Sales — 2 Wheeler",
+    "productions_4w": "Production — 4 Wheeler", "productions_2w": "Production — 2 Wheeler",
+    "sales_4w/others": "Sales — 4 Wheeler · Others",
+    "sales_2w/others": "Sales — 2 Wheeler · Others",
+    "productions_4w/others": "Production — 4 Wheeler · Others",
+    "productions_2w/others": "Production — 2 Wheeler · Others",
     # Working Capital Aging (§8) sub-headers
     "inventory": "Inventory", "debtors": "Debtors", "creditors": "Creditors",
     # Cash Flow Statement (§15) activities
@@ -578,6 +588,100 @@ def finance_analytics(
     if statement == "cash_flow":
         return _cash_flow_analytics(db, sheet_source_id)
     return _profit_loss_analytics(db, sheet_source_id)
+
+
+# ── Consolidated (every company side by side) ────────────────────────────────
+# "Consolidated" here means SIDE BY SIDE, not summed. Each company's own figures
+# are returned as-is and shown together in one place; nothing is added across
+# companies. That is deliberate, not a simplification: the master sheet already
+# carries finance's own roll-up tabs (e.g. AMATO TOTAL), which land in
+# sheet_sources as ordinary companies, so summing every tab would double-count
+# whichever entities those roll-ups already cover.
+#
+# P&L lines come back as full series so the frontend's period picker can bucket
+# them at monthly/quarterly/yearly like every other view. Balance Sheet is a
+# stock, so only its latest point travels — "last figures", as at its own date.
+_CONSOLIDATED_PL_KEYS = {
+    "sales": "profit_loss_a_c/sales_accounts",
+    "gross": "profit_loss_a_c/gross_margin",
+    "pbitda": "profit_loss_a_c/pbitda",
+    "pat": "profit_loss_a_c/pat",
+}
+_CONSOLIDATED_BS_KEYS = {
+    "sources": "balance_sheet/sources_of_funds/total",
+    "application": "balance_sheet/application_of_funds/total",
+}
+
+
+@router.get("/consolidated")
+def finance_consolidated(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_module(db, current_user, MODULE_KEY)
+    allowed_ids = set(get_user_sheet_source_ids(db, current_user, module=MODULE))
+    companies = (
+        db.query(SheetSource)
+        .filter(SheetSource.module == MODULE, SheetSource.kind == "company")
+        .order_by(SheetSource.label.asc())
+        .all()
+    )
+    companies = [c for c in companies if str(c.id) in allowed_ids]
+    if not companies:
+        return {"companies": []}
+
+    sids = [str(c.id) for c in companies]
+    keys = list(_CONSOLIDATED_PL_KEYS.values()) + list(_CONSOLIDATED_BS_KEYS.values())
+    # One pass for every company rather than a query per company. sheet_source_id
+    # is a uuid column and these are strings, so this uses the same expanding
+    # bindparam / IN form already proven against it in _sync_company_records
+    # rather than an ANY(...) array cast.
+    rows = db.execute(
+        text("""
+            SELECT sheet_source_id, line_key, period_start_date, period_end_date,
+                   period_type, amount, percent
+            FROM finance_lines
+            WHERE sheet_source_id IN :sids
+              AND line_key = ANY(:keys)
+              AND amount IS NOT NULL
+            ORDER BY period_end_date
+        """).bindparams(bindparam("sids", expanding=True)),
+        {"sids": sids, "keys": keys},
+    ).fetchall()
+
+    pl_by_key = {v: k for k, v in _CONSOLIDATED_PL_KEYS.items()}
+    bs_by_key = {v: k for k, v in _CONSOLIDATED_BS_KEYS.items()}
+    acc: dict = {
+        sid: {"pl": {k: [] for k in _CONSOLIDATED_PL_KEYS}, "bs": {k: None for k in _CONSOLIDATED_BS_KEYS}}
+        for sid in sids
+    }
+    for r in rows:
+        sid = str(r.sheet_source_id)
+        slot = acc.get(sid)
+        if slot is None:
+            continue
+        if r.line_key in pl_by_key:
+            slot["pl"][pl_by_key[r.line_key]].append({
+                "period_start_date": r.period_start_date.isoformat(),
+                "period_end_date": r.period_end_date.isoformat(),
+                "period_type": r.period_type,
+                "amount": float(r.amount),
+                "percent": r.percent,
+            })
+        elif r.line_key in bs_by_key:
+            # Rows arrive oldest-first, so the last one seen is the latest point.
+            slot["bs"][bs_by_key[r.line_key]] = {
+                "amount": float(r.amount),
+                "period_end_date": r.period_end_date.isoformat(),
+            }
+
+    out = []
+    for c in companies:
+        sid = str(c.id)
+        bs = acc[sid]["bs"]
+        as_at = max(
+            (v["period_end_date"] for v in bs.values() if v is not None),
+            default=None,
+        )
+        out.append({"id": sid, "label": c.label, "pl": acc[sid]["pl"], "bs": bs, "as_at": as_at})
+    return {"companies": out}
 
 
 # ── Sync history ──────────────────────────────────────────────────────────────

@@ -113,6 +113,28 @@ def _cf_norm(label: str) -> str:
 # the guard in parse_finance_tab for why this matters.
 _BS_SUBHEADERS = {"sources of funds", "application of funds"}
 
+# ── §7 UNITS — structural grouping ───────────────────────────────────────────
+# The sheet lays this section out as four blocks (Sales 4w / Sales 2w /
+# Productions 4w / Productions 2w), and inside the 2w blocks it nests a further
+# "Others" group holding Lifestyle and Bags. Two things break the generic walk:
+#
+#   1. NESTING. sub_section is a single slug, so a nested "Others" header used to
+#      REPLACE its parent segment. Sales-2w-Others and Productions-2w-Others then
+#      produced identical line_keys (units/others/lifestyle), and since the sync
+#      upserts on (sheet_source_id, line_key, period...), the production figure
+#      silently overwrote the sales one. Verified on live data: AMATO TOTAL and
+#      AMATO SRN each lost 6 values this way. The segment is therefore carried in
+#      the sub_section path — "sales_2w/others" vs "productions_2w/others".
+#
+#   2. BLANK LINE ITEMS. A company with no Mats this quarter has a value-less
+#      "Mats" row, which the generic "value-less = sub-header" rule promoted to a
+#      sub-header, hijacking the grouping for every row beneath it (observed on
+#      AMATO RPS / PUNE / NOIDA: real figures filed under units/mats/other and
+#      units/seat_cover/...). Same class of bug as the balance-sheet sub-header
+#      hijack. Fix is the same shape: only STRUCTURAL labels may change grouping.
+_UNITS_SEGMENT_RE = re.compile(r"^(sales|production|productions)(\s+(4w|2w))?$")
+_UNITS_GROUPS = {"others"}
+
 
 # ── Grid helpers (same idioms as every other sync service) ───────────────────
 
@@ -258,6 +280,7 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
     section_label: Optional[str] = None
     registered = False
     sub_section: Optional[str] = None
+    units_segment: Optional[str] = None  # §7 only — the enclosing Sales/Productions block
     ordinal = 0
 
     def emit(label: str, entity_type: str):
@@ -294,6 +317,7 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
             # Cash Flow opens on the first (implicit) activity — Operating; every
             # other section starts with no sub-section until a sub-header sets one.
             sub_section = "operating_activities" if section_key == "cash_flow_statement" else None
+            units_segment = None
             ordinal = 0
             continue
 
@@ -342,6 +366,19 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         if label_norm == "TOTAL":
             emit(label, "total")
             sub_section = None  # a total closes its sub-section
+        elif not any_cell and section_key == "units":
+            # §7 keeps the enclosing segment in the path so the two "Others"
+            # groups stay distinct, and only structural labels may regroup —
+            # see the _UNITS_* block above for the two bugs this prevents.
+            n = _cf_norm(label)
+            if _UNITS_SEGMENT_RE.match(n):
+                units_segment = _slugify(label)
+                sub_section = units_segment
+            elif n in _UNITS_GROUPS and units_segment:
+                sub_section = f"{units_segment}/{_slugify(label)}"
+            # else: a real line item blank in every loaded period — keep the
+            # current grouping rather than hijacking it.
+            continue
         elif not any_cell:
             # A value-less labelled row is normally a sub-header. Guard: some
             # sections have real line items that are blank in every loaded period

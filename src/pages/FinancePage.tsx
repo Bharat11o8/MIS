@@ -10,9 +10,15 @@ import BalanceSheetView from "@/pages/finance/BalanceSheetView";
 import ProfitLossView from "@/pages/finance/ProfitLossView";
 import PlantOpsView from "@/pages/finance/PlantOpsView";
 import CashFlowView from "@/pages/finance/CashFlowView";
+import ConsolidatedView from "@/pages/finance/ConsolidatedView";
 import { StickyLeadingContext } from "@/pages/finance/dashboardKit";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+// A synthetic entry in the company dropdown rather than a real sheet_source —
+// it selects "every company at once" instead of one company, so it deliberately
+// cannot collide with a real UUID.
+const CONSOLIDATED_ID = "__consolidated__";
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -73,7 +79,11 @@ export default function FinancePage() {
       if (!res.ok) return;
       const data: SheetSourceItem[] = await res.json();
       setSources(data);
-      setSelectedId((cur) => (cur && data.some((s) => s.id === cur) ? cur : (data[0]?.id ?? "")));
+      // Consolidated is synthetic, so it isn't in `data` — keep it selected
+      // explicitly, or a Refresh/sync would silently bounce back to company #1.
+      setSelectedId((cur) =>
+        cur && (cur === CONSOLIDATED_ID || data.some((s) => s.id === cur)) ? cur : (data[0]?.id ?? "")
+      );
     } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -200,9 +210,21 @@ export default function FinancePage() {
     }
   };
 
-  const companyLabel = sources.find((s) => s.id === selectedId)?.label ?? "";
-  const statementLabel = activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow" : "Plant Operations";
+  const isConsolidated = selectedId === CONSOLIDATED_ID;
+  const companyLabel = isConsolidated ? "ALL COMPANIES" : (sources.find((s) => s.id === selectedId)?.label ?? "");
+  const statementLabel = isConsolidated
+    ? "P&L & Balance Sheet"
+    : activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow" : "Plant Operations";
   const onSheetsTab = activeTab === "sheets";
+
+  // Pinned above the individual companies — it reads as the overview you drill
+  // down FROM, and stays put as companies are added. Deliberately NOT called
+  // "consolidated": that term means summed with inter-company eliminations,
+  // whereas this view shows each company as reported and adds nothing.
+  const companyOptions = [
+    ...(sources.length > 0 ? [{ value: CONSOLIDATED_ID, label: "ALL COMPANIES" }] : []),
+    ...sources.map((s) => ({ value: s.id, label: s.label })),
+  ];
 
   // Fed to the views' sticky controls bar via context. null keeps the plain
   // "View" label, so nothing changes until the real selector scrolls away.
@@ -211,16 +233,21 @@ export default function FinancePage() {
       value={selectedId}
       onChange={setSelectedId}
       placeholder="Select a company…"
-      options={sources.map((s) => ({ value: s.id, label: s.label }))}
+      options={companyOptions}
       className="min-w-[150px]"
     />
   );
 
+  // The four statement tabs are per-company, so they don't apply to the
+  // consolidated view — which shows P&L and Balance Sheet together on one page.
+  // Sheets stays reachable either way, being config rather than a company view.
   const TABS: [Tab, string][] = [
-    ["balance_sheet", "Balance Sheet"],
-    ["profit_loss", "P&L"],
-    ["cash_flow", "Cash Flow"],
-    ["plant_ops", "Plant Ops"],
+    ...(isConsolidated ? [] : ([
+      ["balance_sheet", "Balance Sheet"],
+      ["profit_loss", "P&L"],
+      ["cash_flow", "Cash Flow"],
+      ["plant_ops", "Plant Ops"],
+    ] as [Tab, string][])),
     ...(isAdmin ? [["sheets", "Sheets"] as [Tab, string]] : []),
   ];
 
@@ -244,17 +271,23 @@ export default function FinancePage() {
           <div className="flex items-center gap-2 mt-1">
             <div className="w-8 h-0.5 bg-gray-800 rounded" />
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Balance Sheet · Profit & Loss · Cash Flow · Plant Operations, per company</p>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+              {isConsolidated
+                ? "Profit & Loss and Balance Sheet, every company side by side"
+                : "Balance Sheet · Profit & Loss · Cash Flow · Plant Operations, per company"}
+            </p>
           </div>
         </div>
-        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
-          {TABS.map(([key, label]) => (
-            <button key={key} onClick={() => setActiveTab(key)}
-              className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${activeTab === key ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        {TABS.length > 0 && (
+          <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+            {TABS.map(([key, label]) => (
+              <button key={key} onClick={() => setActiveTab(key)}
+                className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${activeTab === key ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </motion.div>
 
       {/* Company selector (view) — hidden on the Sheets tab, which is config, not a company view */}
@@ -265,10 +298,10 @@ export default function FinancePage() {
               value={selectedId}
               onChange={setSelectedId}
               placeholder="Select a company…"
-              options={sources.map((s) => ({ value: s.id, label: s.label }))}
+              options={companyOptions}
               className="min-w-[180px]"
             />
-            {isAdmin && selectedId && (
+            {isAdmin && selectedId && !isConsolidated && (
               <button onClick={handleDeleteCompany}
                 className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all">
                 <Trash2 size={13} />
@@ -402,10 +435,11 @@ export default function FinancePage() {
       )}
 
       <StickyLeadingContext.Provider value={{ leading: stickyCompanySelector, top: headerH + 8 }}>
-        {selectedId && activeTab === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-        {selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-        {selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
-        {selectedId && activeTab === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {isConsolidated && !onSheetsTab && <ConsolidatedView refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
       </StickyLeadingContext.Provider>
 
       {isAdmin && onSheetsTab && (
