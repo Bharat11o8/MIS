@@ -19,19 +19,20 @@ router = APIRouter(prefix="/leads", tags=["Leads"])
 MODULE_KEY = "leads"
 
 
-# ── User scope helper ─────────────────────────────────────────────────────────
-def apply_user_scope(q, current_user: User):
-    """Restrict query to the current user's uploads for non-management roles."""
-    if current_user.role not in {"superadmin", "management"}:
-        q = q.filter(Lead.uploaded_by == current_user.id)
-    return q
-
-
-def apply_user_scope_sql(where_clauses: list, params: dict, current_user: User):
-    """Add uploaded_by WHERE clause for non-management roles (raw SQL queries)."""
-    if current_user.role not in {"superadmin", "management"}:
-        where_clauses.append("uploaded_by = :_scope_user_id")
-        params["_scope_user_id"] = str(current_user.id)
+# ── User scoping: intentionally none ──────────────────────────────────────────
+# Leads used to be row-scoped by `uploaded_by` for any role outside
+# {superadmin, management} — a Phase 3 rule that predates the Phase 7
+# permissions system. It survived that migration because it scopes *rows*
+# rather than gating the endpoint, so the role-based sweep missed it.
+#
+# It could never work for this data: leads arrive as centrally-uploaded
+# IVR/WhatsApp sheets run by an admin, so `uploaded_by` is always an admin
+# and every staff / sales_head user saw zero rows regardless of their grant.
+#
+# Access is now decided solely by require_module(..., "leads") — consistent
+# with Sales, Finance and OE Network. If leads ever need to be restricted to
+# a subset of users, scope on something meaningful to the business (e.g.
+# `assigned_asm`, mapped via a users→ASM table) rather than reinstating this.
 
 
 # ── Month-list helper ──────────────────────────────────────────────────────────
@@ -176,12 +177,7 @@ def filter_options(
     """Return distinct values for all filterable fields."""
     require_module(db, current_user, MODULE_KEY)
 
-    scope_clauses: list = ["1=1"]
-    scope_params: dict = {}
-    apply_user_scope_sql(scope_clauses, scope_params, current_user)
-    scope_sql = " AND ".join(scope_clauses)
-
-    months = db.execute(text(f"""
+    months = db.execute(text("""
         SELECT DISTINCT
             EXTRACT(year FROM lead_date)::int  AS year,
             EXTRACT(month FROM lead_date)::int AS month,
@@ -189,12 +185,11 @@ def filter_options(
             MIN(lead_date)::text               AS date_from,
             MAX(lead_date)::text               AS date_to
         FROM leads
-        WHERE {scope_sql}
         GROUP BY year, month, label
         ORDER BY year, month
-    """), scope_params).fetchall()
+    """)).fetchall()
 
-    base_q = apply_user_scope(db.query(Lead), current_user)
+    base_q = db.query(Lead)
     sources       = [r[0] for r in base_q.with_entities(Lead.source).distinct().order_by(Lead.source).all() if r[0]]
     asms          = [r[0] for r in base_q.with_entities(Lead.assigned_asm).filter(Lead.assigned_asm.isnot(None)).distinct().order_by(Lead.assigned_asm).all()]
     call_statuses = [r[0] for r in base_q.with_entities(Lead.call_status).filter(Lead.call_status.isnot(None)).distinct().order_by(Lead.call_status).all()]
@@ -237,28 +232,23 @@ def leads_analytics(
         "reason_category": reason_category, "state": state,
     }
 
-    base = apply_user_scope(db.query(Lead), current_user)
-    base = apply_filters(base, filters)
+    base = apply_filters(db.query(Lead), filters)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     total     = base.count()
-    base2 = apply_user_scope(db.query(Lead), current_user)
-    base2 = apply_filters(base2, filters)
+    base2 = apply_filters(db.query(Lead), filters)
     closed_won = base2.filter(Lead.review_status == "Closed Won").count()
     conv_rate  = round((closed_won / total * 100), 1) if total > 0 else 0.0
 
-    base3 = apply_user_scope(db.query(Lead), current_user)
-    base3 = apply_filters(base3, filters)
+    base3 = apply_filters(db.query(Lead), filters)
     follow_up = base3.filter(Lead.review_status == "Follow Up").count()
 
-    base4 = apply_user_scope(db.query(Lead), current_user)
-    base4 = apply_filters(base4, filters)
+    base4 = apply_filters(db.query(Lead), filters)
     closed_lost = base4.filter(Lead.review_status == "Closed Lost").count()
 
     # ── Trends ────────────────────────────────────────────────────────────────
     where_clauses = ["1=1"]
     params: dict = {}
-    apply_user_scope_sql(where_clauses, params, current_user)
     apply_filters_text(where_clauses, params, filters)
     where_sql = " AND ".join(where_clauses)
 
@@ -273,30 +263,27 @@ def leads_analytics(
     """), params).fetchall()
 
     # ── Source breakdown ───────────────────────────────────────────────────────
-    src_q = apply_filters(apply_user_scope(db.query(Lead.source, func.count(Lead.id).label("count")), current_user), filters)
+    src_q = apply_filters(db.query(Lead.source, func.count(Lead.id).label("count")), filters)
     src_rows = src_q.group_by(Lead.source).order_by(func.count(Lead.id).desc()).all()
 
     # ── Call status ────────────────────────────────────────────────────────────
-    cs_q = apply_filters(apply_user_scope(db.query(Lead.call_status, func.count(Lead.id).label("count")), current_user), filters)
+    cs_q = apply_filters(db.query(Lead.call_status, func.count(Lead.id).label("count")), filters)
     cs_rows = cs_q.filter(Lead.call_status.isnot(None)).group_by(Lead.call_status).order_by(func.count(Lead.id).desc()).all()
 
     # ── Review status ──────────────────────────────────────────────────────────
-    rs_q = apply_filters(apply_user_scope(db.query(Lead.review_status, func.count(Lead.id).label("count")), current_user), filters)
+    rs_q = apply_filters(db.query(Lead.review_status, func.count(Lead.id).label("count")), filters)
     rs_rows = rs_q.filter(Lead.review_status.isnot(None)).group_by(Lead.review_status).order_by(func.count(Lead.id).desc()).all()
 
     # ── Reason categories ──────────────────────────────────────────────────────
-    rc_q = apply_filters(apply_user_scope(db.query(Lead.reason_category, func.count(Lead.id).label("count")), current_user), filters)
+    rc_q = apply_filters(db.query(Lead.reason_category, func.count(Lead.id).label("count")), filters)
     rc_rows = rc_q.filter(Lead.reason_category.isnot(None)).group_by(Lead.reason_category).order_by(func.count(Lead.id).desc()).all()
 
     # ── ASM performance ────────────────────────────────────────────────────────
     asm_q = apply_filters(
-        apply_user_scope(
-            db.query(
-                Lead.assigned_asm,
-                func.count(Lead.id).label("total"),
-                func.sum(case((Lead.review_status == "Closed Won", 1), else_=0)).label("closed_won"),
-            ),
-            current_user,
+        db.query(
+            Lead.assigned_asm,
+            func.count(Lead.id).label("total"),
+            func.sum(case((Lead.review_status == "Closed Won", 1), else_=0)).label("closed_won"),
         ),
         filters,
     )
@@ -305,7 +292,7 @@ def leads_analytics(
         .order_by(func.count(Lead.id).desc()).all()
 
     # ── Top states ─────────────────────────────────────────────────────────────
-    state_q = apply_filters(apply_user_scope(db.query(Lead.state, func.count(Lead.id).label("count")), current_user), filters)
+    state_q = apply_filters(db.query(Lead.state, func.count(Lead.id).label("count")), filters)
     state_rows = state_q.filter(Lead.state.isnot(None)).group_by(Lead.state).order_by(func.count(Lead.id).desc()).limit(10).all()
 
     return {
@@ -356,7 +343,7 @@ def leads_list(
         "call_status": call_status, "review_status": review_status,
         "reason_category": reason_category, "state": state,
     }
-    q = apply_filters(apply_user_scope(db.query(Lead), current_user), filters)
+    q = apply_filters(db.query(Lead), filters)
     total = q.count()
     leads = q.order_by(Lead.lead_date.desc()).offset((page - 1) * per_page).limit(per_page).all()
 
@@ -394,9 +381,10 @@ def upload_history(
 ):
     require_module(db, current_user, MODULE_KEY)
 
+    # Same rule as the row scoping above — dropped for the same reason. A staff
+    # user who can see every lead but an empty Upload History tab is a confusing
+    # half-state; module access now decides both.
     q = db.query(UploadLog).filter(UploadLog.module == "leads")
-    if current_user.role not in {"superadmin", "management"}:
-        q = q.filter(UploadLog.uploaded_by == current_user.id)
 
     logs = q.order_by(UploadLog.uploaded_at.desc()).limit(50).all()
     return [
