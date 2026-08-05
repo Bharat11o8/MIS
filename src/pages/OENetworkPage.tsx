@@ -109,21 +109,29 @@ interface TgtPeriod { fy_year: number; quarter: number; token: string; label: st
 
 // ── Field Activity (remarks) ───────────────────────────────────────────────────
 interface RemarkTheme { key: string; label: string; count: number }
+/** One note = one remark category the rep filled in. Since 29 Jul 2026 the form
+ *  makes them tick categories and write separately in each, so a single visit
+ *  routinely carries two or three of these. */
+interface RemarkNote { category: string; label: string; text: string; themes: string[] }
+/** A category with its own nested theme breakdown — the primary axis of this tab. */
+interface RemarkCategory { key: string; label: string; count: number; themes: RemarkTheme[] }
 interface RemarkLatest {
   visit_date: string; dealership: string | null; oem: string | null;
-  contact_mode: string | null; remarks: string; themes: string[];
+  contact_mode: string | null; notes: RemarkNote[]; themes: string[];
 }
 interface PersonRollup {
   salesperson: string; remarks: number; visits: number; calls: number; dealers: number;
-  top_themes: RemarkTheme[]; latest: RemarkLatest | null;
+  top_themes: RemarkTheme[]; categories: { key: string; label: string; count: number }[];
+  latest: RemarkLatest | null;
 }
 interface RemarkFeedRow {
   id: string; visit_date: string; salesperson: string | null; contact_mode: string | null;
   oem: string | null; dealership: string | null; city: string | null; state: string | null;
-  remarks: string; themes: string[];
+  notes: RemarkNote[]; themes: string[];
 }
 interface RemarksData {
-  kpis: { remarks: number; dealers: number; salespersons: number; visits: number; calls: number };
+  kpis: { remarks: number; notes: number; dealers: number; salespersons: number; visits: number; calls: number };
+  categories: RemarkCategory[];
   themes: RemarkTheme[];
   by_salesperson: PersonRollup[];
   feed: { total: number; page: number; per_page: number; data: RemarkFeedRow[] };
@@ -146,6 +154,18 @@ const THEME_META: Record<string, { label: string; color: string; bg: string }> =
   complaint: { label: "Concern", color: "#b91c1c", bg: "#fef2f2" },
 };
 const themeMeta = (key: string) => THEME_META[key] ?? { label: key, color: "#6b7280", bg: "#f9fafb" };
+
+// The four categories the rep picks on the form, plus `general` for the
+// pre-29-Jul-2026 rows that only ever had one unlabelled blob. Keys mirror
+// REMARK_CATEGORIES in routers/oe_network.py.
+const CATEGORY_META: Record<string, { color: string; bg: string }> = {
+  sales: { color: "#16a34a", bg: "#f0fdf4" },
+  product_feedback: { color: "#3b82f6", bg: "#eff6ff" },
+  replacement: { color: "#d97706", bg: "#fffbeb" },
+  others: { color: "#a855f7", bg: "#f5f3ff" },
+  general: { color: "#6b7280", bg: "#f4f4f5" },
+};
+const categoryMeta = (key: string) => CATEGORY_META[key] ?? { color: "#6b7280", bg: "#f9fafb" };
 
 type TabId = "overview" | "indepth" | "activity" | "targets" | "sheets";
 type Metric = "value" | "nos";
@@ -1192,29 +1212,72 @@ function ThemeChip({ themeKey, count }: { themeKey: string; count?: number }) {
   );
 }
 
-/** The clickable theme filter row — one chip per theme with its tally, the
- *  active one lit. Clicking narrows the feed; clicking it again clears it. */
-function ThemeFilterRow({ themes, active, onPick }: {
-  themes: RemarkTheme[]; active: string; onPick: (k: string) => void;
-}) {
-  if (!themes.length) return <p className="text-xs text-gray-400 py-2">No themed remarks in this slice.</p>;
+/** The category the rep themselves chose, as a chip. */
+function CategoryChip({ categoryKey, label }: { categoryKey: string; label: string }) {
+  const m = categoryMeta(categoryKey);
   return (
-    <div className="flex flex-wrap gap-2">
-      {themes.map((t) => {
-        const m = themeMeta(t.key);
-        const on = active === t.key;
+    <span className="inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap"
+      style={{ color: m.color, background: m.bg }}>
+      {label}
+    </span>
+  );
+}
+
+/** The primary filter surface: one column per remark category, with the keyword
+ *  themes nested underneath it. The rep hand-classifies every note on the form,
+ *  so the category is the trustworthy axis and the themes only add detail
+ *  *within* it ("of the 161 Sales notes, 67 are chasing an order").
+ *  Clicking a category scopes the feed; clicking a nested theme scopes to that
+ *  theme inside that category. */
+function CategoryPanel({ categories, activeCategory, activeTheme, onPick }: {
+  categories: RemarkCategory[];
+  activeCategory: string; activeTheme: string;
+  onPick: (category: string, theme: string) => void;
+}) {
+  if (!categories.length) return <p className="text-xs text-gray-400 py-2">No remarks in this slice.</p>;
+  const total = categories.reduce((s, c) => s + c.count, 0);
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+      {categories.map((c) => {
+        const m = categoryMeta(c.key);
+        const on = activeCategory === c.key;
+        const share = total ? Math.round((c.count / total) * 100) : 0;
         return (
-          <button key={t.key} onClick={() => onPick(t.key)}
-            className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 transition-all"
-            style={{
-              borderColor: on ? m.color : "#f1f0ee",
-              background: on ? m.bg : "#fff",
-            }}
-            title={`${t.count} remark${t.count === 1 ? "" : "s"} — click to ${on ? "clear" : "filter"}`}>
-            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: m.color }} />
-            <span className="text-[11px] font-semibold" style={{ color: on ? m.color : "#374151" }}>{m.label}</span>
-            <span className="text-[11px] font-black" style={{ color: m.color }}>{t.count}</span>
-          </button>
+          <div key={c.key} className="rounded-xl border transition-all"
+            style={{ borderColor: on ? m.color : "#f1f0ee", background: on ? m.bg : "#fff" }}>
+            <button onClick={() => onPick(on && !activeTheme ? "" : c.key, "")}
+              className="w-full text-left px-3 pt-2.5 pb-2"
+              title={`${c.count} note${c.count === 1 ? "" : "s"} — click to ${on && !activeTheme ? "clear" : "filter"}`}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[11px] font-bold" style={{ color: m.color }}>{c.label}</span>
+                <span className="text-[10px] text-gray-400">{share}%</span>
+              </div>
+              <p className="text-xl font-black leading-tight" style={{ color: m.color }}>{c.count}</p>
+              <div className="h-1 rounded-full mt-1.5 overflow-hidden" style={{ background: "#f1f0ee" }}>
+                <div className="h-full rounded-full" style={{ width: `${share}%`, background: m.color }} />
+              </div>
+            </button>
+            {c.themes.length > 0 && (
+              <div className="flex flex-col px-2 pb-2 pt-0.5 gap-0.5">
+                {c.themes.slice(0, 5).map((t) => {
+                  const tm = themeMeta(t.key);
+                  const tOn = on && activeTheme === t.key;
+                  return (
+                    <button key={t.key} onClick={() => onPick(c.key, tOn ? "" : t.key)}
+                      className="flex items-center justify-between gap-2 px-1.5 py-0.5 rounded-md hover:bg-white/70 transition-colors"
+                      style={tOn ? { background: tm.bg } : undefined}
+                      title={`${t.count} ${c.label} note${t.count === 1 ? "" : "s"} tagged ${tm.label}`}>
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className="w-1 h-1 rounded-full shrink-0" style={{ background: tm.color }} />
+                        <span className="text-[10px] truncate" style={{ color: tOn ? tm.color : "#6b7280" }}>{tm.label}</span>
+                      </span>
+                      <span className="text-[10px] font-bold shrink-0" style={{ color: tOn ? tm.color : "#9ca3af" }}>{t.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })}
     </div>
@@ -1248,8 +1311,30 @@ function PersonCard({ p, active, onPick }: {
         </div>
       </div>
 
+      {/* Category mix first — it's what the rep actually declared they were
+          doing; the themes below are the inferred detail. */}
+      {p.categories.length > 0 && (
+        <div className="flex h-1.5 rounded-full overflow-hidden mt-3" title={p.categories.map((c) => `${c.label}: ${c.count}`).join(" · ")}>
+          {p.categories.map((c) => (
+            <div key={c.key} style={{
+              flexGrow: c.count,
+              background: categoryMeta(c.key).color,
+            }} />
+          ))}
+        </div>
+      )}
+      {p.categories.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {p.categories.map((c) => (
+            <span key={c.key} className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md"
+              style={{ color: categoryMeta(c.key).color, background: categoryMeta(c.key).bg }}>
+              {c.label}<span className="opacity-70">{c.count}</span>
+            </span>
+          ))}
+        </div>
+      )}
       {p.top_themes.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-3">
+        <div className="flex flex-wrap gap-1 mt-1.5">
           {p.top_themes.map((t) => <ThemeChip key={t.key} themeKey={t.key} count={t.count} />)}
         </div>
       )}
@@ -1268,6 +1353,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
   const [state, setState] = useState("");
   const [city, setCity] = useState("");
   const [mode, setMode] = useState("");
+  const [category, setCategory] = useState("");
   const [theme, setTheme] = useState("");
   const [q, setQ] = useState("");
   const [qDeb, setQDeb] = useState("");
@@ -1332,7 +1418,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
   };
 
   // Any change to the slice resets to the first page of the feed.
-  useEffect(() => { setPage(1); }, [selected, periodMode, salesperson, oem, state, city, mode, theme, qDeb]);
+  useEffect(() => { setPage(1); }, [selected, periodMode, salesperson, oem, state, city, mode, category, theme, qDeb]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1343,6 +1429,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
     if (state) params.set("state", state);
     if (city) params.set("city", city);
     if (mode) params.set("contact_mode", mode);
+    if (category) params.set("category", category);
     if (theme) params.set("theme", theme);
     if (qDeb) params.set("q", qDeb);
     setLoading(true);
@@ -1352,14 +1439,17 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, periodMode, salesperson, oem, state, city, mode, theme, qDeb, page, refreshKey]);
+  }, [selected, periodMode, salesperson, oem, state, city, mode, category, theme, qDeb, page, refreshKey]);
 
   const toOpts = (arr: string[] | undefined, all: string) =>
     [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
-  const hasFilters = Boolean(salesperson || oem || state || city || mode || theme || q);
+  const hasFilters = Boolean(salesperson || oem || state || city || mode || category || theme || q);
   const clearFilters = () => {
-    setSalesperson(""); setOem(""); setState(""); setCity(""); setMode(""); setTheme(""); setQ("");
+    setSalesperson(""); setOem(""); setState(""); setCity(""); setMode("");
+    setCategory(""); setTheme(""); setQ("");
   };
+  const categoryLabel = (key: string) =>
+    data?.categories.find((c) => c.key === key)?.label ?? key;
 
   if (!loading && optionsByMode.monthly.length === 0) {
     return (
@@ -1416,14 +1506,18 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
       <div className="print-only">
         <p className="text-sm font-bold text-gray-900">
           Field Activity · {periodOptions.find((o) => o.value === selected)?.label ?? ""}
-          {salesperson && ` · ${salesperson}`}{oem && ` · ${oem}`}{theme && ` · ${themeMeta(theme).label}`}
+          {salesperson && ` · ${salesperson}`}{oem && ` · ${oem}`}
+          {category && ` · ${categoryLabel(category)}`}{theme && ` · ${themeMeta(theme).label}`}
           {qDeb && ` · “${qDeb}”`}
         </p>
       </div>
 
       {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <StatCard label="Remarks" value={data?.kpis.remarks ?? 0} sub="field notes logged"
+        <StatCard label="Remarks" value={data?.kpis.remarks ?? 0}
+          sub={data && data.kpis.notes > data.kpis.remarks
+            ? `${data.kpis.notes.toLocaleString("en-IN")} notes across categories`
+            : "field notes logged"}
           icon={<MessageSquare size={18} />} color="#f46617" bg="#fff4ed" />
         <StatCard label="Dealers Touched" value={data?.kpis.dealers ?? 0}
           icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
@@ -1443,17 +1537,20 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
               <Tag size={13} /> What the field is reporting
             </h3>
             <p className="text-[10px] text-gray-400">
-              Every remark auto-tagged by what it's about — click a theme to filter the log below. A note can carry more than one.
+              Grouped by the category the rep chose on the form, then auto-tagged within it. Click a category — or a
+              tag inside one — to filter the log below.
             </p>
           </div>
-          {theme && (
-            <button onClick={() => setTheme("")}
+          {(category || theme) && (
+            <button onClick={() => { setCategory(""); setTheme(""); }}
               className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
-              <X size={12} /> Clear theme
+              <X size={12} /> Clear
+              {category && ` ${categoryLabel(category)}`}{theme && ` · ${themeMeta(theme).label}`}
             </button>
           )}
         </div>
-        <ThemeFilterRow themes={data?.themes ?? []} active={theme} onPick={(k) => setTheme(theme === k ? "" : k)} />
+        <CategoryPanel categories={data?.categories ?? []} activeCategory={category} activeTheme={theme}
+          onPick={(c, t) => { setCategory(c); setTheme(t); }} />
       </div>
 
       {/* Per-salesperson rollup — "what is everyone up to" */}
@@ -1486,6 +1583,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
             <MessageSquare size={13} /> Field Log
+            {category && <CategoryChip categoryKey={category} label={categoryLabel(category)} />}
             {theme && <ThemeChip themeKey={theme} />}
           </h3>
           <p className="text-[10px] text-gray-400">{data?.feed.total.toLocaleString("en-IN") ?? 0} remarks</p>
@@ -1504,13 +1602,26 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
                   {r.salesperson ? firstName(r.salesperson) : "—"}{r.oem && ` · ${r.oem}`}
                 </p>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] text-gray-700 leading-snug">{r.remarks}</p>
-                {r.themes.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {r.themes.map((t) => <ThemeChip key={t} themeKey={t} />)}
-                  </div>
-                )}
+              {/* One block per category the rep wrote in. When a category is
+                  being filtered on, the others stay visible but dimmed — the
+                  matching note is the point, the rest is context for it. */}
+              <div className="flex-1 min-w-0 flex flex-col gap-2">
+                {r.notes.map((n, i) => {
+                  const dim = Boolean(category) && n.category !== category;
+                  return (
+                    <div key={`${n.category}-${i}`} className={dim ? "opacity-40" : undefined}>
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 mt-px"><CategoryChip categoryKey={n.category} label={n.label} /></span>
+                        <p className="text-[13px] text-gray-700 leading-snug min-w-0">{n.text}</p>
+                      </div>
+                      {n.themes.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1 ml-1">
+                          {n.themes.map((t) => <ThemeChip key={t} themeKey={t} />)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ))}

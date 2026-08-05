@@ -128,7 +128,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
 
   if (loading) return <div className="text-sm text-gray-400 py-10 text-center">Loading all companies…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;
-  if (companies.length === 0) return <EmptyState>No companies available yet. Register the master files from the Sheets tab and sync.</EmptyState>;
+  if (companies.length === 0) return <EmptyState>No companies available yet. Register the master files from the Data Sources tab and sync.</EmptyState>;
 
   const anyPl = plRows.some((r) => r.sales != null || r.pat != null);
   const anyBs = bsRows.some((r) => r.sources != null || r.application != null);

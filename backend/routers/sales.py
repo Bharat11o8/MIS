@@ -19,6 +19,7 @@ from routers.auth import get_current_user
 from services.google_sheets import extract_sheet_id
 from services.sales_sync import parse_workbook
 from services.permissions import require_module
+from services.sync_logs import SYNC_LOG_RETENTION, prune_sync_logs
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
@@ -230,6 +231,7 @@ def sync_sheet_source(
     db.add(log)
     db.commit()
     db.refresh(log)
+    prune_sync_logs(db, MODULE, source.sheet_id)
 
     try:
         records, errors, skipped_tabs, _ = parse_workbook(source.sheet_id)
@@ -335,6 +337,7 @@ def sync_now(
     db.add(log)
     db.commit()
     db.refresh(log)
+    prune_sync_logs(db, MODULE, sheet_id)
 
     try:
         records, errors, skipped_tabs, covered_months = parse_workbook(sheet_id)
@@ -613,7 +616,7 @@ def sync_history(
         source = db.query(SheetSource).filter(SheetSource.id == sheet_source_id, SheetSource.module == MODULE).first()
         if source:
             query = query.filter(SyncLog.source_label == source.sheet_id)
-    logs = query.order_by(SyncLog.synced_at.desc()).limit(50).all()
+    logs = query.order_by(SyncLog.synced_at.desc()).limit(SYNC_LOG_RETENTION).all()
     return [
         {
             "id": str(l.id),

@@ -22,6 +22,7 @@ from routers.auth import get_current_user
 from services.google_sheets import extract_sheet_id
 from services.finance_sync import fetch_and_parse_finance_by_company, _slugify
 from services.permissions import require_module, require_sheet_source_access, get_user_sheet_source_ids
+from services.sync_logs import SYNC_LOG_RETENTION, prune_sync_logs
 
 router = APIRouter(prefix="/finance", tags=["Finance"])
 
@@ -293,6 +294,7 @@ def sync_master(master_id: str, db: Session = Depends(get_db), current_user: Use
     db.add(log)
     db.commit()
     db.refresh(log)
+    prune_sync_logs(db, MODULE, master.sheet_id)
 
     try:
         by_company, errors = fetch_and_parse_finance_by_company(master.sheet_id)
@@ -699,7 +701,7 @@ def sync_history(
         if source:
             require_sheet_source_access(db, current_user, source.id)
             query = query.filter(SyncLog.source_label == source.sheet_id)
-    logs = query.order_by(SyncLog.synced_at.desc()).limit(50).all()
+    logs = query.order_by(SyncLog.synced_at.desc()).limit(SYNC_LOG_RETENTION).all()
     return [
         {
             "id": str(l.id),

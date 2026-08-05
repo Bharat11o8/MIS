@@ -24,6 +24,7 @@ from services.google_sheets import extract_sheet_id
 from services.oe_network_sync import parse_visit_plan, parse_log_book
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.permissions import require_module
+from services.sync_logs import SYNC_LOG_RETENTION, prune_sync_logs
 from services.remark_themes import classify as classify_remark, THEMES, is_theme
 
 router = APIRouter(prefix="/oe-network", tags=["OE Network"])
@@ -269,6 +270,7 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
     db.add(log)
     db.commit()
     db.refresh(log)
+    prune_sync_logs(db, source.module, source.sheet_id)
 
     try:
         if source.module == MODULE_PLAN:
@@ -598,6 +600,36 @@ def _theme_list(counter: dict) -> list:
     ]
 
 
+# The rep now classifies their own note at source: the visit-log form makes them
+# tick one or more of four categories and write a separate remark in each, and
+# each lands in its own column. That hand-classification beats anything the
+# keyword classifier can infer, so it is the PRIMARY axis here and the themes
+# nest inside it — "of the 176 Sales notes, 112 are pushing for an order".
+#
+# `general` is the pre-form world: one blob in `remarks`, no category. Rows
+# written before 29 Jul 2026 have only that; rows since have only the four. The
+# two are never merged (see the note above _add_filters), so a row contributes
+# one entry per non-empty remark field and a single row can appear under several
+# categories at once.
+REMARK_CATEGORIES = [
+    ("sales", "Sales", "remark_sales"),
+    ("product_feedback", "Product Feedback", "remark_product_feedback"),
+    ("replacement", "Replacement", "remark_replacement"),
+    ("others", "Others", "remark_others"),
+    ("general", "General (pre-form)", "remarks"),
+]
+_CATEGORY_KEYS = {key for key, _, _ in REMARK_CATEGORIES}
+_CATEGORY_COLUMNS = [col for _, _, col in REMARK_CATEGORIES]
+
+
+def _notes(found: list) -> list:
+    """The per-category notes of one row, shaped for the client."""
+    return [
+        {"category": key, "label": label, "text": body, "themes": ts}
+        for key, label, body, ts in found
+    ]
+
+
 @router.get("/remarks")
 def remarks_activity(
     year: Optional[int] = None,
@@ -610,23 +642,30 @@ def remarks_activity(
     city: Optional[str] = None,
     contact_mode: Optional[str] = None,
     q: Optional[str] = Query(None, description="Dealership or remark text search"),
+    category: Optional[str] = Query(None, description="Restrict the feed to one remark category"),
     theme: Optional[str] = Query(None, description="Restrict the feed to one theme key"),
     page: int = Query(1, ge=1),
     per_page: int = Query(30, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Themes + per-salesperson rollup + paginated remark feed, in one call.
+    """Categories + nested themes + per-salesperson rollup + remark feed, in one call.
 
-    The KPIs, theme tallies and per-salesperson rollup are computed over the whole
-    filtered slice; only the feed narrows to `theme` and paginates. That keeps the
-    theme chips stable when one is clicked to filter the feed beneath them.
+    The KPIs, category/theme tallies and per-salesperson rollup are computed over
+    the whole filtered slice; only the feed narrows to `category`/`theme` and
+    paginates. That keeps the chips stable when one is clicked to filter the feed
+    beneath them.
     """
     _require_access(db, current_user)
     if theme and not is_theme(theme):
         raise HTTPException(status_code=400, detail=f"Unknown theme: {theme!r}")
+    if category and category not in _CATEGORY_KEYS:
+        raise HTTPException(status_code=400, detail=f"Unknown remark category: {category!r}")
 
-    where = ["remarks IS NOT NULL", "remarks <> ''"]
+    # "Has a remark" now means any of the five fields, not just the legacy blob —
+    # every row written since 29 Jul 2026 leaves `remarks` NULL.
+    any_remark = " OR ".join(f"COALESCE({c}, '') <> ''" for c in _CATEGORY_COLUMNS)
+    where = [f"({any_remark})"]
     params: dict = {}
     _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym)
     _add_filters(where, params, {
@@ -634,19 +673,53 @@ def remarks_activity(
         "city": city, "contact_mode": contact_mode,
     })
     if q:
-        where.append("(dealership ILIKE :q OR remarks ILIKE :q)")
+        text_cols = " OR ".join(f"{c} ILIKE :q" for c in _CATEGORY_COLUMNS)
+        where.append(f"(dealership ILIKE :q OR {text_cols})")
         params["q"] = f"%{q}%"
     where_sql = " AND ".join(where)
 
     rows = db.execute(text(f"""
         SELECT id, visit_date, salesperson, contact_mode, oem, dealership,
-               city, state, remarks
+               city, state, {", ".join(_CATEGORY_COLUMNS)}
         FROM oe_visit_logs WHERE {where_sql}
         ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
     """), params).fetchall()
 
-    # Classify once; reuse the tags for every downstream tally.
-    tags = {r.id: classify_remark(r.remarks) for r in rows}
+    # One row fans out into one entry per non-empty remark field. Classify each
+    # separately: a Sales note and a Product Feedback note on the same visit are
+    # different statements and must not share tags.
+    #   entries[row_id] -> [(category_key, label, text, [theme keys]), …]
+    entries: dict = {}
+    for r in rows:
+        found = []
+        for key, label, col in REMARK_CATEGORIES:
+            body = (getattr(r, col) or "").strip()
+            if body:
+                found.append((key, label, body, classify_remark(body)))
+        entries[r.id] = found
+
+    # Row-level tags = the union across its categories, for the salesperson rollup.
+    tags = {rid: sorted({t for _, _, _, ts in e for t in ts}) for rid, e in entries.items()}
+
+    # Category tallies, each with its own nested theme breakdown.
+    cat_counts: dict = {}
+    cat_themes: dict = {}
+    for e in entries.values():
+        for key, _, _, ts in e:
+            cat_counts[key] = cat_counts.get(key, 0) + 1
+            bucket = cat_themes.setdefault(key, {})
+            for t in ts:
+                bucket[t] = bucket.get(t, 0) + 1
+
+    categories = [
+        {
+            "key": key,
+            "label": label,
+            "count": cat_counts[key],
+            "themes": _theme_list(cat_themes.get(key, {})),
+        }
+        for key, label, _ in REMARK_CATEGORIES if cat_counts.get(key)
+    ]
 
     theme_counter: dict = {}
     for r in rows:
@@ -661,7 +734,7 @@ def remarks_activity(
         if p is None:
             p = people[sp] = {
                 "salesperson": sp, "remarks": 0, "visits": 0, "calls": 0,
-                "dealers": set(), "themes": {}, "latest": None,
+                "dealers": set(), "themes": {}, "categories": {}, "latest": None,
             }
         p["remarks"] += 1
         if r.contact_mode == "Visit":
@@ -672,12 +745,15 @@ def remarks_activity(
             p["dealers"].add(r.dealership.strip().lower())
         for t in tags[r.id]:
             p["themes"][t] = p["themes"].get(t, 0) + 1
+        for key, _, _, _ in entries[r.id]:
+            p["categories"][key] = p["categories"].get(key, 0) + 1
         # rows are date-desc, so the first one seen per person is the latest.
         if p["latest"] is None:
             p["latest"] = {
                 "visit_date": r.visit_date.isoformat(),
                 "dealership": r.dealership, "oem": r.oem,
-                "contact_mode": r.contact_mode, "remarks": r.remarks,
+                "contact_mode": r.contact_mode,
+                "notes": _notes(entries[r.id]),
                 "themes": tags[r.id],
             }
 
@@ -688,6 +764,10 @@ def remarks_activity(
                 "remarks": p["remarks"], "visits": p["visits"], "calls": p["calls"],
                 "dealers": len(p["dealers"]),
                 "top_themes": _theme_list(p["themes"])[:3],
+                "categories": [
+                    {"key": key, "label": label, "count": p["categories"][key]}
+                    for key, label, _ in REMARK_CATEGORIES if p["categories"].get(key)
+                ],
                 "latest": p["latest"],
             }
             for p in people.values()
@@ -695,20 +775,33 @@ def remarks_activity(
         key=lambda x: x["remarks"], reverse=True,
     )
 
-    # Feed — narrow to the chosen theme, then paginate in memory.
-    feed_rows = [r for r in rows if not theme or theme in tags[r.id]]
+    # Feed — narrow to the chosen category/theme, then paginate in memory. When
+    # both are set the SAME note must satisfy both, so "Sales + complaint" means
+    # a complaint written under Sales, not a row that happens to have each
+    # somewhere.
+    def keeps(r) -> bool:
+        return any(
+            (not category or key == category) and (not theme or theme in ts)
+            for key, _, _, ts in entries[r.id]
+        )
+
+    feed_rows = [r for r in rows if keeps(r)] if (category or theme) else list(rows)
     total = len(feed_rows)
     start = (page - 1) * per_page
     page_rows = feed_rows[start:start + per_page]
 
     return {
         "kpis": {
+            # `remarks` counts ROWS with at least one note; `notes` counts the
+            # notes themselves, which is higher whenever a rep ticks 2+ categories.
             "remarks": len(rows),
+            "notes": sum(cat_counts.values()),
             "dealers": len({r.dealership.strip().lower() for r in rows if r.dealership}),
             "salespersons": len(people),
             "visits": sum(1 for r in rows if r.contact_mode == "Visit"),
             "calls": sum(1 for r in rows if r.contact_mode == "Calling"),
         },
+        "categories": categories,
         "themes": _theme_list(theme_counter),
         "by_salesperson": by_salesperson,
         "feed": {
@@ -718,7 +811,8 @@ def remarks_activity(
                     "id": str(r.id), "visit_date": r.visit_date.isoformat(),
                     "salesperson": r.salesperson, "contact_mode": r.contact_mode,
                     "oem": r.oem, "dealership": r.dealership,
-                    "city": r.city, "state": r.state, "remarks": r.remarks,
+                    "city": r.city, "state": r.state,
+                    "notes": _notes(entries[r.id]),
                     "themes": tags[r.id],
                 }
                 for r in page_rows
@@ -1324,7 +1418,7 @@ def sync_history(
         db.query(SyncLog)
         .filter(SyncLog.module.in_(OE_MODULES))
         .order_by(SyncLog.synced_at.desc())
-        .limit(50)
+        .limit(SYNC_LOG_RETENTION)
         .all()
     )
     return [

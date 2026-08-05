@@ -248,7 +248,9 @@ export default function FinancePage() {
       ["cash_flow", "Cash Flow"],
       ["plant_ops", "Plant Ops"],
     ] as [Tab, string][])),
-    ...(isAdmin ? [["sheets", "Sheets"] as [Tab, string]] : []),
+    // Key stays "sheets"; the label reads "Data Sources" so the tab matches the
+    // heading inside it and doesn't surface the Google-Sheets plumbing.
+    ...(isAdmin ? [["sheets", "Data Sources"] as [Tab, string]] : []),
   ];
 
   return (
@@ -429,7 +431,7 @@ export default function FinancePage() {
       {!onSheetsTab && !selectedId && (
         <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
           {isAdmin
-            ? "No companies yet — register the master files from the Sheets tab and click Sync to ingest every company tab."
+            ? "No companies yet — register the master files from the Data Sources tab and click Sync to ingest every company tab."
             : "No companies available. Ask an admin to grant you access to a company's finance data."}
         </div>
       )}
