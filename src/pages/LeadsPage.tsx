@@ -7,13 +7,37 @@ import {
 import LeadsUploadTab from "@/pages/LeadsUploadTab";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend, LineChart, Line,
+  PieChart, Pie, Cell, Legend, LineChart, Line, LabelList,
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
 import MultiSelect from "@/components/ui/MultiSelect";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+// ── Chart data labels ─────────────────────────────────────────────────────────
+// Values are drawn directly on the marks so the numbers are readable without
+// hovering. Labels wear muted ink rather than the series colour — the mark
+// beside them already carries the identity.
+const DATA_LABEL = { fill: "#64748b", fontSize: 11, fontWeight: 700 } as const;
+
+// Percentage inside each donut slice. Slivers are skipped — the text would
+// overflow the arc — so the legend carries their count instead.
+const renderDonutLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+  if (percent < 0.08) return null;
+  const RADIAN = Math.PI / 180;
+  const r = innerRadius + (outerRadius - innerRadius) / 2;
+  return (
+    <text
+      x={cx + r * Math.cos(-midAngle * RADIAN)}
+      y={cy + r * Math.sin(-midAngle * RADIAN)}
+      fill="#fff" textAnchor="middle" dominantBaseline="central"
+      style={{ fontSize: 10, fontWeight: 700 }}
+    >
+      {`${(percent * 100).toFixed(0)}%`}
+    </text>
+  );
+};
 
 // ── Colour maps ───────────────────────────────────────────────────────────────
 const SOURCE_COLORS: Record<string, string> = {
@@ -436,14 +460,24 @@ export default function LeadsPage() {
               <ResponsiveContainer width="100%" height={200}>
                 <PieChart>
                   <Pie data={analytics.sources} cx="50%" cy="45%" innerRadius={50} outerRadius={75}
-                    paddingAngle={4} dataKey="count" nameKey="source">
+                    paddingAngle={4} dataKey="count" nameKey="source"
+                    label={renderDonutLabel} labelLine={false}>
                     {analytics.sources.map((s: any) => (
                       <Cell key={s.source} fill={SOURCE_COLORS[s.source] ?? "#94a3b8"} />
                     ))}
                   </Pie>
                   <Tooltip contentStyle={{ background: "#fff", border: "1px solid #f1f5f9", borderRadius: 12, fontSize: 12 }} />
+                  {/* Counts live in the legend so slivers too small for an in-arc
+                      label still show a number without hovering. */}
                   <Legend iconType="circle" iconSize={8}
-                    formatter={(v) => <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>{v}</span>} />
+                    formatter={(v, entry: any) => (
+                      <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                        {v}{" "}
+                        <span style={{ color: "#94a3b8", fontWeight: 700 }}>
+                          {entry?.payload?.count?.toLocaleString("en-IN")}
+                        </span>
+                      </span>
+                    )} />
                 </PieChart>
               </ResponsiveContainer>
             </motion.div>
@@ -464,7 +498,8 @@ export default function LeadsPage() {
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={analytics.call_status} layout="vertical" barSize={16}>
+                <BarChart data={analytics.call_status} layout="vertical" barSize={16}
+                  margin={{ top: 0, right: 44, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                   <YAxis dataKey="status" type="category" tick={{ fontSize: 11, fill: "#64748b" }}
@@ -474,6 +509,7 @@ export default function LeadsPage() {
                     {analytics.call_status.map((s: any) => (
                       <Cell key={s.status} fill={STATUS_COLORS[s.status] ?? "#94a3b8"} />
                     ))}
+                    <LabelList dataKey="count" position="right" offset={8} {...DATA_LABEL} />
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
@@ -490,7 +526,8 @@ export default function LeadsPage() {
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={analytics.review_status} layout="vertical" barSize={16}>
+                <BarChart data={analytics.review_status} layout="vertical" barSize={16}
+                  margin={{ top: 0, right: 44, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                   <YAxis dataKey="status" type="category" tick={{ fontSize: 11, fill: "#64748b" }}
@@ -500,6 +537,7 @@ export default function LeadsPage() {
                     {analytics.review_status.map((s: any) => (
                       <Cell key={s.status} fill={STATUS_COLORS[s.status] ?? "#94a3b8"} />
                     ))}
+                    <LabelList dataKey="count" position="right" offset={8} {...DATA_LABEL} />
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>

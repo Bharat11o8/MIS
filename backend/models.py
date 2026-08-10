@@ -183,8 +183,11 @@ class OETarget(Base):
     period_year     = Column(Integer, nullable=False)
     period_month    = Column(Integer, nullable=False)
     oem             = Column(String(50), nullable=False)
-    category        = Column(String(30), nullable=True)   # 'SC' | 'MAT'
-    salesperson     = Column(String(100), nullable=False)
+    category        = Column(String(30), nullable=True)   # 'SC' | 'MAT' | 'ACC'
+    # NULL = an OEM-level product line nobody owns. MSIL and TATA book
+    # accessories as a single unattributed row inside their seat-cover block,
+    # so it must never surface as a seventh salesperson.
+    salesperson     = Column(String(100), nullable=True)
     region          = Column(String(100), nullable=True)
     tgt_nos         = Column(Numeric(14, 2), nullable=True)
     # Money is stored in RUPEES; the source mixes rupees and crores between tabs

@@ -9,8 +9,10 @@ are filter-first (plans list, logs list, log analytics, plan-vs-actual coverage,
 dealer directory, dealer-level plan adherence). Target analytics live in
 routers/oe_targets.py; this file owns the registry and sync for all three.
 """
+import calendar
 import re
 import uuid
+from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -20,9 +22,12 @@ from sqlalchemy.exc import IntegrityError
 from database import get_db
 from models import SheetSource, SyncLog, User
 from routers.auth import get_current_user
+from services.dealer_resolve import DealerIndex
 from services.google_sheets import extract_sheet_id
+from services.oe_dealer_data_sync import parse_dealer_data
 from services.oe_network_sync import parse_visit_plan, parse_log_book
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
+from services.period_filters import parse_date as _parse_date, snap_to_months
 from services.permissions import require_module
 from services.sync_logs import SYNC_LOG_RETENTION, prune_sync_logs
 from services.remark_themes import classify as classify_remark, THEMES, is_theme
@@ -33,7 +38,12 @@ MODULE_KEY = "oe_network"
 MODULE_PLAN = "oe_visit_plan"
 MODULE_LOG = "oe_log_book"
 MODULE_TGT = "oe_targets"
-OE_MODULES = (MODULE_PLAN, MODULE_LOG, MODULE_TGT)
+# The OE team's dealer file: one tab per OEM, one row per dealer outlet, with
+# their vehicle sales and ours month by month plus the quarter targets. Unlike
+# the other three this one feeds TWO tables (oe_dealer_monthly and
+# oe_dealer_targets) and can create dealers, so it has its own sync path.
+MODULE_DD = "oe_dealer_data"
+OE_MODULES = (MODULE_PLAN, MODULE_LOG, MODULE_TGT, MODULE_DD)
 
 # sheet_sources.quarter is VARCHAR(2) holding 'Q1'..'Q4' (Depot-to-Distributor
 # set that convention); OE targets reuse it rather than add a second column.
@@ -42,7 +52,8 @@ QUARTERS = ("Q1", "Q2", "Q3", "Q4")
 _MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
                 "July", "August", "September", "October", "November", "December"]
 
-_SHEET_TYPES = {MODULE_PLAN: "visit_plan", MODULE_LOG: "log_book", MODULE_TGT: "targets"}
+_SHEET_TYPES = {MODULE_PLAN: "visit_plan", MODULE_LOG: "log_book",
+                MODULE_TGT: "targets", MODULE_DD: "dealer_data"}
 
 
 def _require_access(db: Session, current_user: User):
@@ -136,8 +147,16 @@ def add_sheet_source(
         # tag the team actually says out loud ("AMJ"), not just "Q1".
         label = f"Targets — {QUARTER_TAGS[q_no]} FY{body.year % 100:02d}-{(body.year + 1) % 100:02d}"
         calendar_year, month, quarter = body.year, None, body.quarter
+    elif body.sheet_type == "dealer_data":
+        # No period: the file is continuous and grows a column each month, so
+        # re-syncing it always brings the latest picture — same as the log book.
+        module = MODULE_DD
+        label = "OE Dealer Data"
+        calendar_year, month = None, None
     else:
-        raise HTTPException(status_code=400, detail="sheet_type must be visit_plan, log_book or targets")
+        raise HTTPException(
+            status_code=400,
+            detail="sheet_type must be visit_plan, log_book, targets or dealer_data")
 
     source = SheetSource(
         id=uuid.uuid4(),
@@ -204,10 +223,11 @@ def delete_sheet_source(
     ).first()
     if not source:
         raise HTTPException(status_code=404, detail="Sheet source not found")
-    table = _DATA_TABLES[source.module]
-    rows_deleted = db.execute(
-        text(f"SELECT COUNT(*) FROM {table} WHERE sheet_source_id = :sid"), {"sid": str(source.id)}
-    ).scalar()
+    rows_deleted = sum(
+        db.execute(text(f"SELECT COUNT(*) FROM {t} WHERE sheet_source_id = :sid"),
+                   {"sid": str(source.id)}).scalar()
+        for t in _DATA_TABLES[source.module]
+    )
     # ON DELETE CASCADE wipes the data rows.
     db.delete(source)
     db.commit()
@@ -231,13 +251,13 @@ _LOG_INSERT = text("""
          contact_mode, oem, dealership, address, contact_person, contact_number, designation,
          car_sales, seat_cover_sales, mats_sales, remarks,
          remark_product_feedback, remark_replacement, remark_sales, remark_others,
-         channel, email, photo_link, city, state, sheet_row, sync_log_id)
+         channel, email, photo_link, city, state, sheet_row, sync_log_id, dealer_id)
     VALUES
         (:id, :sheet_source_id, :visit_date, :log_year, :log_month, :salesperson,
          :contact_mode, :oem, :dealership, :address, :contact_person, :contact_number, :designation,
          :car_sales, :seat_cover_sales, :mats_sales, :remarks,
          :remark_product_feedback, :remark_replacement, :remark_sales, :remark_others,
-         :channel, :email, :photo_link, :city, :state, :sheet_row, :sync_log_id)
+         :channel, :email, :photo_link, :city, :state, :sheet_row, :sync_log_id, :dealer_id)
 """)
 
 _TGT_INSERT = text("""
@@ -251,12 +271,128 @@ _TGT_INSERT = text("""
          :tgt_nos, :tgt_value, :ach_nos, :ach_value, :value_scale, :sync_log_id)
 """)
 
+# A module can own more than one table: the dealer file writes the monthly
+# sales and the quarterly targets, and both are replaced together on sync.
 _DATA_TABLES = {
-    MODULE_PLAN: "oe_visit_plans",
-    MODULE_LOG: "oe_visit_logs",
-    MODULE_TGT: "oe_targets",
+    MODULE_PLAN: ("oe_visit_plans",),
+    MODULE_LOG: ("oe_visit_logs",),
+    MODULE_TGT: ("oe_targets",),
+    MODULE_DD: ("oe_dealer_monthly", "oe_dealer_targets"),
 }
 _INSERTS = {MODULE_PLAN: _PLAN_INSERT, MODULE_LOG: _LOG_INSERT, MODULE_TGT: _TGT_INSERT}
+
+_DEALER_MONTHLY_INSERT = text("""
+    INSERT INTO oe_dealer_monthly
+        (id, dealer_id, sheet_source_id, month, car_sales, our_sales)
+    VALUES (:id, :dealer_id, :sheet_source_id, :month, :car_sales, :our_sales)
+""")
+
+_DEALER_TARGET_INSERT = text("""
+    INSERT INTO oe_dealer_targets
+        (id, dealer_id, sheet_source_id, quarter, fy_year,
+         period_start, period_end, target, achievement)
+    VALUES (:id, :dealer_id, :sheet_source_id, :quarter, :fy_year,
+            :period_start, :period_end, :target, :achievement)
+""")
+
+
+def sync_dealer_data(db: Session, source_id: Optional[str],
+                     records: list, errors: list) -> int:
+    """Write the dealer file's rows, creating dealers we have never seen.
+
+    Returns the number of rows written across both tables.
+
+    The file is the authority on which dealers exist, so a name we don't hold
+    is added rather than dropped — but only as a last resort, and its state
+    comes from the file, which is the one field the file gets wrong (its STATES
+    column is a sales region). Those are surfaced as errors so someone checks
+    them, because a dealer in the wrong state disappears from the visit form's
+    dropdown.
+    """
+    index = DealerIndex(db)
+    written = 0
+    created = []
+
+    for rec in records:
+        dealer_id = index.resolve(rec["oem"], rec["name"], rec["city"])
+        if dealer_id is None:
+            dealer_id = db.execute(text("""
+                INSERT INTO oe_dealerships
+                    (oem, state, city, name, salesperson, dealer_codes, source)
+                VALUES (:oem, :state, NULLIF(:city, ''), :name,
+                        NULLIF(:sp, ''), NULLIF(:codes, ''), 'oe_file')
+                ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, '')))
+                DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """), {"oem": rec["oem"], "state": rec["state"] or "Unknown",
+                   "city": rec["city"], "name": rec["name"],
+                   "sp": rec["salesperson"] or "", "codes": rec["dealer_codes"] or ""}).scalar()
+            created.append(f"{rec['name']} / {rec['city']}")
+        else:
+            # Refresh the fields the file owns. City, name and state are left
+            # alone: the master already holds a matched outlet, and the file's
+            # state cannot be trusted over it.
+            db.execute(text("""
+                UPDATE oe_dealerships
+                   SET salesperson = COALESCE(NULLIF(:sp, ''), salesperson),
+                       dealer_codes = COALESCE(NULLIF(:codes, ''), dealer_codes),
+                       updated_at = NOW()
+                 WHERE id = :id
+            """), {"id": dealer_id, "sp": rec["salesperson"] or "",
+                   "codes": rec["dealer_codes"] or ""})
+
+        for m in rec["monthly"]:
+            if m.get("car_sales") is None and m.get("our_sales") is None:
+                continue
+            db.execute(_DEALER_MONTHLY_INSERT, {
+                "id": str(uuid.uuid4()), "dealer_id": dealer_id,
+                "sheet_source_id": source_id, "month": m["month"],
+                "car_sales": m.get("car_sales"), "our_sales": m.get("our_sales"),
+            })
+            written += 1
+        for t in rec["targets"]:
+            if t.get("target") is None and t.get("achievement") is None:
+                continue
+            db.execute(_DEALER_TARGET_INSERT, {
+                "id": str(uuid.uuid4()), "dealer_id": dealer_id,
+                "sheet_source_id": source_id, **t,
+            })
+            written += 1
+
+    if created:
+        errors.append(
+            f"{len(created)} dealer(s) in the file were not in the master list and were "
+            f"added with the file's own state, which is a sales region and may be wrong — "
+            f"check them: {', '.join(created[:8])}"
+            + (f" and {len(created) - 8} more" if len(created) > 8 else "")
+        )
+    return written
+
+
+def _sync_result(log: SyncLog, db: Session, written: int, deleted: int,
+                 skipped_tabs: list, errors: list) -> dict:
+    """Close out a sync log and shape the response. Shared so the dealer file,
+    which returns early because it writes two tables, reports identically."""
+    log.rows_total = written
+    log.rows_inserted = written
+    log.rows_updated = 0
+    log.rows_failed = 0
+    log.rows_deleted = deleted
+    log.status = "Done"
+    log.error_details = "\n".join(errors) if errors else None
+    db.commit()
+
+    return {
+        "sync_id": str(log.id),
+        "rows_total": written,
+        "rows_inserted": written,
+        "rows_updated": 0,
+        "rows_failed": 0,
+        "rows_deleted": deleted,
+        "skipped_tabs": skipped_tabs,
+        "errors": errors[:20],
+        "status": "Done",
+    }
 
 
 def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
@@ -281,6 +417,8 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
             records, skipped_tabs, errors = parse_targets(
                 source.sheet_id, source.calendar_year, int(source.quarter[1])
             )
+        elif source.module == MODULE_DD:
+            records, skipped_tabs, errors = parse_dealer_data(source.sheet_id)
         else:
             records, skipped_tabs, errors = parse_log_book(source.sheet_id)
     except Exception as e:
@@ -289,23 +427,50 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
         db.commit()
         raise HTTPException(status_code=502, detail=f"Could not sync from Google Sheets: {e}")
 
-    table = _DATA_TABLES[source.module]
-    insert_sql = _INSERTS[source.module]
+    tables = _DATA_TABLES[source.module]
 
     # Full-replace in ONE transaction: rows removed from the sheet disappear
     # here too, and a mid-sync failure can never leave the table half-wiped.
     try:
-        deleted = db.execute(
-            text(f"DELETE FROM {table} WHERE sheet_source_id = :sid"), {"sid": str(source.id)}
-        ).rowcount
+        deleted = sum(
+            db.execute(text(f"DELETE FROM {t} WHERE sheet_source_id = :sid"),
+                       {"sid": str(source.id)}).rowcount
+            for t in tables
+        )
+
+        if source.module == MODULE_DD:
+            written = sync_dealer_data(db, str(source.id), records, errors)
+            db.commit()
+            return _sync_result(log, db, written, deleted, skipped_tabs, errors)
+
+        insert_sql = _INSERTS[source.module]
+
+        # Log rows carry the outlet they belong to, so visits, remarks, dealer
+        # sales and targets all hang off one key. Resolved here rather than at
+        # read time because it is the same answer every time and the dealer
+        # views would otherwise redo it on every request. Unresolved stays NULL
+        # and is reported below — never guessed at.
+        index = DealerIndex(db) if source.module == MODULE_LOG else None
+        unresolved = 0
         for rec in records:
+            extra = {}
+            if index is not None:
+                did = index.resolve(rec.get("oem"), rec.get("dealership"), rec.get("city"))
+                extra["dealer_id"] = did
+                unresolved += did is None
             db.execute(insert_sql, {
                 **rec,
+                **extra,
                 "id": str(uuid.uuid4()),
                 "sheet_source_id": str(source.id),
                 "sync_log_id": str(log.id),
             })
         db.commit()
+        if unresolved:
+            errors.append(
+                f"{unresolved} of {len(records)} log rows could not be matched to a "
+                f"dealership in the master list and will not appear in dealer views."
+            )
     except Exception as e:
         db.rollback()
         log.status = "Failed"
@@ -313,26 +478,7 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
         db.commit()
         raise HTTPException(status_code=500, detail=f"Could not store synced rows: {e}")
 
-    log.rows_total = len(records)
-    log.rows_inserted = len(records)
-    log.rows_updated = 0
-    log.rows_failed = 0
-    log.rows_deleted = deleted
-    log.status = "Done"
-    log.error_details = "\n".join(errors) if errors else None
-    db.commit()
-
-    return {
-        "sync_id": str(log.id),
-        "rows_total": len(records),
-        "rows_inserted": len(records),
-        "rows_updated": 0,
-        "rows_failed": 0,
-        "rows_deleted": deleted,
-        "skipped_tabs": skipped_tabs,
-        "errors": errors[:20],
-        "status": "Done",
-    }
+    return _sync_result(log, db, len(records), deleted, skipped_tabs, errors)
 
 
 @router.post("/sheet-sources/{source_id}/sync")
@@ -355,11 +501,13 @@ def sync_latest(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """One-click refresh for the Overview: the log book keeps growing daily and
-    only the newest visit-plan month and target quarter still change, so those
-    are the sheets worth re-pulling — earlier periods are frozen history."""
+    """One-click refresh for the Overview: the log book and the dealer file both
+    keep growing, and only the newest visit-plan month and target quarter still
+    change, so those are the sheets worth re-pulling — earlier periods are
+    frozen history."""
     _require_access(db, current_user)
-    sources = db.query(SheetSource).filter(SheetSource.module == MODULE_LOG).all()
+    sources = db.query(SheetSource).filter(
+        SheetSource.module.in_((MODULE_LOG, MODULE_DD))).all()
     newest_plan = (
         db.query(SheetSource)
         .filter(SheetSource.module == MODULE_PLAN)
@@ -413,6 +561,9 @@ def _add_filters(where: list, params: dict, mapping: dict):
 _YM_RE = re.compile(r"^(\d{4})-(\d{1,2})$")
 
 
+_snap_to_months = snap_to_months
+
+
 def _ym_value(token: str) -> int:
     m = _YM_RE.match(token or "")
     if not m or not (1 <= int(m.group(2)) <= 12):
@@ -422,9 +573,32 @@ def _ym_value(token: str) -> int:
 
 def _add_period(where: list, params: dict, year_col: str, month_col: str,
                 year: Optional[int], month: Optional[int],
-                from_ym: Optional[str], to_ym: Optional[str]):
-    """Scopes to a single month (year+month) or an inclusive month range
-    (from_ym..to_ym, 'YYYY-MM') — ranges are how quarter/FY views arrive."""
+                from_ym: Optional[str], to_ym: Optional[str],
+                date_col: Optional[str] = None,
+                from_date: Optional[str] = None, to_date: Optional[str] = None):
+    """Scopes to a single month (year+month), an inclusive month range
+    (from_ym..to_ym, 'YYYY-MM'), or an exact day range (from_date..to_date).
+
+    A day range is applied to `date_col` when the table has one. Tables that
+    only carry a year and a month — the visit plans — cannot be cut finer than
+    a month, so there the range widens to every month it touches. Callers that
+    compare the two kinds of table against each other must snap BOTH sides to
+    months themselves; a like-for-like comparison is the whole point of those
+    endpoints, and silently cutting one side finer than the other would make
+    the ratio wrong rather than merely imprecise.
+    """
+    d1, d2 = _parse_date(from_date, "from_date"), _parse_date(to_date, "to_date")
+    if d1 and d2:
+        if d1 > d2:
+            raise HTTPException(status_code=400, detail="from_date is after to_date")
+        if date_col:
+            where.append(f"{date_col} BETWEEN :p_dfrom AND :p_dto")
+            params["p_dfrom"], params["p_dto"] = d1, d2
+        else:
+            where.append(f"({year_col} * 100 + {month_col}) BETWEEN :p_from AND :p_to")
+            params["p_from"] = d1.year * 100 + d1.month
+            params["p_to"] = d2.year * 100 + d2.month
+        return
     if from_ym and to_ym:
         where.append(f"({year_col} * 100 + {month_col}) BETWEEN :p_from AND :p_to")
         params["p_from"] = _ym_value(from_ym)
@@ -636,6 +810,8 @@ def remarks_activity(
     month: Optional[int] = None,
     from_ym: Optional[str] = None,
     to_ym: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     salesperson: Optional[str] = None,
     oem: Optional[str] = None,
     state: Optional[str] = None,
@@ -667,7 +843,8 @@ def remarks_activity(
     any_remark = " OR ".join(f"COALESCE({c}, '') <> ''" for c in _CATEGORY_COLUMNS)
     where = [f"({any_remark})"]
     params: dict = {}
-    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym)
+    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym,
+                date_col="visit_date", from_date=from_date, to_date=to_date)
     _add_filters(where, params, {
         "salesperson": salesperson, "oem": oem, "state": state,
         "city": city, "contact_mode": contact_mode,
@@ -884,6 +1061,8 @@ def log_analytics(
     month: Optional[int] = None,
     from_ym: Optional[str] = None,
     to_ym: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     salesperson: Optional[str] = None,
     oem: Optional[str] = None,
     state: Optional[str] = None,
@@ -897,7 +1076,8 @@ def log_analytics(
 
     where = ["1=1"]
     params: dict = {}
-    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym)
+    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym,
+                date_col="visit_date", from_date=from_date, to_date=to_date)
     _add_filters(where, params, {
         "salesperson": salesperson, "oem": oem, "state": state,
         "city": city, "contact_mode": contact_mode,
@@ -971,6 +1151,8 @@ def plan_vs_actual(
     month: Optional[int] = Query(None, ge=1, le=12),
     from_ym: Optional[str] = None,
     to_ym: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     salesperson: Optional[str] = None,
     oem: Optional[str] = None,
     state: Optional[str] = None,
@@ -980,6 +1162,10 @@ def plan_vs_actual(
     current_user: User = Depends(get_current_user),
 ):
     _require_access(db, current_user)
+    # Plans carry no day, so a day range widens to whole months on BOTH sides
+    # rather than cutting the logs finer than the plan they are measured against.
+    if from_date and to_date:
+        from_ym, to_ym = _snap_to_months(from_date, to_date)
     if not ((from_ym and to_ym) or (year is not None and month is not None)):
         raise HTTPException(status_code=400, detail="Provide year+month or from_ym+to_ym")
 
@@ -1203,6 +1389,8 @@ def plan_adherence(
     month: Optional[int] = Query(None, ge=1, le=12),
     from_ym: Optional[str] = None,
     to_ym: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     salesperson: Optional[str] = None,
     oem: Optional[str] = None,
     state: Optional[str] = None,
@@ -1210,6 +1398,10 @@ def plan_adherence(
     current_user: User = Depends(get_current_user),
 ):
     _require_access(db, current_user)
+    # Plans carry no day, so a day range widens to whole months on BOTH sides
+    # rather than cutting the logs finer than the plan they are measured against.
+    if from_date and to_date:
+        from_ym, to_ym = _snap_to_months(from_date, to_date)
     if not ((from_ym and to_ym) or (year is not None and month is not None)):
         raise HTTPException(status_code=400, detail="Provide year+month or from_ym+to_ym")
 
@@ -1352,6 +1544,8 @@ def attach_rates(
     month: Optional[int] = Query(None, ge=1, le=12),
     from_ym: Optional[str] = None,
     to_ym: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     salesperson: Optional[str] = None,
     state: Optional[str] = None,
     db: Session = Depends(get_db),
@@ -1360,7 +1554,8 @@ def attach_rates(
     _require_access(db, current_user)
     where = ["car_sales > 0", "seat_cover_sales IS NOT NULL"]
     params: dict = {}
-    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym)
+    _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym,
+                date_col="visit_date", from_date=from_date, to_date=to_date)
     _add_filters(where, params, {"salesperson": salesperson, "state": state})
     where_sql = " AND ".join(where)
 
@@ -1433,3 +1628,487 @@ def sync_history(
         }
         for l in logs
     ]
+
+
+# ── Dealer performance ────────────────────────────────────────────────────────
+# The dealer-centric half of the module. Everything above answers "what is each
+# rep doing"; this answers "how is each dealership doing" — which is what the OE
+# team's own dealer file is keyed on, and what leadership asks about.
+#
+# TWO PERIOD GRAINS, deliberately. Dealer sales arrive as one figure per month,
+# so a range like 12 Jul – 5 Aug cannot be cut finer than whole months for
+# sales, while visits and calls are dated to the day and are cut exactly. Both
+# are returned so the UI can say so, rather than quietly implying the sales
+# figures were filtered to the day.
+
+def _last_day(m: date) -> date:
+    return date(m.year, m.month, calendar.monthrange(m.year, m.month)[1])
+
+
+def _ym_to_date(token: str) -> date:
+    v = _ym_value(token)
+    return date(v // 100, v % 100, 1)
+
+
+def _period_bounds(year: Optional[int], month: Optional[int],
+                   from_ym: Optional[str], to_ym: Optional[str],
+                   from_date: Optional[str], to_date: Optional[str]):
+    """(month_from, month_to, date_from, date_to). Any may be None for all time.
+
+    A custom day range wins when given; otherwise this reads exactly the period
+    params every other endpoint here takes, so the shared filter bar keeps
+    working unchanged.
+    """
+    d1, d2 = _parse_date(from_date, "from_date"), _parse_date(to_date, "to_date")
+    if d1 and d2:
+        if d1 > d2:
+            raise HTTPException(status_code=400, detail="from_date is after to_date")
+        return d1.replace(day=1), d2.replace(day=1), d1, d2
+    if from_ym and to_ym:
+        m1, m2 = _ym_to_date(from_ym), _ym_to_date(to_ym)
+        if m1 > m2:
+            raise HTTPException(status_code=400, detail="from_ym is after to_ym")
+        return m1, m2, m1, _last_day(m2)
+    if year is not None and month is not None:
+        m = date(year, month, 1)
+        return m, m, m, _last_day(m)
+    if year is not None:
+        return date(year, 1, 1), date(year, 12, 1), date(year, 1, 1), date(year, 12, 31)
+    return None, None, None, None
+
+
+def _dealer_scope(where: list, params: dict, oem: Optional[str],
+                  salesperson: Optional[str], state: Optional[str]):
+    """Entity filters applied to the DEALER, not to the visit.
+
+    salesperson here is the rep the dealer is assigned to in the OE file, not
+    whoever happened to log a contact. The question this tab answers is "how is
+    this rep's patch doing", and that has to include the dealers they never
+    touched — otherwise filtering by rep would hide exactly the gap worth
+    seeing.
+    """
+    if oem:
+        where.append("d.oem = :f_oem")
+        params["f_oem"] = oem
+    if salesperson:
+        where.append("UPPER(d.salesperson) = UPPER(:f_sp)")
+        params["f_sp"] = salesperson
+    if state:
+        where.append("d.state = :f_state")
+        params["f_state"] = state
+
+
+# Reused by every query below: the activity slice, the sales slice, and the
+# dealer filter are the same three ideas each time.
+# CAST(:p AS date), never :p::date — SQLAlchemy's text() does not recognise a
+# bind parameter followed by the :: cast operator and leaves it as literal SQL.
+_ACT_WINDOW = """
+    dealer_id IS NOT NULL
+    AND (CAST(:d_from AS date) IS NULL OR visit_date >= CAST(:d_from AS date))
+    AND (CAST(:d_to   AS date) IS NULL OR visit_date <= CAST(:d_to   AS date))
+"""
+_SALES_WINDOW = """
+    (CAST(:m_from AS date) IS NULL OR month >= CAST(:m_from AS date))
+    AND (CAST(:m_to AS date) IS NULL OR month <= CAST(:m_to AS date))
+"""
+
+_DEALER_AGG_SQL = """
+WITH sales AS (
+    SELECT dealer_id, SUM(car_sales) AS car_sales, SUM(our_sales) AS our_sales
+    FROM oe_dealer_monthly WHERE {sales_window} GROUP BY 1
+),
+acts AS (
+    SELECT dealer_id,
+           COUNT(*) AS contacts,
+           COUNT(*) FILTER (WHERE contact_mode = 'Visit')   AS visits,
+           COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls,
+           MAX(visit_date) AS last_contact
+    FROM oe_visit_logs WHERE {act_window} GROUP BY 1
+),
+tgts AS (
+    -- A quarter counts if it OVERLAPS the period at all, and its target is NOT
+    -- pro-rated: the target was agreed for the whole quarter, and slicing it
+    -- would invent a number the OE team never signed up to.
+    SELECT dealer_id, SUM(target) AS target, SUM(achievement) AS achievement
+    FROM oe_dealer_targets
+    WHERE (CAST(:m_from AS date) IS NULL OR period_end   >= CAST(:m_from AS date))
+      AND (CAST(:m_to   AS date) IS NULL OR period_start <= CAST(:m_to   AS date))
+    GROUP BY 1
+)
+SELECT d.id, d.oem, d.name, d.city, d.state, d.salesperson, d.dealer_codes,
+       COALESCE(s.car_sales, 0) AS car_sales,
+       COALESCE(s.our_sales, 0) AS our_sales,
+       COALESCE(a.contacts, 0)  AS contacts,
+       COALESCE(a.visits, 0)    AS visits,
+       COALESCE(a.calls, 0)     AS calls,
+       a.last_contact, t.target, t.achievement,
+       (s.dealer_id IS NOT NULL) AS has_sales
+FROM oe_dealerships d
+LEFT JOIN sales s ON s.dealer_id = d.id
+LEFT JOIN acts  a ON a.dealer_id = d.id
+LEFT JOIN tgts  t ON t.dealer_id = d.id
+WHERE d.is_active
+  AND (s.dealer_id IS NOT NULL OR a.dealer_id IS NOT NULL)
+  {extra}
+ORDER BY COALESCE(s.our_sales, 0) DESC, d.name
+"""
+
+
+def _pene(our, cars) -> Optional[float]:
+    """Penetration as a RATIO OF SUMS, matching the OE file's own AVG PENE.
+    Averaging monthly percentages would weight a 12-car month like a 1,200-car
+    one and quietly disagree with their sheet."""
+    return round(100.0 * our / cars, 2) if cars else None
+
+
+def _dealer_months(db: Session, extra: str, params: dict) -> list:
+    """Network trend: their volume, our volume and our activity, by month.
+
+    Contacts are bucketed into the month they happened in so the line can be
+    read against the sales bars on one axis.
+    """
+    sales = db.execute(text(f"""
+        SELECT m.month, SUM(m.car_sales) AS car_sales, SUM(m.our_sales) AS our_sales
+        FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')} {extra}
+        GROUP BY 1 ORDER BY 1
+    """), params).mappings().all()
+    acts = db.execute(text(f"""
+        SELECT date_trunc('month', l.visit_date)::date AS month,
+               COUNT(*) FILTER (WHERE l.contact_mode = 'Visit')   AS visits,
+               COUNT(*) FILTER (WHERE l.contact_mode = 'Calling') AS calls
+        FROM oe_visit_logs l JOIN oe_dealerships d ON d.id = l.dealer_id
+        WHERE {_ACT_WINDOW.replace('dealer_id', 'l.dealer_id').replace('visit_date', 'l.visit_date')} {extra}
+        GROUP BY 1 ORDER BY 1
+    """), params).mappings().all()
+
+    by_month: dict = {}
+    for r in sales:
+        by_month[r["month"]] = {"month": r["month"].isoformat(),
+                                "car_sales": r["car_sales"], "our_sales": r["our_sales"],
+                                "penetration": _pene(r["our_sales"], r["car_sales"]),
+                                "visits": 0, "calls": 0}
+    for r in acts:
+        b = by_month.setdefault(r["month"], {"month": r["month"].isoformat(),
+                                             "car_sales": None, "our_sales": None,
+                                             "penetration": None, "visits": 0, "calls": 0})
+        b["visits"], b["calls"] = r["visits"], r["calls"]
+    return [by_month[k] for k in sorted(by_month)]
+
+
+def _dealer_quarters(db: Session, extra: str, params: dict) -> list:
+    """Quarter vs quarter: target, achievement, and the sales that fell inside
+    each quarter's own months. Quarters are returned whole even if the period
+    only clips them, for the same reason targets are not pro-rated."""
+    rows = db.execute(text(f"""
+        SELECT t.quarter, t.fy_year, MIN(t.period_start) AS period_start,
+               MAX(t.period_end) AS period_end,
+               SUM(t.target) AS target, SUM(t.achievement) AS achievement
+        FROM oe_dealer_targets t JOIN oe_dealerships d ON d.id = t.dealer_id
+        WHERE (CAST(:m_from AS date) IS NULL OR t.period_end   >= CAST(:m_from AS date))
+          AND (CAST(:m_to   AS date) IS NULL OR t.period_start <= CAST(:m_to   AS date))
+          {extra}
+        GROUP BY 1, 2 ORDER BY 2, 1
+    """), params).mappings().all()
+
+    out = []
+    for r in rows:
+        sales = db.execute(text(f"""
+            SELECT SUM(m.car_sales) AS car_sales, SUM(m.our_sales) AS our_sales
+            FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+            WHERE m.month >= :q_start AND m.month <= :q_end {extra}
+        """), {**params, "q_start": r["period_start"], "q_end": r["period_end"]}).mappings().first()
+        tag = {1: "AMJ", 2: "JAS", 3: "OND", 4: "JFM"}[int(r["quarter"][1])]
+        out.append({
+            "quarter": r["quarter"],
+            "fy_year": r["fy_year"],
+            "label": f"{tag} '{str(r['period_start'].year)[2:]}",
+            "period_start": r["period_start"].isoformat(),
+            "period_end": r["period_end"].isoformat(),
+            "target": r["target"],
+            "achievement": r["achievement"],
+            "car_sales": sales["car_sales"],
+            "our_sales": sales["our_sales"],
+            "penetration": _pene(sales["our_sales"] or 0, sales["car_sales"] or 0),
+        })
+    return out
+
+
+def _contact_effect(db: Session, extra: str, params: dict) -> dict:
+    """Does contacting a dealer more actually shift what we sell there?
+
+    Compared WITHIN A MONTH — contacts made in a month against that same
+    month's penetration. Totalling contacts over one window and sales over
+    another would let contacts made in August "explain" sales from January,
+    which is backwards.
+
+    This is an association, not proof: reps go where they already do well.
+    `months` is returned so the caller can say how thin the evidence is —
+    dealer sales and visit logs currently overlap in very few months.
+    """
+    rows = db.execute(text(f"""
+        WITH dm AS (
+            SELECT m.dealer_id, m.month, m.car_sales, m.our_sales,
+                   COALESCE(c.n, 0) AS contacts
+            FROM oe_dealer_monthly m
+            JOIN oe_dealerships d ON d.id = m.dealer_id
+            LEFT JOIN (
+                SELECT dealer_id, date_trunc('month', visit_date)::date AS mth, COUNT(*) AS n
+                FROM oe_visit_logs WHERE dealer_id IS NOT NULL GROUP BY 1, 2
+            ) c ON c.dealer_id = m.dealer_id AND c.mth = m.month
+            WHERE {_SALES_WINDOW.replace('month', 'm.month')}
+              AND m.month IN (SELECT DISTINCT date_trunc('month', visit_date)::date
+                              FROM oe_visit_logs WHERE dealer_id IS NOT NULL)
+              {extra}
+        )
+        SELECT CASE WHEN contacts = 0 THEN '0'
+                    WHEN contacts = 1 THEN '1'
+                    WHEN contacts = 2 THEN '2'
+                    WHEN contacts <= 4 THEN '3-4'
+                    ELSE '5+' END AS bucket,
+               COUNT(*) AS dealer_months,
+               SUM(car_sales) AS car_sales, SUM(our_sales) AS our_sales
+        FROM dm GROUP BY 1
+    """), params).mappings().all()
+
+    order = ["0", "1", "2", "3-4", "5+"]
+    buckets = {r["bucket"]: r for r in rows}
+    months = db.execute(text(f"""
+        SELECT COUNT(DISTINCT m.month) FROM oe_dealer_monthly m
+        JOIN oe_dealerships d ON d.id = m.dealer_id
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')}
+          AND m.month IN (SELECT DISTINCT date_trunc('month', visit_date)::date
+                          FROM oe_visit_logs WHERE dealer_id IS NOT NULL)
+          {extra}
+    """), params).scalar()
+
+    return {
+        "months": months or 0,
+        "buckets": [{
+            "bucket": b,
+            "dealer_months": buckets[b]["dealer_months"],
+            "car_sales": buckets[b]["car_sales"],
+            "our_sales": buckets[b]["our_sales"],
+            "penetration": _pene(buckets[b]["our_sales"], buckets[b]["car_sales"]),
+        } for b in order if b in buckets],
+    }
+
+
+@router.get("/dealer-performance/{dealer_id}")
+def dealer_detail(
+    dealer_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """One dealership, whole: who they are, their month-by-month trend with our
+    contacts on the same timeline, their quarter targets, and every contact we
+    have logged with the remarks the rep wrote.
+
+    Deliberately NOT period-filtered. This opens from a row in a filtered table,
+    and the question it answers — "what is the story at this dealer" — is the
+    one place where clipping the history to the current filter would hide the
+    context that makes the row make sense.
+    """
+    _require_access(db, current_user)
+    d = db.execute(text("""
+        SELECT id, oem, name, city, state, salesperson, dealer_codes, source
+        FROM oe_dealerships WHERE id = :id
+    """), {"id": dealer_id}).mappings().first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+
+    sales = db.execute(text("""
+        SELECT month, car_sales, our_sales FROM oe_dealer_monthly
+        WHERE dealer_id = :id ORDER BY month
+    """), {"id": dealer_id}).mappings().all()
+    acts = db.execute(text("""
+        SELECT date_trunc('month', visit_date)::date AS month,
+               COUNT(*) FILTER (WHERE contact_mode = 'Visit')   AS visits,
+               COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls
+        FROM oe_visit_logs WHERE dealer_id = :id GROUP BY 1 ORDER BY 1
+    """), {"id": dealer_id}).mappings().all()
+
+    months: dict = {}
+    for r in sales:
+        months[r["month"]] = {"month": r["month"].isoformat(),
+                              "car_sales": r["car_sales"], "our_sales": r["our_sales"],
+                              "penetration": _pene(r["our_sales"] or 0, r["car_sales"] or 0),
+                              "visits": 0, "calls": 0}
+    for r in acts:
+        b = months.setdefault(r["month"], {"month": r["month"].isoformat(),
+                                           "car_sales": None, "our_sales": None,
+                                           "penetration": None, "visits": 0, "calls": 0})
+        b["visits"], b["calls"] = r["visits"], r["calls"]
+
+    targets = [{
+        "quarter": t["quarter"], "fy_year": t["fy_year"],
+        "label": f"{ {1: 'AMJ', 2: 'JAS', 3: 'OND', 4: 'JFM'}[int(t['quarter'][1])] } "
+                 f"'{str(t['period_start'].year)[2:]}",
+        "target": t["target"], "achievement": t["achievement"],
+    } for t in db.execute(text("""
+        SELECT quarter, fy_year, period_start, target, achievement
+        FROM oe_dealer_targets WHERE dealer_id = :id ORDER BY period_start
+    """), {"id": dealer_id}).mappings().all()]
+
+    # Contact history, newest first, with each remark category kept separate —
+    # same rule as the Field Activity tab: the legacy blob and the four
+    # form categories are never merged.
+    log_rows = db.execute(text(f"""
+        SELECT id, visit_date, salesperson, contact_mode, channel, contact_person,
+               designation, car_sales, seat_cover_sales, mats_sales,
+               {", ".join(_CATEGORY_COLUMNS)}
+        FROM oe_visit_logs WHERE dealer_id = :id
+        ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
+    """), {"id": dealer_id}).mappings().all()
+
+    history = []
+    for r in log_rows:
+        notes = []
+        for key, label, col in REMARK_CATEGORIES:
+            body = (r[col] or "").strip()
+            if body:
+                notes.append({"category": key, "label": label, "text": body,
+                              "themes": classify_remark(body)})
+        history.append({
+            "id": str(r["id"]),
+            "visit_date": r["visit_date"].isoformat() if r["visit_date"] else None,
+            "salesperson": r["salesperson"], "contact_mode": r["contact_mode"],
+            "channel": r["channel"], "contact_person": r["contact_person"],
+            "designation": r["designation"],
+            "car_sales": r["car_sales"], "seat_cover_sales": r["seat_cover_sales"],
+            "mats_sales": r["mats_sales"], "notes": notes,
+        })
+
+    last_visit = next((h for h in history if h["contact_mode"] == "Visit" and h["notes"]), None)
+    tot_cars = sum(m["car_sales"] or 0 for m in months.values())
+    tot_ours = sum(m["our_sales"] or 0 for m in months.values())
+
+    return {
+        "dealer": {
+            "id": str(d["id"]), "oem": d["oem"], "name": d["name"],
+            "city": d["city"] or "", "state": d["state"],
+            "salesperson": d["salesperson"], "codes": d["dealer_codes"],
+            "source": d["source"],
+        },
+        "totals": {
+            "car_sales": tot_cars, "our_sales": tot_ours,
+            "penetration": _pene(tot_ours, tot_cars),
+            "visits": sum(h["contact_mode"] == "Visit" for h in history),
+            "calls": sum(h["contact_mode"] == "Calling" for h in history),
+        },
+        "by_month": [months[k] for k in sorted(months)],
+        "targets": targets,
+        "last_field_note": last_visit,
+        "history": history,
+    }
+
+
+@router.get("/dealer-performance")
+def dealer_performance(
+    oem: Optional[str] = Query(None),
+    salesperson: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None),
+    from_ym: Optional[str] = Query(None),
+    to_ym: Optional[str] = Query(None),
+    from_date: Optional[str] = Query(None),
+    to_date: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Everything the Dealers tab needs, in one call.
+
+    The per-dealer rows come back whole — a few hundred at most — so the client
+    can rank, filter and plot them without a round trip per view. Top 20,
+    bottom 20 and the volume-vs-penetration map are the same list read three
+    ways, and they must agree with each other.
+    """
+    _require_access(db, current_user)
+    m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
+                                                from_date, to_date)
+    params = {"m_from": m_from, "m_to": m_to, "d_from": d_from, "d_to": d_to}
+    where: list = []
+    _dealer_scope(where, params, oem, salesperson, state)
+    extra = (" AND " + " AND ".join(where)) if where else ""
+
+    rows = db.execute(text(_DEALER_AGG_SQL.format(
+        sales_window=_SALES_WINDOW, act_window=_ACT_WINDOW, extra=extra)),
+        params).mappings().all()
+
+    dealers = [{
+        "id": str(r["id"]), "oem": r["oem"], "name": r["name"],
+        "city": r["city"] or "", "state": r["state"],
+        "salesperson": r["salesperson"], "codes": r["dealer_codes"],
+        "car_sales": r["car_sales"], "our_sales": r["our_sales"],
+        "penetration": _pene(r["our_sales"], r["car_sales"]),
+        "contacts": r["contacts"], "visits": r["visits"], "calls": r["calls"],
+        "last_contact": r["last_contact"].isoformat() if r["last_contact"] else None,
+        "target": r["target"], "achievement": r["achievement"],
+        "has_sales": r["has_sales"],
+    } for r in rows]
+
+    tot_cars = sum(d["car_sales"] for d in dealers)
+    tot_ours = sum(d["our_sales"] for d in dealers)
+    contacted = sum(1 for d in dealers if d["contacts"])
+
+    # The yardstick "opportunity" is measured against, and it must NOT move when
+    # the view is sliced. Scoped to the OEM (penetration is not comparable
+    # across OEMs) and to the period, but deliberately ignoring salesperson and
+    # state: benchmarking a rep's dealers against that same rep's own average
+    # makes a weak territory look like it has the least to gain, which is
+    # exactly backwards.
+    bench_where: list = []
+    _dealer_scope(bench_where, params, oem, None, None)
+    bench_extra = (" AND " + " AND ".join(bench_where)) if bench_where else ""
+    bench = db.execute(text(f"""
+        SELECT SUM(m.car_sales) AS cars, SUM(m.our_sales) AS ours
+        FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')} {bench_extra}
+    """), params).mappings().first()
+
+    kpis = {
+        "dealers": len(dealers),
+        "contacted": contacted,
+        "coverage": round(100.0 * contacted / len(dealers), 1) if dealers else None,
+        "car_sales": tot_cars,
+        "our_sales": tot_ours,
+        "penetration": _pene(tot_ours, tot_cars),
+        # Whole-OEM penetration for this period, unaffected by the other filters.
+        "benchmark": _pene(bench["ours"] or 0, bench["cars"] or 0),
+        "visits": sum(d["visits"] for d in dealers),
+        "calls": sum(d["calls"] for d in dealers),
+        "target": sum(d["target"] or 0 for d in dealers),
+        "achievement": sum(d["achievement"] or 0 for d in dealers),
+    }
+
+    by_sp: dict = {}
+    for d in dealers:
+        sp = d["salesperson"] or "Unassigned"
+        b = by_sp.setdefault(sp, {"salesperson": sp, "assigned": 0, "contacted": 0,
+                                  "car_sales": 0, "our_sales": 0, "visits": 0,
+                                  "calls": 0, "target": 0, "achievement": 0})
+        b["assigned"] += 1
+        b["contacted"] += 1 if d["contacts"] else 0
+        for k in ("car_sales", "our_sales", "visits", "calls"):
+            b[k] += d[k]
+        b["target"] += d["target"] or 0
+        b["achievement"] += d["achievement"] or 0
+    for b in by_sp.values():
+        b["coverage"] = round(100.0 * b["contacted"] / b["assigned"], 1) if b["assigned"] else None
+        b["penetration"] = _pene(b["our_sales"], b["car_sales"])
+
+    return {
+        "period": {
+            "month_from": m_from.isoformat() if m_from else None,
+            "month_to": m_to.isoformat() if m_to else None,
+            "date_from": d_from.isoformat() if d_from else None,
+            "date_to": d_to.isoformat() if d_to else None,
+        },
+        "kpis": kpis,
+        "dealers": dealers,
+        "by_salesperson": sorted(by_sp.values(), key=lambda b: -b["our_sales"]),
+        "by_month": _dealer_months(db, extra, params),
+        "by_quarter": _dealer_quarters(db, extra, params),
+        "contact_effect": _contact_effect(db, extra, params),
+    }

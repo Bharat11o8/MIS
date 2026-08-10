@@ -76,9 +76,25 @@ const REMARK_CATEGORIES = ["Product Feedback", "Replacement", "Sales", "Others"]
 // this category's own column. Keep in sync with the backend's Form(...) params.
 const remarkKey = (c: string) => c.toLowerCase().replace(/[^a-z0-9]+/g, "_");
 
+/** A dealer as the dropdown deals with it. `city` is "" when we don't know it
+ *  yet — the OEMs whose dealer file hasn't arrived (TATA, HYUNDAI, KIA,
+ *  MAHINDRA) are all city-less for now, and those fall back to the rep picking
+ *  a city by hand. */
+type DealerOption = { name: string; city: string };
+
+/** The offline fallback below holds bare names; the API sends {name, city}. */
+const asOptions = (list: (string | DealerOption)[]): DealerOption[] =>
+  list.map((d) => (typeof d === "string" ? { name: d, city: "" } : d));
+
+/** A group can run several outlets and the city is the only thing separating
+ *  them (PREM MOTORS Narela vs PREM MOTORS Wazirpur), so the rep has to be
+ *  choosing between cities, not names. Only the name is written to the sheet;
+ *  the city goes to the City field. */
+const dealerLabel = (d: DealerOption) => (d.city ? `${d.name} — ${d.city}` : d.name);
+
 // Dealership master list, keyed by OEM then by the geo API's state names (so
-// it lines up with the State field). The rep picks City separately. Dealers
-// differ per OEM, so the dropdown needs BOTH the OEM and the State chosen.
+// it lines up with the State field). Dealers differ per OEM, so the dropdown
+// needs BOTH the OEM and the State chosen.
 // TODO(data): only MSIL is populated; the other OEMs' lists are pasted in below.
 const DEALERSHIPS_BY_OEM_STATE: Record<string, Record<string, string[]>> = {
   MSIL: {
@@ -564,25 +580,51 @@ function SearchableField({
   );
 }
 
+// ─── City, taken from the dealership ────────────────────────────────────────
+// Shown instead of the city picker once the chosen dealer knows where it is.
+// It is deliberately not editable: the whole point of the dealer list carrying
+// a city is that every visit to one outlet lands on the same city string, so
+// the visit can be counted against that outlet.
+function DerivedCity({ city }: { city: string }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <Label required>{FIELD_LABELS.city}</Label>
+      <div className={`${fieldBase} flex items-center justify-between bg-gray-50 text-gray-700`}>
+        <span>{city}</span>
+        <MapPin size={15} className="text-gray-400 shrink-0" />
+      </div>
+      <p className="text-xs text-gray-400">From the selected dealership.</p>
+    </div>
+  );
+}
+
 // ─── Add new dealership ────────────────────────────────────────────────────
 // Inline panel opened from the dealership field when the one a rep needs isn't
 // in the list. Saves straight to the DB master list (see routers/visit_log.py
 // POST /visit-log/dealerships) and never touches the log-book sheet — that is
-// only written on final form submit. City is captured by its own field further
-// down the form, not here.
+// only written on final form submit.
+//
+// City IS asked for here, unlike before. A dealer added without one can never
+// be told apart from another outlet of the same group, which is exactly the
+// ambiguity this list exists to remove.
 function AddDealerPanel({
-  oem, state, onAdd, onClose,
-}: { oem: string; state: string; onAdd: (name: string) => Promise<void>; onClose: () => void }) {
+  oem, state, cities, citiesLoading, onAdd, onClose,
+}: {
+  oem: string; state: string; cities: string[]; citiesLoading?: boolean;
+  onAdd: (name: string, city: string) => Promise<void>; onClose: () => void;
+}) {
   const [name, setName] = useState("");
+  const [city, setCity] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
   const submit = async () => {
     if (!name.trim()) { setErr("Enter the dealership name."); return; }
+    if (!city.trim()) { setErr("Pick the city this dealership is in."); return; }
     setSaving(true);
     setErr("");
     try {
-      await onAdd(name.trim());
+      await onAdd(name.trim(), city.trim());
       onClose();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not add dealership.");
@@ -617,6 +659,15 @@ function AddDealerPanel({
           autoFocus
         />
       </div>
+      <SearchableField
+        label={FIELD_LABELS.city}
+        required
+        options={cities}
+        value={city}
+        onChange={setCity}
+        placeholder="Search city…"
+        loading={citiesLoading}
+      />
       {err && <p className="text-sm text-red-600">{err}</p>}
       <button
         type="button"
@@ -690,7 +741,7 @@ export default function VisitLogFormPage() {
   // DEALERSHIPS_BY_OEM_STATE stays as the offline fallback: if the API is down,
   // the form still works with the list as it stood at build time.
   const [dealers, setDealers] =
-    useState<Record<string, Record<string, string[]>>>(DEALERSHIPS_BY_OEM_STATE);
+    useState<Record<string, Record<string, (string | DealerOption)[]>>>(DEALERSHIPS_BY_OEM_STATE);
   const [addingDealer, setAddingDealer] = useState(false);
 
   useEffect(() => {
@@ -721,7 +772,8 @@ export default function VisitLogFormPage() {
     return () => { alive = false; };
   }, []);
 
-  // Cities for the chosen state.
+  // Cities for the chosen state — only ever used for dealers we have no city
+  // for. Once a dealer knows its own city, that one wins (see the City field).
   useEffect(() => {
     if (!form.state) {
       setCities([]);
@@ -764,8 +816,10 @@ export default function VisitLogFormPage() {
     setForm((f) => ({
       ...f,
       oem: value,
-      // Dealers are OEM-specific, so a dealer picked under the old OEM no longer applies.
+      // Dealers are OEM-specific, so a dealer picked under the old OEM no
+      // longer applies — and neither does a city that came from it.
       dealership: "",
+      city: "",
       channel: value === MSIL ? f.channel : "",
       mats_sales: value === MSIL ? "" : f.mats_sales,
     }));
@@ -781,28 +835,51 @@ export default function VisitLogFormPage() {
   const showPhoto = form.contact_mode === "Visit";
 
   // Dealers depend on BOTH the OEM and the State.
-  const dealershipOptions =
-    form.oem && form.state ? dealers[form.oem]?.[form.state] ?? [] : [];
+  const dealershipOptions = useMemo(
+    () => (form.oem && form.state ? asOptions(dealers[form.oem]?.[form.state] ?? []) : []),
+    [dealers, form.oem, form.state],
+  );
+
+  // The dropdown works in labels ("NAME — CITY"); the form holds the plain name
+  // so the sheet's Dealership column is unchanged.
+  const selectedDealer = dealershipOptions.find(
+    (o) => o.name === form.dealership && (!form.city || !o.city || o.city === form.city),
+  );
+  const pickDealer = (label: string) => {
+    const o = dealershipOptions.find((x) => dealerLabel(x) === label);
+    if (!o) return;
+    // A dealer that knows its own city dictates it — that city is the one the
+    // OE team's dealer list uses, and matching it is what lets a visit be
+    // counted against the right outlet.
+    setForm((f) => ({ ...f, dealership: o.name, city: o.city || f.city }));
+  };
 
   // Adds a dealer to the DB master list, then selects it so the rep continues
   // their visit log in one flow — no separate page, no waiting on approval.
-  // City is not collected here; it has its own field right below this one.
-  const addDealer = async (name: string) => {
+  const addDealer = async (name: string, city: string) => {
     const oem = form.oem, state = form.state;
     const body = new FormData();
     body.append("oem", oem);
     body.append("state", state);
     body.append("name", name);
+    body.append("city", city);
     body.append("added_by", form.salesperson);
     const res = await fetch(`${API_URL}/visit-log/dealerships`, { method: "POST", body });
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || "Could not add dealership.");
     const saved = await res.json();
     setDealers((d) => {
-      const list = d[oem]?.[state] ?? [];
-      if (list.some((n) => n.toLowerCase() === saved.name.toLowerCase())) return d;
-      return { ...d, [oem]: { ...d[oem], [state]: [...list, saved.name].sort((a, b) => a.localeCompare(b)) } };
+      const list = asOptions(d[oem]?.[state] ?? []);
+      const exists = list.some(
+        (o) => o.name.toLowerCase() === saved.name.toLowerCase()
+          && o.city.toLowerCase() === (saved.city ?? "").toLowerCase(),
+      );
+      const next = exists
+        ? list
+        : [...list, { name: saved.name, city: saved.city ?? "" }]
+            .sort((a, b) => dealerLabel(a).localeCompare(dealerLabel(b)));
+      return { ...d, [oem]: { ...d[oem], [state]: next } };
     });
-    setForm((f) => ({ ...f, dealership: saved.name }));
+    setForm((f) => ({ ...f, dealership: saved.name, city: saved.city || f.city }));
   };
 
   const toggleRemark = (cat: string) =>
@@ -1048,15 +1125,15 @@ export default function VisitLogFormPage() {
                     onChange={setStateField}
                     placeholder="Search state…"
                   />
-                  {/* Dealership is filtered by OEM + State; City is picked
-                      independently below. */}
+                  {/* Dealership is filtered by OEM + State, and carries its own
+                      city where we know it — see the City field below. */}
                   <div>
                     <SearchableField
                       label={FIELD_LABELS.dealership}
                       required
-                      options={dealershipOptions}
-                      value={form.dealership}
-                      onChange={(v) => set("dealership", v)}
+                      options={dealershipOptions.map(dealerLabel)}
+                      value={selectedDealer ? dealerLabel(selectedDealer) : form.dealership}
+                      onChange={pickDealer}
                       placeholder="Search dealership…"
                       disabled={!form.oem || !form.state}
                       hint={!form.oem ? "Select an OEM first" : "Select a state first"}
@@ -1076,23 +1153,29 @@ export default function VisitLogFormPage() {
                         <AddDealerPanel
                           oem={form.oem}
                           state={form.state}
+                          cities={cities}
+                          citiesLoading={citiesLoading}
                           onAdd={addDealer}
                           onClose={() => setAddingDealer(false)}
                         />
                       )}
                     </AnimatePresence>
                   </div>
-                  <SearchableField
-                    label={FIELD_LABELS.city}
-                    required
-                    options={cities}
-                    value={form.city}
-                    onChange={(v) => set("city", v)}
-                    placeholder="Search city…"
-                    disabled={!form.state}
-                    hint="Select a state first"
-                    loading={citiesLoading}
-                  />
+                  {selectedDealer?.city ? (
+                    <DerivedCity city={selectedDealer.city} />
+                  ) : (
+                    <SearchableField
+                      label={FIELD_LABELS.city}
+                      required
+                      options={cities}
+                      value={form.city}
+                      onChange={(v) => set("city", v)}
+                      placeholder="Search city…"
+                      disabled={!form.state}
+                      hint="Select a state first"
+                      loading={citiesLoading}
+                    />
+                  )}
                 </div>
               </Section>
 

@@ -283,19 +283,28 @@ def _clean(s: str) -> str:
 
 @router.get("/dealerships")
 def list_dealerships(db: Session = Depends(get_db)):
-    """Every active dealer, shaped as {OEM: {State: [names]}} — the exact form
-    the frontend's dropdown already consumes, so the client keeps its existing
-    lookup logic and only swaps the constant for this payload."""
+    """Every active dealer, shaped as {OEM: {State: [{name, city}]}}.
+
+    City rides along because a dealer group can hold several outlets and the
+    city is what tells them apart — PREM MOTORS Narela and PREM MOTORS Wazirpur
+    are two dealers. The form shows "NAME — CITY" for those and fills its own
+    City field from whichever the rep picks, so the two can never disagree.
+
+    `city` is "" for the OEMs whose dealer files have not arrived yet (TATA,
+    HYUNDAI, KIA, MAHINDRA). The form falls back to letting the rep pick a city
+    for those, exactly as it did before.
+    """
     rows = db.execute(text("""
-        SELECT oem, state, name
+        SELECT oem, state, name, COALESCE(city, '') AS city
         FROM oe_dealerships
         WHERE is_active
-        ORDER BY oem, state, name
+        ORDER BY oem, state, name, city
     """)).fetchall()
 
-    by_oem: dict[str, dict[str, list[str]]] = {}
+    by_oem: dict[str, dict[str, list[dict]]] = {}
     for r in rows:
-        by_oem.setdefault(r.oem, {}).setdefault(r.state, []).append(r.name)
+        by_oem.setdefault(r.oem, {}).setdefault(r.state, []).append(
+            {"name": r.name, "city": r.city})
     return by_oem
 
 
@@ -304,34 +313,62 @@ def add_dealership(
     oem: str = Form(...),
     state: str = Form(...),
     name: str = Form(...),
+    city: str = Form(""),
     added_by: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Add one dealer from the form's inline "+ Add new dealership" panel.
 
-    City is deliberately not collected here — the form has its own City field
-    right after Dealership, so asking for it twice would be redundant.
+    Three outcomes, in this order, so that adding a dealer can never split one
+    outlet into two rows:
 
-    Idempotent by (oem, state, UPPER(name)): re-adding an existing dealer returns
-    it as already_exists rather than erroring, so a rep who double-taps or who
-    adds a name that is already there just proceeds with their visit log.
+      1. the exact outlet (oem, state, name, city) is already there → return it,
+         so a rep who double-taps just proceeds with their visit log;
+      2. the name is there with NO city yet → fill the city in. This is how the
+         OEMs without a dealer file learn their cities: from the reps, one
+         submission at a time, instead of gaining a duplicate row alongside the
+         city-less one;
+      3. otherwise it is a genuinely new outlet → insert it.
     """
-    oem, state, name = _clean(oem), _clean(state), _clean(name)
+    oem, state, name, city = _clean(oem), _clean(state), _clean(name), _clean(city)
     if not oem or not state or not name:
         raise HTTPException(status_code=422, detail="OEM, state and dealership name are required.")
 
     try:
-        row = db.execute(text("""
-            INSERT INTO oe_dealerships (oem, state, name, source, added_by)
-            VALUES (:oem, :state, :name, 'form', NULLIF(:added_by, ''))
-            ON CONFLICT (oem, state, UPPER(name)) DO NOTHING
-            RETURNING id
-        """), {"oem": oem, "state": state,
-               "name": name, "added_by": _clean(added_by)}).fetchone()
+        exact = db.execute(text("""
+            SELECT id FROM oe_dealerships
+            WHERE oem = :oem AND state = :state AND UPPER(name) = UPPER(:name)
+              AND UPPER(COALESCE(city, '')) = UPPER(:city)
+        """), {"oem": oem, "state": state, "name": name, "city": city}).fetchone()
+        if exact:
+            return {"status": "ok", "name": name, "city": city, "oem": oem,
+                    "state": state, "already_exists": True}
+
+        if city:
+            filled = db.execute(text("""
+                UPDATE oe_dealerships
+                   SET city = :city, updated_at = NOW()
+                 WHERE oem = :oem AND state = :state AND UPPER(name) = UPPER(:name)
+                   AND COALESCE(city, '') = ''
+                RETURNING id
+            """), {"oem": oem, "state": state, "name": name, "city": city}).fetchone()
+            if filled:
+                db.commit()
+                return {"status": "ok", "name": name, "city": city, "oem": oem,
+                        "state": state, "already_exists": True}
+
+        db.execute(text("""
+            INSERT INTO oe_dealerships (oem, state, city, name, source, added_by)
+            VALUES (:oem, :state, NULLIF(:city, ''), :name, 'form', NULLIF(:added_by, ''))
+            ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, ''))) DO NOTHING
+        """), {"oem": oem, "state": state, "city": city,
+               "name": name, "added_by": _clean(added_by)})
         db.commit()
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Could not save the dealership: {e}")
 
-    return {"status": "ok", "name": name, "oem": oem,
-            "state": state, "already_exists": row is None}
+    return {"status": "ok", "name": name, "city": city, "oem": oem,
+            "state": state, "already_exists": False}

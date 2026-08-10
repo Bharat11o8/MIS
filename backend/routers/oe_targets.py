@@ -5,13 +5,19 @@ Reads the oe_targets rows produced by services/oe_targets_sync.py. The registry
 and sync for target sheets live in routers/oe_network.py alongside the other two
 OE sheet types; this router is the read side only.
 
-Two deliberate choices:
-  • Every aggregate is computed from the per-salesperson monthly rows. The source
+Three deliberate choices:
+  • Every aggregate is computed from the per-row monthly figures. The source
     sheet's own TOTAL row/column is never ingested — it drifts from its own data.
   • ACH % is derived here, never stored, and every response carries BOTH the
     units (nos) and the money (value) figures. They diverge a lot in the real
     data (Hyundai AMJ: 72% on units, 84% on value), so the UI can toggle between
     them without a refetch and neither is privileged as "the" number.
+  • Rows with salesperson IS NULL are real targets that belong to nobody: MSIL
+    and TATA book accessories as one unattributed line inside their seat-cover
+    block. They count in the KPIs, in by_oem and in by_month, but they cannot
+    appear in by_salesperson or by_region — so the response also returns them on
+    their own as `unattributed`, and the UI shows that row explicitly. Without
+    it the salesperson bars would quietly fail to add up to the headline number.
 """
 from typing import Optional
 
@@ -24,6 +30,10 @@ from models import User
 from routers.auth import get_current_user
 from routers.oe_network import _require_access
 from services.oe_targets_sync import QUARTER_TAGS
+from services.period_filters import date_bounds, month_value
+
+MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 router = APIRouter(prefix="/oe-network/targets", tags=["OE Network"])
 
@@ -100,8 +110,10 @@ def filter_options(db: Session = Depends(get_db), current_user: User = Depends(g
 
 @router.get("/summary")
 def summary(
-    fy_year: int = Query(..., description="FY start year — 2026 means FY26-27"),
-    quarter: int = Query(..., ge=1, le=4),
+    fy_year: Optional[int] = Query(None, description="FY start year — 2026 means FY26-27"),
+    quarter: Optional[int] = Query(None, ge=1, le=4),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD; use instead of fy_year+quarter"),
+    to_date: Optional[str] = Query(None),
     oem: Optional[str] = None,
     category: Optional[str] = None,
     salesperson: Optional[str] = None,
@@ -109,12 +121,27 @@ def summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Everything the Targets tab draws, in one round trip."""
+    """Everything the Targets tab draws, in one round trip.
+
+    Scoped either by FY+quarter (how the sheets are published) or by a date
+    range. Targets are stored one row per MONTH inside their quarter, so a date
+    range selects whole months — a target is a number for a month, and there is
+    no honest way to show a third of one. A range that lands inside a single
+    quarter therefore reads exactly like picking that quarter's months.
+    """
     _require_access(db, current_user)
 
     where, params = _filters(oem, category, salesperson, region)
-    where += ["fy_year = :fy_year", "quarter = :quarter"]
-    params |= {"fy_year": fy_year, "quarter": quarter}
+    d1, d2 = date_bounds(from_date, to_date)
+    if d1 and d2:
+        where.append("(period_year * 100 + period_month) BETWEEN :pm_from AND :pm_to")
+        params |= {"pm_from": month_value(d1), "pm_to": month_value(d2)}
+    elif fy_year is not None and quarter is not None:
+        where += ["fy_year = :fy_year", "quarter = :quarter"]
+        params |= {"fy_year": fy_year, "quarter": quarter}
+    else:
+        raise HTTPException(status_code=400,
+                            detail="Provide fy_year+quarter or from_date+to_date")
     where_sql = " AND ".join(where)
 
     if not db.execute(text(f"SELECT 1 FROM oe_targets WHERE {where_sql} LIMIT 1"), params).first():
@@ -130,8 +157,19 @@ def summary(
         """), params).fetchall()
         return rows
 
-    by_sp = grouped("salesperson AS key, MIN(region) AS region", "salesperson", "SUM(tgt_value) DESC")
-    # by_oem clubs TATA's SC and MAT together — that's the default view the
+    # grouped() drops NULL keys, so by_salesperson and by_region are people-only
+    # — the unattributed accessory lines are fetched separately below rather than
+    # being silently absorbed into somebody's bar.
+    #
+    # The region is every one the person is filed under, not just one: the
+    # workbook spells the same territory differently between OEMs (Umesh is
+    # "WEST" on the Hyundai and Kia tabs but "WEST/CENTRAL" on MSIL, TATA and
+    # Mahindra), and picking one would assert a narrower patch than he runs.
+    by_sp = grouped(
+        "salesperson AS key, STRING_AGG(DISTINCT region, ' · ' ORDER BY region) AS region",
+        "salesperson", "SUM(tgt_value) DESC",
+    )
+    # by_oem clubs an OEM's products together — that's the default view the
     # business asked for; by_oem_category keeps the split available underneath.
     by_oem = grouped("oem AS key", "oem", "SUM(tgt_value) DESC")
     by_oem_cat = grouped("oem, category AS key", "oem, category", "oem, category")
@@ -142,15 +180,33 @@ def summary(
         GROUP BY period_year, period_month ORDER BY period_year, period_month
     """), params).fetchall()
 
+    # Targets that belong to no salesperson — the MSIL/TATA accessories lines.
+    # Named per OEM so the UI can say whose they are rather than just "other".
+    unattributed = db.execute(text(f"""
+        SELECT {_SUMS} FROM oe_targets WHERE {where_sql} AND salesperson IS NULL
+    """), params).fetchone()
+    unattributed_oems = db.execute(text(f"""
+        SELECT DISTINCT oem FROM oe_targets
+        WHERE {where_sql} AND salesperson IS NULL ORDER BY oem
+    """), params).fetchall()
+
     # Which money scale each OEM's sheet block used — surfaced so a crore-scaled
     # block (₹0.01 Cr = ₹1L resolution) is never mistaken for rupee precision.
     scales = db.execute(text(f"""
         SELECT oem, MIN(value_scale) AS scale FROM oe_targets WHERE {where_sql} GROUP BY oem
     """), params).fetchall()
 
+    # A date range can straddle quarters, so the label names the months it
+    # actually covers rather than claiming to be one quarter.
+    if d1 and d2:
+        label = (f"{MONTH_SHORT[d1.month - 1]} {d1.year}" if (d1.year, d1.month) == (d2.year, d2.month)
+                 else f"{MONTH_SHORT[d1.month - 1]} {d1.year} – {MONTH_SHORT[d2.month - 1]} {d2.year}")
+    else:
+        label = f"{QUARTER_TAGS[quarter]} {_fy_label(fy_year)}"
+
     return {
         "fy_year": fy_year, "quarter": quarter,
-        "label": f"{QUARTER_TAGS[quarter]} {_fy_label(fy_year)}",
+        "label": label,
         "kpis": _metrics(kpis),
         "by_salesperson": [{"key": r.key, "region": r.region, **_metrics(r)} for r in by_sp],
         "by_oem": [{"key": r.key, **_metrics(r)} for r in by_oem],
@@ -159,5 +215,11 @@ def summary(
         "by_month": [
             {"year": r.period_year, "month": r.period_month, **_metrics(r)} for r in by_month
         ],
+        # None when everything in scope is attributed — e.g. any salesperson
+        # filter is on, since an unowned line can never match a person.
+        "unattributed": (
+            {"oems": [r.oem for r in unattributed_oems], **_metrics(unattributed)}
+            if unattributed_oems else None
+        ),
         "value_scales": {r.oem: r.scale for r in scales},
     }
