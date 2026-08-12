@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from database import get_db
 from models import SheetSource, SyncLog, User
 from routers.auth import get_current_user
@@ -281,19 +281,37 @@ _DATA_TABLES = {
 }
 _INSERTS = {MODULE_PLAN: _PLAN_INSERT, MODULE_LOG: _LOG_INSERT, MODULE_TGT: _TGT_INSERT}
 
-_DEALER_MONTHLY_INSERT = text("""
-    INSERT INTO oe_dealer_monthly
-        (id, dealer_id, sheet_source_id, month, oem_total, ysasc, ys_sale)
-    VALUES (:id, :dealer_id, :sheet_source_id, :month, :oem_total, :ysasc, :ys_sale)
-""")
+_DEALER_MONTHLY_COLS = ("id", "dealer_id", "sheet_source_id", "month",
+                        "oem_total", "ysasc", "ys_sale")
+_DEALER_TARGET_COLS = ("id", "dealer_id", "sheet_source_id", "quarter", "fy_year",
+                       "period_start", "period_end", "target", "achievement")
 
-_DEALER_TARGET_INSERT = text("""
-    INSERT INTO oe_dealer_targets
-        (id, dealer_id, sheet_source_id, quarter, fy_year,
-         period_start, period_end, target, achievement)
-    VALUES (:id, :dealer_id, :sheet_source_id, :quarter, :fy_year,
-            :period_start, :period_end, :target, :achievement)
-""")
+# How many rows go in one INSERT. The dealer file is ~3,600 rows and this
+# database is reached over an SSH tunnel, so the cost is dominated by round
+# trips, not by the inserts themselves: one statement per row took minutes and
+# held a write transaction open the whole time, which is what let a double-click
+# on Sync overlap two runs. 500 keeps each statement well inside Postgres's
+# 65535 bind-parameter ceiling (500 x 9 columns = 4,500) with room to spare.
+_INSERT_CHUNK = 500
+
+
+def _bulk_insert(db: Session, table: str, cols: tuple, rows: list) -> int:
+    """Insert rows in multi-row statements. Returns the number written."""
+    if not rows:
+        return 0
+    collist = ", ".join(cols)
+    for i in range(0, len(rows), _INSERT_CHUNK):
+        chunk = rows[i:i + _INSERT_CHUNK]
+        # Parameters stay bound — the only thing interpolated is the column
+        # list and the placeholder names, both of which come from _DEALER_*_COLS
+        # above and never from the sheet.
+        values = ", ".join(
+            "(" + ", ".join(f":{c}_{n}" for c in cols) + ")"
+            for n in range(len(chunk))
+        )
+        params = {f"{c}_{n}": row.get(c) for n, row in enumerate(chunk) for c in cols}
+        db.execute(text(f"INSERT INTO {table} ({collist}) VALUES {values}"), params)
+    return len(rows)
 
 
 def sync_dealer_data(db: Session, source_id: Optional[str],
@@ -310,8 +328,12 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
     dropdown.
     """
     index = DealerIndex(db)
-    written = 0
     created = []
+    # Accumulated and flushed in batches at the end rather than written one row
+    # at a time — see _bulk_insert.
+    monthly_rows: list = []
+    target_rows: list = []
+    refresh: list = []
 
     for rec in records:
         dealer_id = index.resolve(rec["oem"], rec["name"], rec["city"])
@@ -331,33 +353,49 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
         else:
             # Refresh the fields the file owns. City, name and state are left
             # alone: the master already holds a matched outlet, and the file's
-            # state cannot be trusted over it.
-            db.execute(text("""
-                UPDATE oe_dealerships
-                   SET salesperson = COALESCE(NULLIF(:sp, ''), salesperson),
-                       dealer_codes = COALESCE(NULLIF(:codes, ''), dealer_codes),
-                       updated_at = NOW()
-                 WHERE id = :id
-            """), {"id": dealer_id, "sp": rec["salesperson"] or "",
-                   "codes": rec["dealer_codes"] or ""})
+            # state cannot be trusted over it. Collected and applied in one
+            # statement below rather than one UPDATE per dealer.
+            refresh.append({"id": dealer_id, "sp": rec["salesperson"] or "",
+                            "codes": rec["dealer_codes"] or ""})
 
         for m in rec["monthly"]:
             if all(m.get(k) is None for k in DEALER_SERIES):
                 continue
-            db.execute(_DEALER_MONTHLY_INSERT, {
+            monthly_rows.append({
                 "id": str(uuid.uuid4()), "dealer_id": dealer_id,
                 "sheet_source_id": source_id, "month": m["month"],
                 **{k: m.get(k) for k in DEALER_SERIES},
             })
-            written += 1
         for t in rec["targets"]:
             if t.get("target") is None and t.get("achievement") is None:
                 continue
-            db.execute(_DEALER_TARGET_INSERT, {
+            target_rows.append({
                 "id": str(uuid.uuid4()), "dealer_id": dealer_id,
                 "sheet_source_id": source_id, **t,
             })
-            written += 1
+
+    # One UPDATE ... FROM (VALUES ...) for every matched dealer, in place of one
+    # statement each. COALESCE/NULLIF semantics are unchanged.
+    for i in range(0, len(refresh), _INSERT_CHUNK):
+        chunk = refresh[i:i + _INSERT_CHUNK]
+        # CAST(...), not a ::uuid suffix — text() does not recognise a bind
+        # parameter that is immediately followed by another colon, so
+        # ":id_0::uuid" reaches Postgres as literal text and the whole
+        # statement fails on a syntax error.
+        values = ", ".join(f"(CAST(:id_{n} AS uuid), :sp_{n}, :codes_{n})"
+                           for n in range(len(chunk)))
+        params = {f"{k}_{n}": r[k] for n, r in enumerate(chunk) for k in ("id", "sp", "codes")}
+        db.execute(text(f"""
+            UPDATE oe_dealerships d
+               SET salesperson  = COALESCE(NULLIF(v.sp, ''), d.salesperson),
+                   dealer_codes = COALESCE(NULLIF(v.codes, ''), d.dealer_codes),
+                   updated_at   = NOW()
+              FROM (VALUES {values}) AS v(id, sp, codes)
+             WHERE d.id = v.id
+        """), params)
+
+    written = (_bulk_insert(db, "oe_dealer_monthly", _DEALER_MONTHLY_COLS, monthly_rows)
+               + _bulk_insert(db, "oe_dealer_targets", _DEALER_TARGET_COLS, target_rows))
 
     if created:
         errors.append(
@@ -428,6 +466,29 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
         raise HTTPException(status_code=502, detail=f"Could not sync from Google Sheets: {e}")
 
     tables = _DATA_TABLES[source.module]
+
+    # Claim this source before touching any data, and hold it to the commit.
+    # Every sync is delete-then-insert, so two overlapping runs are not merely
+    # wasteful: the second one's DELETE can land while the first one's INSERTs
+    # are still uncommitted, so it deletes nothing, and both sets of rows end up
+    # in the table — every figure on the tab doubles. NOWAIT makes the second
+    # caller fail at once rather than queue behind the lock for minutes and then
+    # do exactly that. Taken here, after the log bookkeeping has committed, so
+    # that commit cannot release it.
+    try:
+        db.execute(
+            text("SELECT 1 FROM sheet_sources WHERE id = :id FOR UPDATE NOWAIT"),
+            {"id": str(source.id)},
+        )
+    except OperationalError:
+        db.rollback()
+        log.status = "Failed"
+        log.error_details = "A sync for this sheet was already running."
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="This sheet is already syncing — wait for that run to finish.",
+        )
 
     # Full-replace in ONE transaction: rows removed from the sheet disappear
     # here too, and a mid-sync failure can never leave the table half-wiped.
@@ -1002,7 +1063,7 @@ def remarks_activity(
 
 @router.get("/filter-options")
 def filter_options(
-    scope: str = Query(..., description="plans | logs"),
+    scope: str = Query(..., description="plans | logs | dealer_sales"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1013,12 +1074,25 @@ def filter_options(
     elif scope == "logs":
         table = "oe_visit_logs"
         extra = {"contact_modes": "contact_mode"}
+    elif scope == "dealer_sales":
+        # Only the OEMs we actually hold dealer sales for. The Dealers tab is
+        # built on oe_dealer_monthly, so offering an OEM that has visit logs but
+        # no sales file (every OEM except MSIL today) is a filter that can only
+        # ever return an empty tab. Derived, not listed: the day a TATA dealer
+        # file is synced, TATA appears here on its own.
+        table = ("oe_dealerships d JOIN oe_dealer_monthly m ON m.dealer_id = d.id")
+        extra = {}
     else:
-        raise HTTPException(status_code=400, detail="scope must be plans or logs")
+        raise HTTPException(
+            status_code=400, detail="scope must be plans, logs or dealer_sales")
+
+    # dealer_sales reads from a join, so its columns need qualifying.
+    p = "d." if scope == "dealer_sales" else ""
 
     def distinct(col: str):
         rows = db.execute(text(
-            f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL ORDER BY {col}"
+            f"SELECT DISTINCT {p}{col} FROM {table} "
+            f"WHERE {p}{col} IS NOT NULL ORDER BY {p}{col}"
         )).fetchall()
         return [r[0] for r in rows]
 
@@ -1797,7 +1871,7 @@ def _funnel(oem_total, ysasc, ys_sale) -> dict:
 
 
 def _dealer_months(db: Session, extra: str, params: dict) -> list:
-    """Network trend: their volume, our volume and our activity, by month.
+    """Network trend: total sold, YSASC, YS Sale and our activity, by month.
 
     Contacts are bucketed into the month they happened in so the line can be
     read against the sales bars on one axis.

@@ -4,50 +4,31 @@ import {
   CarFront, Phone, Footprints, Building2, Users, RefreshCw, Plus, Trash2,
   Search, History, CheckCircle2, XCircle, Clock, Target, X,
   Printer, ChevronRight, Percent, TrendingUp, MessageSquare, Tag,
-  Package, Store,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, Legend, LabelList, ComposedChart, ReferenceLine,
+  LineChart, Line, Legend, LabelList,
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
-import DateRangePicker, { dayPresets } from "@/components/ui/DateRangePicker";
+import DateRangePicker from "@/components/ui/DateRangePicker";
 import { useToast } from "@/components/ui/Toast";
-import { formatCompact, formatDate } from "@/lib/format";
+import { formatCompact, formatCompactNos, formatDate } from "@/lib/format";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-const MONTH_FULL = ["January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December"];
-const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-// Series colors follow the entity everywhere on this page: field visits are
-// orange, phone calls are blue (same palette as the rest of the app).
-const VISIT_COLOR = "#f46617";
-const CALL_COLOR = "#3b82f6";
-// On the bullet charts the grey track is the goal (planned visits / the target).
-const TGT_TRACK = "#e5e7eb";
-// A grey that is actually VISIBLE as a filled series. TGT_TRACK is a background
-// track and is nearly invisible when used as a bar on a white card next to a
-// #f3f4f6 grid, so anything carrying data uses this instead.
-const NEUTRAL_BAR = "#c2c8d0";
-// Chart labels must never inherit their series colour — recharts draws legend
-// and tooltip text in the series colour by default, which makes any pale series
-// unreadable. Text stays dark; the colour swatch does the identifying.
-const CHART_LABEL = "#4b5563";
-const OVER_COLOR = "#22c55e";
-// Targets that belong to no salesperson (MSIL/TATA accessories) get a colour of
-// their own on the bullet charts — they sit in the same total as the people bars
-// but are not a person, and must never be read as one.
-const UNOWNED_COLOR = "#8b5cf6";
-// A quarter from 90% of target up counts as on-track for the business, so the
-// target bars turn green there rather than at a literal 100%.
-const ON_TRACK_PCT = 90;
+import {
+  API_URL, MONTH_FULL, MONTH_SHORT,
+  VISIT_COLOR, CALL_COLOR, TGT_TRACK, NEUTRAL_BAR, CHART_LABEL, OVER_COLOR,
+  UNOWNED_COLOR, ON_TRACK_PCT, QUARTER_MONTHS,
+  buildPeriodOptions, periodParams, PeriodControls, FilterBar,
+  monthToken, tokenLabel, shortDate, firstName, coverageColor, ModeBadge, StatCard,
+  type Period, type PeriodMode, type PeriodChoice, type DateRange,
+} from "./oe-network/shared";
+import DealersTab from "./oe-network/dealers";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface OESource {
-  id: string; sheet_id: string; label: string; sheet_type: "visit_plan" | "log_book" | "targets";
+  id: string; sheet_id: string; label: string;
+  sheet_type: "visit_plan" | "log_book" | "targets" | "dealer_data";
   calendar_year: number | null; month: number | null; quarter: string | null;
   created_at: string | null; last_synced_at: string | null; last_sync_status: string | null;
 }
@@ -55,7 +36,6 @@ interface SyncResult {
   rows_total: number; rows_inserted: number; rows_deleted: number;
   skipped_tabs: string[]; errors: string[]; status: string;
 }
-interface Period { year: number; month: number; }
 interface PvaRow {
   salesperson: string; log_name: string | null; planned: number; dealers_planned: number;
   visits: number; calls: number; total_logged: number; dealerships_contacted: number;
@@ -188,156 +168,6 @@ const categoryMeta = (key: string) => CATEGORY_META[key] ?? { color: "#6b7280", 
 
 type TabId = "overview" | "indepth" | "dealers" | "activity" | "targets" | "sheets";
 type Metric = "value" | "nos";
-type PeriodMode = "monthly" | "quarterly" | "yearly";
-
-function monthToken(p: Period) { return `${p.year}-${p.month}`; }
-function tokenLabel(t: string) {
-  const [y, m] = t.split("-").map(Number);
-  return `${MONTH_FULL[m - 1]} ${y}`;
-}
-
-// Indian FY (Apr–Mar), same convention as the Sales module: Q1 = Apr–Jun and
-// "FY26-27" starts April 2026.
-function fyOf(year: number, month: number) { return month >= 4 ? year : year - 1; }
-function fqOf(month: number) { return month >= 4 ? Math.floor((month - 4) / 3) + 1 : 4; }
-function quarterToken(fy: number, q: number) { return `${fy}-Q${q}`; }
-function quarterLabel(t: string) {
-  const [fyStr, qStr] = t.split("-Q");
-  return `Q${qStr} FY${String(Number(fyStr) + 1).slice(2)}`;
-}
-function fyLabel(fy: number) { return `FY${String(fy).slice(2)}-${String(fy + 1).slice(2)}`; }
-const pad2 = (n: number) => String(n).padStart(2, "0");
-
-/** Expands a selected period token into the inclusive YYYY-MM range the API takes. */
-function periodRange(mode: PeriodMode, token: string): [string, string] {
-  if (mode === "monthly") {
-    const [y, m] = token.split("-").map(Number);
-    return [`${y}-${pad2(m)}`, `${y}-${pad2(m)}`];
-  }
-  if (mode === "quarterly") {
-    const [fyStr, qStr] = token.split("-Q");
-    const fy = Number(fyStr), q = Number(qStr);
-    if (q === 4) return [`${fy + 1}-01`, `${fy + 1}-03`];
-    const start = 4 + (q - 1) * 3;
-    return [`${fy}-${pad2(start)}`, `${fy}-${pad2(start + 2)}`];
-  }
-  const fy = Number(token);
-  return [`${fy}-04`, `${fy + 1}-03`];
-}
-
-/**
- * Period selection, shared by every tab so the behaviour can't drift between
- * them. The three preset modes send a month range; "custom" sends exact dates.
- *
- * What the two produce is genuinely different, not just finer:
- *   • from_date/to_date cut the LOG BOOK to the day, because a visit has a date.
- *   • Visit plans and dealer sales have no day on them — they are one row per
- *     month — so on those the range widens to the months it touches. The
- *     endpoints that compare logs against plans widen BOTH sides rather than
- *     cutting one finer than the other, which would deflate every coverage
- *     percentage. Each tab says which happened.
- */
-type PeriodChoice = PeriodMode | "custom" | "all";
-interface DateRange { from: string; to: string }
-
-// Indian FY quarters, as the target sheets publish them.
-const QUARTER_MONTHS: Record<number, number[]> = {
-  1: [4, 5, 6], 2: [7, 8, 9], 3: [10, 11, 12], 4: [1, 2, 3],
-};
-
-const PERIOD_CHOICES: PeriodChoice[] = ["monthly", "quarterly", "yearly", "custom", "all"];
-const PERIOD_LABELS: Record<PeriodChoice, string> = {
-  monthly: "monthly", quarterly: "quarterly", yearly: "yearly",
-  custom: "custom", all: "all time",
-};
-
-function PeriodControls({ mode, onMode, token, onToken, options, range, onRange }: {
-  mode: PeriodChoice; onMode: (m: PeriodChoice) => void;
-  token: string; onToken: (t: string) => void;
-  options: { value: string; label: string }[];
-  range: DateRange; onRange: (r: DateRange) => void;
-}) {
-  return (
-    <>
-      <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
-        {PERIOD_CHOICES.map((m) => (
-          <button key={m} onClick={() => onMode(m)}
-            className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg capitalize transition-all ${
-              mode === m ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
-            }`}>
-            {PERIOD_LABELS[m]}
-          </button>
-        ))}
-      </div>
-      {mode === "all" ? null : mode === "custom" ? (
-        <DateRangePicker value={range} onChange={onRange} presets={dayPresets()}
-          placeholder="Pick dates" />
-      ) : (
-        <Select value={token} onChange={onToken} options={options} placeholder="Period…" />
-      )}
-    </>
-  );
-}
-
-/** Query params for a period selection, or null when it isn't usable yet —
- *  a half-entered custom range must not fire a request for "everything". */
-function periodParams(mode: PeriodChoice, token: string, range: DateRange):
-  Record<string, string> | null {
-  if (mode === "all") return {};        // no period params at all = every month
-  if (mode === "custom") {
-    if (!range.from || !range.to) return null;
-    return { from_date: range.from, to_date: range.to };
-  }
-  if (!token) return null;
-  const [fromYm, toYm] = periodRange(mode, token);
-  return { from_ym: fromYm, to_ym: toYm };
-}
-
-/** Period option lists derived from the months that actually hold data, so
- *  future months make new options appear on their own. */
-function buildPeriodOptions(months: Period[]): Record<PeriodMode, { value: string; label: string }[]> {
-  const sorted = [...months].sort((a, b) => b.year - a.year || b.month - a.month);
-  const monthly = sorted.map((p) => ({ value: monthToken(p), label: tokenLabel(monthToken(p)) }));
-  const quarters = new Set<string>();
-  const fys = new Set<number>();
-  sorted.forEach((p) => {
-    const fy = fyOf(p.year, p.month);
-    quarters.add(quarterToken(fy, fqOf(p.month)));
-    fys.add(fy);
-  });
-  const quarterly = [...quarters].sort((a, b) => {
-    const [fa, qa] = a.split("-Q").map(Number);
-    const [fb, qb] = b.split("-Q").map(Number);
-    return fb - fa || qb - qa;
-  }).map((t) => ({ value: t, label: quarterLabel(t) }));
-  const yearly = [...fys].sort((a, b) => b - a).map((fy) => ({ value: String(fy), label: fyLabel(fy) }));
-  return { monthly, quarterly, yearly };
-}
-
-/** Sticky wrapper so filters stay reachable while the page is scrolled. */
-function FilterBar({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="no-print sticky top-0 z-30 -mx-6 px-6 py-2.5 bg-white/85 backdrop-blur-md border-b border-orange-50">
-      <div className="flex items-center gap-2 flex-wrap">{children}</div>
-    </div>
-  );
-}
-function shortDate(iso: string | null) {
-  if (!iso) return "—";
-  return new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
-}
-
-/** Axis-tick version of a salesperson name: first real name word, skipping initials. */
-function firstName(n: string) {
-  return n.split(/\s+/).find((t) => t.length >= 3) ?? n;
-}
-
-function coverageColor(pct: number | null) {
-  if (pct === null) return "text-gray-400";
-  if (pct >= 80) return "text-green-600";
-  if (pct >= 50) return "text-amber-600";
-  return "text-red-500";
-}
 
 /**
  * Bar widths on the bullet charts stop short of the full track so the value
@@ -354,40 +184,6 @@ function coverageColor(pct: number | null) {
 const LABEL_RESERVE = 54;
 const barWidth = (n: number, max: number) =>
   `calc(${Math.min(n / max, 1).toFixed(4)} * (100% - ${LABEL_RESERVE}px))`;
-
-function ModeBadge({ mode }: { mode: string | null }) {
-  if (!mode) return <span className="text-gray-300">—</span>;
-  const isVisit = mode === "Visit";
-  return (
-    <span
-      className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full"
-      style={isVisit
-        ? { color: VISIT_COLOR, background: "#fff4ed" }
-        : { color: CALL_COLOR, background: "#eff6ff" }}
-    >
-      {isVisit ? <Footprints size={10} /> : <Phone size={10} />}
-      {mode}
-    </span>
-  );
-}
-
-function StatCard({ label, value, sub, icon, color, bg }: {
-  label: string; value: string | number; sub?: string;
-  icon: React.ReactNode; color: string; bg: string;
-}) {
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 flex items-center gap-3 shadow-sm min-w-0">
-      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: bg, color }}>
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 truncate">{label}</p>
-        <p className="text-xl font-black text-gray-800 leading-tight">{value}</p>
-        {sub && <p className="text-[10px] text-gray-400 truncate">{sub}</p>}
-      </div>
-    </div>
-  );
-}
 
 function Pagination({ page, total, perPage, onPage }: {
   page: number; total: number; perPage: number; onPage: (p: number) => void;
@@ -1042,14 +838,14 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
 
       {/* Plan adherence — dealer level */}
       <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
-          <div>
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-1">
+          <div className="min-w-0 flex-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Plan Adherence — Dealer Level</h3>
             <p className="text-[10px] text-gray-400">
               Was each planned dealership actually contacted? Names are matched approximately across the two sheets.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0 ml-auto">
             <Select value={adhSp} onChange={setAdhSp} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
             <Select value={adhMonth} onChange={setAdhMonth} options={adhMonthOptions} placeholder="Month…" />
             {adhLoading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
@@ -1160,12 +956,12 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
 
       {/* Dealer directory */}
       <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <div>
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-3">
+          <div className="min-w-0 flex-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Dealer Directory</h3>
             <p className="text-[10px] text-gray-400">Every dealership ever contacted — click a row for its full history</p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap shrink-0 ml-auto">
             <div className="relative">
               <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search dealer…"
@@ -1612,8 +1408,8 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
 
       {/* What's being reported — theme filter row */}
       <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <div>
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-3">
+          <div className="min-w-0 flex-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
               <Tag size={13} /> What the field is reporting
             </h3>
@@ -2119,7 +1915,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
                   <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval={0} />
                   <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
-                    tickFormatter={(v: number) => (metric === "value" ? formatCompact(v).replace("₹", "") : fmtNos(v))} />
+                    tickFormatter={(v: number) => (metric === "value" ? formatCompactNos(v) : fmtNos(v))} />
                   <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }}
                     itemStyle={{ color: CHART_LABEL }} formatter={(v: number) => fmt(v)} />
                   <Legend wrapperStyle={{ fontSize: 11 }}
@@ -2218,6 +2014,7 @@ interface HistoryItem {
 
 const SHEET_TYPE_LABELS: Record<string, string> = {
   visit_plan: "Visit Plan", log_book: "Log Book", targets: "Targets",
+  dealer_data: "Dealer Data",
 };
 
 function SheetsTab({ headers }: { headers: Record<string, string> }) {
@@ -2236,6 +2033,8 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const [planYear, setPlanYear] = useState(String(now.getFullYear()));
   const [showAddLog, setShowAddLog] = useState(false);
   const [logLink, setLogLink] = useState("");
+  const [showAddDd, setShowAddDd] = useState(false);
+  const [ddLink, setDdLink] = useState("");
   const [showAddTgt, setShowAddTgt] = useState(false);
   const [tgtLink, setTgtLink] = useState("");
   // Default to the quarter and FY the current month sits in (Indian FY, Apr–Mar).
@@ -2257,6 +2056,10 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   useEffect(() => { loadSources(); loadHistory(); }, [loadSources, loadHistory]);
 
   const handleSync = async (id: string) => {
+    // Guards a double-click only. A reload mid-sync clears this state while the
+    // server request is still in flight, so the real protection is the row lock
+    // the sync endpoint takes — this just avoids the pointless 409.
+    if (syncingId !== null) return;
     setSyncingId(id);
     setLastResult(null);
     try {
@@ -2290,8 +2093,11 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
     }
   };
 
-  const handleAdd = async (sheetType: "visit_plan" | "log_book" | "targets") => {
-    const link = sheetType === "visit_plan" ? planLink : sheetType === "targets" ? tgtLink : logLink;
+  const handleAdd = async (sheetType: OESource["sheet_type"]) => {
+    const link = sheetType === "visit_plan" ? planLink
+      : sheetType === "targets" ? tgtLink
+      : sheetType === "dealer_data" ? ddLink
+      : logLink;
     if (!link.trim()) return;
     setAdding(true);
     try {
@@ -2312,6 +2118,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
       toast.success("Sheet registered", data.label);
       if (sheetType === "visit_plan") { setShowAddPlan(false); setPlanLink(""); }
       else if (sheetType === "targets") { setShowAddTgt(false); setTgtLink(""); }
+      else if (sheetType === "dealer_data") { setShowAddDd(false); setDdLink(""); }
       else { setShowAddLog(false); setLogLink(""); }
       await loadSources();
       // First sync right away, like every other sheet module.
@@ -2326,6 +2133,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const planSources = sources.filter((s) => s.sheet_type === "visit_plan");
   const logSources = sources.filter((s) => s.sheet_type === "log_book");
   const tgtSources = sources.filter((s) => s.sheet_type === "targets");
+  const ddSources = sources.filter((s) => s.sheet_type === "dealer_data");
 
   const monthOptions = MONTH_FULL.map((m, i) => ({ value: String(i + 1), label: m }));
   const yearOptions = Array.from({ length: 4 }, (_, i) => now.getFullYear() - 2 + i)
@@ -2477,6 +2285,42 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           : <p className="text-xs text-gray-400 py-3">No target sheets registered yet.</p>}
       </div>
 
+      {/* Dealer data — one workbook, a tab per OEM, no period to pick: the
+          month columns are read off the header row, so a re-sync picks up a
+          newly added month on its own. */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Dealer Data</h3>
+            <p className="text-[10px] text-gray-400">
+              The dealership view file — Total &lt;OEM&gt;, YSASC and YS Sale per dealer per
+              month, plus quarterly target and achievement columns
+            </p>
+          </div>
+          <button onClick={() => setShowAddDd(!showAddDd)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
+            <Plus size={13} /> Add Sheet
+          </button>
+        </div>
+        <AnimatePresence>
+          {showAddDd && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <div className="bg-orange-50/50 rounded-xl p-3 my-2 flex gap-2">
+                <input value={ddLink} onChange={(e) => setDdLink(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/…" className={`${inputClass} flex-1`} />
+                <button onClick={() => handleAdd("dealer_data")} disabled={adding || !ddLink.trim()}
+                  className="text-xs font-semibold text-white px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+                  {adding ? "Adding…" : "Add & Sync"}
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {ddSources.length
+          ? ddSources.map(sourceRow)
+          : <p className="text-xs text-gray-400 py-3">No dealer data sheet registered yet.</p>}
+      </div>
+
       {/* Last sync result */}
       {lastResult && (
         <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
@@ -2551,1061 +2395,6 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 // here to show the tab again. Raw plan/log row listings were dropped on purpose:
 // this page is for visualisation, and a flat filterable table is what the source
 // spreadsheet already does better.
-// ── Dealers tab ───────────────────────────────────────────────────────────────
-// The dealer-centric half of the module. Every other tab is keyed on the rep;
-// this one is keyed on the dealership, which is how the OE team's own file is
-// keyed and how leadership asks its questions.
-
-/**
- * The dealer file's funnel, in the OE team's own vocabulary:
- *
- *   oem_total  "Total MSIL" — every seat cover that dealer sold, ours or not
- *   ysasc      "YSASC" (YS Available Seat Covers) — of those, the ones on a
- *              vehicle we hold a part number for. NULL when the source file
- *              predates the three-series format and simply didn't say.
- *   ys_sale    "YS Sale" — what we actually sold them
- *
- * and the three ratios read off it. `penetration` is the headline and its
- * denominator is ysasc, so it is null whenever ysasc is.
- */
-interface Funnel {
-  oem_total: number; ysasc: number | null; ys_sale: number;
-  /** ys_sale ÷ ysasc — what we converted of what we could have won. */
-  penetration: number | null;
-  /** ys_sale ÷ oem_total — our slice of the dealer's whole seat-cover business. */
-  share: number | null;
-  /** ysasc ÷ oem_total — how much of it we make a part for at all. */
-  addressable_pct: number | null;
-}
-interface PerfDealer extends Funnel {
-  id: string; oem: string; name: string; city: string; state: string;
-  salesperson: string | null; codes: string | null;
-  contacts: number; visits: number; calls: number; last_contact: string | null;
-  target: number | null; achievement: number | null; has_sales: boolean;
-}
-interface DealerSpRow extends Funnel {
-  salesperson: string; assigned: number; contacted: number; coverage: number | null;
-  visits: number; calls: number; target: number; achievement: number;
-}
-/** A month with no sales rows still appears for its contacts, so every figure
- *  is nullable here even though it isn't on the dealer rows. */
-type DealerMonth = Partial<Funnel> & {
-  month: string; visits: number; calls: number;
-};
-type DealerQuarter = Partial<Funnel> & {
-  quarter: string; fy_year: number; label: string; period_start: string; period_end: string;
-  target: number | null; achievement: number | null;
-};
-interface ContactBucket extends Funnel {
-  bucket: string; dealer_months: number;
-}
-interface DealerPerf {
-  period: { month_from: string | null; month_to: string | null; date_from: string | null; date_to: string | null };
-  kpis: Funnel & {
-    dealers: number; contacted: number; coverage: number | null;
-    /** Whole-OEM penetration for the period — the yardstick Opportunity is
-     *  measured against. Unaffected by the rep/state filters, unlike
-     *  `penetration` above, which is this view's own figure. */
-    benchmark: number | null;
-    benchmark_share: number | null;
-    visits: number; calls: number; target: number; achievement: number;
-  };
-  dealers: PerfDealer[];
-  by_salesperson: DealerSpRow[];
-  by_month: DealerMonth[];
-  by_quarter: DealerQuarter[];
-  contact_effect: { months: number; buckets: ContactBucket[] };
-}
-interface DealerNote { category: string; label: string; text: string; themes: string[] }
-interface PerfContact {
-  id: string; visit_date: string | null; salesperson: string; contact_mode: string;
-  channel: string | null; contact_person: string | null; designation: string | null;
-  car_sales: number | null; seat_cover_sales: number | null; mats_sales: number | null;
-  notes: DealerNote[];
-}
-interface DealerDetail {
-  dealer: PerfDealer & { source: string };
-  totals: Funnel & { visits: number; calls: number };
-  by_month: DealerMonth[];
-  targets: { quarter: string; fy_year: number; label: string; target: number | null; achievement: number | null }[];
-  last_field_note: PerfContact | null;
-  history: PerfContact[];
-}
-
-const n0 = (n: number | null | undefined) => (n ?? 0).toLocaleString("en-IN");
-const pct = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `${n}%`);
-
-/**
- * A plain-language note under a panel heading saying what the thing means.
- *
- * Not optional decoration: "Bottom 20 by Opportunity" reads like a list of bad
- * dealers when it is in fact a list of our best ones, and nobody should have to
- * reverse-engineer a sign convention from the numbers to find that out.
- */
-function Explain({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mt-2 mb-3 rounded-xl bg-gray-50 border border-gray-100 px-3 py-2">
-      <p className="text-[11px] leading-relaxed text-gray-500">{children}</p>
-    </div>
-  );
-}
-
-/** Rankings a dealer list can be read by. `gap` is the one that matters most:
- *  units we would gain at this dealer if it merely performed like the network
- *  average — it puts a big dealer at 2% penetration above a small one at 0%.
- *
- *  Each ranking says what BOTH of its ends mean, because for a signed metric
- *  the bottom is not "the worst". The bottom of Opportunity is the dealers
- *  furthest AHEAD of average — the ones to protect and learn from, not the
- *  ones to worry about, and labelling that "bottom 20" without saying so
- *  inverts the meaning.
- *
- *  `floor` marks the rankings whose bottom end is meaningless without a volume
- *  cut-off: sorted by a ratio, the worst dealers are simply the smallest ones.
- *  Opportunity needs no floor — it already scales with volume, so a small
- *  dealer cannot produce a big gap in either direction. */
-type RankMetric = "ys_sale" | "penetration" | "gap" | "oem_total" | "addressable_pct";
-const RANK_META: Record<RankMetric, {
-  label: string; what: string; top: string; bottom: string; floor: boolean;
-}> = {
-  gap: {
-    label: "Opportunity",
-    what: "how many units this dealer is short of what the OEM average would predict — "
-      + "their YSASC × the average penetration, minus what we actually sell them. "
-      + "Measured on the addressable figure, so a dealer is never charged for cars "
-      + "we make no part for",
-    top: "the dealers furthest BEHIND the average. This is the list to work: "
-      + "the units are there and we aren't getting them.",
-    bottom: "the dealers furthest AHEAD of the average — where we're already "
-      + "outperforming. Not a problem list: these are the ones to protect, and "
-      + "to copy. Their Opp. figure is negative because they beat the benchmark.",
-    floor: false,
-  },
-  ys_sale: {
-    label: "YS Sale",
-    what: "the number of our units the dealer bought in this period",
-    top: "our biggest dealers by volume",
-    bottom: "the dealers buying least from us",
-    floor: true,
-  },
-  penetration: {
-    label: "Penetration",
-    what: "YS Sale ÷ YSASC — of the covers this dealer sold that we make a part for, "
-      + "the share that was ours. This is a selling number: everything it divides by "
-      + "was genuinely winnable",
-    top: "where we convert the most of what we could have won",
-    bottom: "where we convert the least — the covers were addressable and went elsewhere",
-    floor: true,
-  },
-  oem_total: {
-    label: "Their volume",
-    what: "every seat cover the dealer sold, ours or anyone's — how big they are",
-    top: "the biggest dealerships in the network",
-    bottom: "the smallest dealerships",
-    floor: false,
-  },
-  addressable_pct: {
-    label: "Addressable",
-    what: "YSASC ÷ Total — how much of this dealer's seat-cover business we make a "
-      + "part for at all. A LOW number here is a part-number gap, not a rep's "
-      + "failure: no amount of selling reaches the rest",
-    top: "where our range covers most of what the dealer sells",
-    bottom: "where our range covers least — these are product decisions, not sales ones",
-    floor: true,
-  },
-};
-
-const rankValue = (d: PerfDealer, m: RankMetric, avgPene: number): number => {
-  // Opportunity is only meaningful against the addressable base; a dealer with
-  // no YSASC has no predictable target and sorts as zero rather than as a
-  // fabricated one.
-  if (m === "gap") return (d.ysasc ?? 0) * (avgPene / 100) - d.ys_sale;
-  if (m === "penetration") return d.penetration ?? 0;
-  if (m === "addressable_pct") return d.addressable_pct ?? 0;
-  return m === "ys_sale" ? d.ys_sale : d.oem_total;
-};
-
-/**
- * Volume vs penetration, one dot per dealer.
- *
- * The single view that says WHERE the money is: bottom-right is a dealer who
- * sells a lot of cars and almost none of ours. A ranked list can only answer
- * one question at a time; this answers "big or small" and "in or out" at once,
- * and the eye finds the outliers without reading a single number.
- *
- * The x axis is square-rooted because dealer volume is very long-tailed — a
- * linear axis buries three quarters of the network in the left tenth of the
- * chart. Ticks are drawn at real car-sales values so the compression is
- * visible rather than silently distorting the picture.
- */
-function DealerMap({ dealers, avgPene, onPick }: {
-  dealers: PerfDealer[]; avgPene: number; onPick: (d: PerfDealer) => void;
-}) {
-  const [hover, setHover] = useState<PerfDealer | null>(null);
-  // Plotted against YSASC, not the dealer's whole volume: the y axis is
-  // ys_sale ÷ ysasc, so the x axis has to be that same denominator or the two
-  // halves of every dot would describe different populations. A dealer with no
-  // addressable figure can't be placed on either axis and is left out.
-  const pts = dealers.filter((d) => d.has_sales && (d.ysasc ?? 0) > 0);
-  if (!pts.length) {
-    return (
-      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
-        No addressable (YSASC) dealer data for this selection — the OE dealer file only
-        covers MSIL so far, and only from the three-series format onward.
-      </div>
-    );
-  }
-
-  const W = 900, H = 380, PL = 52, PR = 18, PT = 16, PB = 40;
-  const maxAvail = Math.max(...pts.map((d) => d.ysasc ?? 0));
-  // Cap the y axis at a sane ceiling so a single 90% dealer can't flatten
-  // everyone else into the baseline.
-  const peneCap = Math.min(100, Math.max(20, ...pts.map((d) => d.penetration ?? 0)) * 1.05);
-  const maxOurs = Math.max(...pts.map((d) => d.ys_sale), 1);
-
-  const x = (v: number) => PL + (Math.sqrt(v) / Math.sqrt(maxAvail)) * (W - PL - PR);
-  const y = (v: number) => H - PB - (Math.min(v, peneCap) / peneCap) * (H - PT - PB);
-  const r = (v: number) => 3 + Math.sqrt(v / maxOurs) * 11;
-
-  const xTicks = [0, 0.05, 0.2, 0.45, 1].map((f) => Math.round(maxAvail * f));
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => +(peneCap * f).toFixed(0));
-  const midX = x(maxAvail * 0.18);
-
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 print-avoid-break">
-      <div className="flex items-baseline justify-between flex-wrap gap-2 mb-1">
-        <div>
-          <h3 className="text-sm font-bold text-gray-800">Where the opportunity is</h3>
-          <p className="text-[11px] text-gray-400">
-            Each dot is one dealership · size = units we sell there · click to open
-          </p>
-        </div>
-        <p className="text-[11px] text-gray-400">
-          OEM average penetration <b className="text-gray-600">{avgPene.toFixed(1)}%</b>
-        </p>
-      </div>
-
-      <Explain>
-        Left-to-right is <b className="text-gray-600">how much this dealer sells that
-        we make a part for</b> (YSASC — not their whole volume, so nobody is placed
-        by business we could never have won); bottom-to-top is{" "}
-        <b className="text-gray-600">how much of that we actually win</b>. The dotted
-        line is the {avgPene.toFixed(1)}% OEM average.
-        So <span style={{ color: VISIT_COLOR }} className="font-semibold">orange dots
-        on the right, below the line</span> are dealers with a lot of winnable
-        business where we are under-performing — the most units available anywhere on
-        this chart. Blue above the line is where we are already ahead.
-      </Explain>
-
-      <div className="relative overflow-x-auto">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px]" style={{ height: 380 }}>
-          {yTicks.map((t) => (
-            <g key={t}>
-              <line x1={PL} x2={W - PR} y1={y(t)} y2={y(t)} stroke="#f3f4f6" />
-              <text x={PL - 8} y={y(t) + 3} textAnchor="end" fontSize="10" fill="#9ca3af">{t}%</text>
-            </g>
-          ))}
-          {xTicks.map((t) => (
-            <text key={t} x={x(t)} y={H - PB + 15} textAnchor="middle" fontSize="10" fill="#9ca3af">
-              {t >= 1000 ? `${(t / 1000).toFixed(1)}k` : t}
-            </text>
-          ))}
-          {/* The two lines that make the quadrants readable. */}
-          <line x1={PL} x2={W - PR} y1={y(avgPene)} y2={y(avgPene)}
-            stroke={VISIT_COLOR} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} />
-          <line x1={midX} x2={midX} y1={PT} y2={H - PB}
-            stroke="#d1d5db" strokeWidth={1} strokeDasharray="4 4" />
-          <text x={W - PR - 6} y={y(avgPene) - 5} textAnchor="end" fontSize="9"
-            fill={VISIT_COLOR} fontWeight="600">network average</text>
-          <text x={W - PR - 6} y={H - PB - 8} textAnchor="end" fontSize="11"
-            fill="#9ca3af" fontWeight="700" opacity={0.65}>
-            lots winnable, low penetration
-          </text>
-
-          {pts.map((d) => {
-            const below = (d.penetration ?? 0) < avgPene;
-            const big = (d.ysasc ?? 0) >= maxAvail * 0.18;
-            const isTarget = below && big;
-            return (
-              <circle
-                key={d.id}
-                cx={x(d.ysasc ?? 0)} cy={y(d.penetration ?? 0)} r={r(d.ys_sale)}
-                fill={isTarget ? VISIT_COLOR : below ? "#fbbf24" : CALL_COLOR}
-                fillOpacity={hover && hover.id !== d.id ? 0.18 : isTarget ? 0.62 : 0.4}
-                stroke={isTarget ? VISIT_COLOR : "transparent"} strokeWidth={1}
-                className="cursor-pointer transition-opacity"
-                onMouseEnter={() => setHover(d)} onMouseLeave={() => setHover(null)}
-                onClick={() => onPick(d)}
-              />
-            );
-          })}
-          <text x={(W - PL) / 2 + PL} y={H - 4} textAnchor="middle" fontSize="10" fill="#9ca3af">
-            YSASC — covers they sell that we make a part for (square-root scale)
-          </text>
-          <text x={-(H / 2)} y={13} transform="rotate(-90)" textAnchor="middle" fontSize="10" fill="#9ca3af">
-            Penetration of YSASC
-          </text>
-        </svg>
-
-        {hover && (
-          <div className="absolute top-2 left-14 bg-gray-900/92 text-white rounded-xl px-3 py-2 pointer-events-none shadow-lg">
-            <p className="text-xs font-bold">{hover.name}</p>
-            <p className="text-[10px] text-gray-300">
-              {hover.city} · {hover.salesperson ?? "—"}
-            </p>
-            <p className="text-[10px] mt-1">
-              {n0(hover.ys_sale)} ours of {n0(hover.ysasc)} winnable · {pct(hover.penetration)}
-            </p>
-            <p className="text-[10px] text-gray-400">
-              {n0(hover.oem_total)} sold in total · {pct(hover.addressable_pct)} addressable
-            </p>
-            <p className="text-[10px] text-gray-300">
-              {hover.contacts} contact{hover.contacts === 1 ? "" : "s"} in period
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Top / bottom N by a chosen metric.
- *
- *  The bottom list applies a VOLUME FLOOR. Ranked purely by penetration the
- *  worst dealers are simply the smallest ones, which is true and useless —
- *  the floor makes it read "big dealers we are failing at" instead. */
-function DealerRankTable({ dealers, avgPene, onPick }: {
-  dealers: PerfDealer[]; avgPene: number; onPick: (d: PerfDealer) => void;
-}) {
-  const [metric, setMetric] = useState<RankMetric>("gap");
-  const [end, setEnd] = useState<"top" | "bottom">("top");
-
-  const withSales = dealers.filter((d) => d.has_sales);
-  // The floor is on ADDRESSABLE volume, matching what the ranked metrics divide
-  // by — a dealer who sells a lot but of models we don't cover isn't a big
-  // dealer for this purpose.
-  const floor = useMemo(() => {
-    const vols = withSales.map((d) => d.ysasc ?? 0).sort((a, b) => a - b);
-    return vols.length ? vols[Math.floor(vols.length / 2)] : 0;
-  }, [withSales]);
-
-  const meta = RANK_META[metric];
-  const flooring = end === "bottom" && meta.floor;
-  const pool = flooring ? withSales.filter((d) => (d.ysasc ?? 0) >= floor) : withSales;
-  const sorted = [...pool].sort((a, b) =>
-    rankValue(b, metric, avgPene) - rankValue(a, metric, avgPene));
-  const rows = (end === "top" ? sorted : [...sorted].reverse()).slice(0, 20);
-
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 print-avoid-break">
-      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <div>
-          <h3 className="text-sm font-bold text-gray-800">
-            {end === "top" ? "Top" : "Bottom"} 20 · {meta.label}
-          </h3>
-          <p className="text-[11px] text-gray-400">{meta.what}</p>
-        </div>
-        <div className="flex items-center gap-2 no-print">
-          <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
-            {(["top", "bottom"] as const).map((e) => (
-              <button key={e} onClick={() => setEnd(e)}
-                className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg capitalize transition-all ${
-                  end === e ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
-                }`}>{e}</button>
-            ))}
-          </div>
-          <Select value={metric} onChange={(v) => setMetric(v as RankMetric)}
-            options={(Object.keys(RANK_META) as RankMetric[]).map((k) => ({ value: k, label: RANK_META[k].label }))} />
-        </div>
-      </div>
-
-      <Explain>
-        <b className="text-gray-600">
-          Showing the {end === "top" ? "top" : "bottom"} 20:
-        </b>{" "}
-        {end === "top" ? meta.top : meta.bottom}
-        {flooring && (
-          <> Only dealers with <b>{n0(floor)}+</b> winnable covers are included, otherwise
-            the bottom of a share-based list is just the smallest dealerships.</>
-        )}
-        {" "}The <b className="text-gray-600">Opp.</b> column is the same figure in
-        every view: <span className="text-orange-500 font-semibold">+n</span> means
-        we are n units <i>behind</i> the <b>{avgPene.toFixed(1)}%</b> OEM
-        average and could gain them;{" "}
-        <span className="text-green-600 font-semibold">−n</span> means we are n units{" "}
-        <i>ahead</i> of it.
-      </Explain>
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-[10px] uppercase tracking-wider text-gray-400 border-b border-gray-100">
-              <th className="text-left font-bold py-2 pl-1">#</th>
-              <th className="text-left font-bold py-2">Dealership</th>
-              <th className="text-left font-bold py-2">Rep</th>
-              <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">
-                Total
-              </th>
-              <th className="text-right font-bold py-2"
-                title="YSASC — of that total, the covers on a vehicle we hold a part number for">
-                Winnable
-              </th>
-              <th className="text-right font-bold py-2">YS Sale</th>
-              <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
-              <th className="text-right font-bold py-2"
-                title="Units vs what network-average penetration would predict: + = room to gain, − = already ahead">
-                Opp.
-              </th>
-              <th className="text-right font-bold py-2 pr-1">Contacts</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((d, i) => {
-              const gap = Math.round(rankValue(d, "gap", avgPene));
-              return (
-                <tr key={d.id} onClick={() => onPick(d)}
-                  className="border-b border-gray-50 hover:bg-orange-50/40 cursor-pointer">
-                  <td className="py-2 pl-1 text-gray-300 font-semibold">{i + 1}</td>
-                  <td className="py-2">
-                    <span className="font-semibold text-gray-800">{d.name}</span>
-                    <span className="text-gray-400"> · {d.city}</span>
-                  </td>
-                  <td className="py-2 text-gray-500">{d.salesperson ?? "—"}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-400">{n0(d.oem_total)}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-600">
-                    {d.ysasc == null ? "—" : n0(d.ysasc)}
-                  </td>
-                  <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
-                  <td className={`py-2 text-right tabular-nums font-semibold ${
-                    (d.penetration ?? 0) >= avgPene ? "text-green-600" : "text-red-500"}`}>
-                    {pct(d.penetration)}
-                  </td>
-                  {/* Signed, both ways. A negative gap is not "no data" — it is
-                      a dealer already selling MORE than network average would
-                      predict, which is worth seeing. */}
-                  <td className={`py-2 text-right tabular-nums font-semibold ${
-                    gap > 0 ? "text-orange-500" : gap < 0 ? "text-green-600" : "text-gray-300"}`}>
-                    {gap > 0 ? `+${n0(gap)}` : gap < 0 ? `−${n0(-gap)}` : "—"}
-                  </td>
-                  <td className="py-2 pr-1 text-right tabular-nums">
-                    {d.contacts === 0
-                      ? <span className="text-red-400 font-semibold">none</span>
-                      : <span className="text-gray-600">{d.contacts}</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/** Coverage per rep: how much of the patch they actually touched. */
-function CoveragePanel({ rows }: { rows: DealerSpRow[] }) {
-  const real = rows.filter((r) => r.salesperson !== "Unassigned");
-  const max = Math.max(...real.map((r) => r.assigned), 1);
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 print-avoid-break">
-      <h3 className="text-sm font-bold text-gray-800">Coverage</h3>
-      <Explain>
-        How much of a rep's patch they actually reached in this period: dealerships
-        contacted at least once, out of every dealership assigned to them in the OEM's
-        own dealer list. Bar length is the size of the patch, fill is the share
-        covered — so a short full bar is a small patch worked thoroughly, and a long
-        empty one is a big patch going untouched. A visit and a phone call both count.
-      </Explain>
-      <div className="flex flex-col gap-2.5">
-        {[...real].sort((a, b) => (b.coverage ?? 0) - (a.coverage ?? 0)).map((r) => (
-          <div key={r.salesperson} className="flex items-center gap-3">
-            <span className="w-20 shrink-0 text-xs font-semibold text-gray-700 truncate">
-              {firstName(r.salesperson)}
-            </span>
-            <div className="flex-1 h-6 rounded-lg bg-gray-100 relative overflow-hidden"
-              style={{ maxWidth: `${(r.assigned / max) * 100}%` }}>
-              <div className="h-full rounded-lg transition-all"
-                style={{ width: `${r.coverage ?? 0}%`, background: VISIT_COLOR, opacity: 0.85 }} />
-              <span className="absolute inset-y-0 left-2 flex items-center text-[10px] font-bold text-white mix-blend-luminosity">
-                {r.contacted}
-              </span>
-            </div>
-            <span className={`w-28 shrink-0 text-[11px] font-bold tabular-nums ${coverageColor(r.coverage)}`}>
-              {pct(r.coverage)} <span className="text-gray-400 font-medium">of {r.assigned}</span>
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** Quarter vs quarter: target, achievement, and what actually sold. */
-function QuarterPanel({ rows }: { rows: DealerQuarter[] }) {
-  if (!rows.length) return null;
-  const max = Math.max(...rows.flatMap((r) => [r.target ?? 0, r.achievement ?? 0, r.ys_sale ?? 0]), 1);
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 print-avoid-break">
-      <h3 className="text-sm font-bold text-gray-800">Quarter vs quarter</h3>
-      <Explain>
-        Units targeted against units achieved, per quarter, for the dealerships in
-        view. A quarter appears whenever the period touches it at all and its target
-        is always shown <b className="text-gray-600">whole</b> — targets are agreed per
-        quarter, so cutting one into part-months would invent a number nobody set.
-        A quarter still in progress shows its target with no achievement yet.
-      </Explain>
-      <div className="flex flex-col gap-4">
-        {rows.map((r) => {
-          const ach = r.achievement ?? 0;
-          const tgt = r.target ?? 0;
-          const hitPct = tgt ? Math.round((ach / tgt) * 100) : null;
-          return (
-            <div key={`${r.fy_year}${r.quarter}`}>
-              <div className="flex items-baseline justify-between mb-1.5">
-                <span className="text-xs font-bold text-gray-700">{r.label}</span>
-                <span className="text-[11px] text-gray-400">
-                  {r.ysasc == null ? n0(r.oem_total) + " sold" : `${n0(r.ysasc)} winnable`}
-                  {" · "}{pct(r.penetration)} penetration
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Target</span>
-                <div className="flex-1 h-4 rounded bg-gray-50">
-                  <div className="h-full rounded" style={{ width: `${(tgt / max) * 100}%`, background: NEUTRAL_BAR }} />
-                </div>
-                <span className="w-16 text-right text-[11px] font-semibold tabular-nums text-gray-500">{n0(tgt)}</span>
-              </div>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Achieved</span>
-                <div className="flex-1 h-4 rounded bg-gray-100">
-                  <div className="h-full rounded transition-all" style={{
-                    width: `${(ach / max) * 100}%`,
-                    background: hitPct !== null && hitPct >= ON_TRACK_PCT ? OVER_COLOR : VISIT_COLOR,
-                  }} />
-                </div>
-                <span className="w-16 text-right text-[11px] font-bold tabular-nums text-gray-700">
-                  {ach ? n0(ach) : "—"}
-                </span>
-              </div>
-              {hitPct !== null && (
-                <p className="text-[10px] text-gray-400 mt-1 pl-[4.5rem]">
-                  {ach ? `${hitPct}% of target` : "quarter still open"}
-                </p>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/** Does contacting a dealer more actually move what we sell there? */
-function ContactEffectPanel({ data }: { data: DealerPerf["contact_effect"] }) {
-  if (!data.buckets.length) return null;
-  const max = Math.max(...data.buckets.map((b) => b.penetration ?? 0), 1);
-  const thin = data.months < 3;
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 print-avoid-break">
-      <h3 className="text-sm font-bold text-gray-800">Does contacting them help?</h3>
-      <Explain>
-        Dealerships grouped by how many times they were contacted in a month, and what
-        our penetration was at them <b className="text-gray-600">in that same month</b>.
-        Each bar is a group, not a dealer — "3-4" means every dealer-month with three
-        or four contacts in it. If contact moved the needle, the bars would climb left
-        to right.
-      </Explain>
-      <div className="flex items-end gap-3 h-40">
-        {data.buckets.map((b) => (
-          <div key={b.bucket} className="flex-1 flex flex-col items-center justify-end h-full gap-1">
-            <span className="text-[11px] font-bold text-gray-700">{pct(b.penetration)}</span>
-            <div className="w-full rounded-t-lg transition-all" style={{
-              height: `${((b.penetration ?? 0) / max) * 100}%`,
-              background: VISIT_COLOR,
-              opacity: 0.35 + 0.65 * ((b.penetration ?? 0) / max),
-            }} />
-            <span className="text-[10px] font-semibold text-gray-500">{b.bucket}</span>
-            <span className="text-[9px] text-gray-400">{b.dealer_months} mo</span>
-          </div>
-        ))}
-      </div>
-      <p className="text-[10px] text-gray-400 mt-3 leading-relaxed">
-        <b>Read this carefully.</b> It is an association, not proof — reps go where they
-        already do well, so some of this gradient is them picking good dealers rather
-        than the contact creating the sale.
-        {thin && (
-          <> Right now it rests on <b>{data.months} month{data.months === 1 ? "" : "s"}</b> where
-            dealer sales and visit logs overlap at all, which is far too thin to lean on.</>
-        )}
-      </p>
-    </div>
-  );
-}
-
-/**
- * The whole funnel, our share of it, and our activity — on one time axis.
- *
- * Replaces an earlier hand-rolled version that failed at the one job the panel
- * has. It drew penetration as a floating 1px mark per column with no line
- * joining them, so the trend had to be inferred by eye; it scaled the bars and
- * the marks to two different unlabelled maxima, so nothing could be read as a
- * value; and it showed activity as a single dot per mode, so one call and forty
- * looked identical. On the real data that hid the headline: penetration nearly
- * halved between March and June while their total volume barely moved.
- *
- * What it does now:
- *   • ONE stacked bar per month carrying all three levels of the funnel —
- *     ours, winnable-but-lost, and the part we hold no part number for. The
- *     orange against the first two bands IS penetration, drawn to scale, and
- *     against the whole bar it is our share of everything they sell. The eye
- *     gets both ratios without arithmetic.
- *   • A real connected line for penetration on its own right-hand axis, with a
- *     dashed reference at the OEM benchmark so "good" has a fixed position.
- *   • A separate aligned strip for visits and calls, to scale, so the question
- *     "did activity move it" can actually be looked at.
- *
- * Used for the whole network and for a single dealership unchanged; only the
- * magnitudes differ.
- */
-function DealerTrend({ rows, benchmark, title = "Network trend", subject = "these dealerships" }: {
-  rows: DealerMonth[]; benchmark?: number | null; title?: string; subject?: string;
-}) {
-  if (!rows.length) return null;
-
-  const data = rows.map((r) => {
-    const total = r.oem_total ?? null;
-    const avail = r.ysasc ?? null;
-    const ours = r.ys_sale ?? 0;
-    // The bar IS the funnel, bottom to top: what we sold, the rest of what we
-    // could have sold, and the part we make nothing for. Read the orange
-    // against the first two bands and you have penetration; against the whole
-    // bar and you have share.
-    return {
-      name: `${MONTH_SHORT[Number(r.month.slice(5, 7)) - 1]} '${r.month.slice(2, 4)}`,
-      ours: total === null ? undefined : ours,
-      missed: total === null ? undefined : Math.max(0, (avail ?? ours) - ours),
-      unmade: total === null || avail === null ? undefined : Math.max(0, total - avail),
-      pene: r.penetration ?? undefined,
-      visits: r.visits,
-      calls: r.calls,
-    };
-  });
-  const anyUnmade = data.some((d) => (d.unmade ?? 0) > 0);
-  const anyActivity = data.some((d) => d.visits > 0 || d.calls > 0);
-  // Same margins on both charts so the two x axes line up column for column.
-  const margin = { top: 8, right: 8, bottom: 0, left: 0 };
-
-  return (
-    <div className="bg-white border border-orange-100 rounded-2xl p-4 print-avoid-break">
-      <h3 className="text-sm font-bold text-gray-800">{title}</h3>
-      <Explain>
-        Each bar is one month of every seat cover {subject} sold, split into the whole
-        funnel. The{" "}
-        <span style={{ color: VISIT_COLOR }} className="font-semibold">orange part</span>{" "}
-        is ours; the mid grey is what we could have won and didn&apos;t
-        {anyUnmade && <>; the pale grey on top is business we make no part for, which
-        no amount of selling reaches</>}. So the orange measured against{" "}
-        {anyUnmade ? <b className="text-gray-600">orange + mid grey</b> : "the bar"}{" "}
-        <i>is</i> penetration, drawn to scale. The{" "}
-        <span style={{ color: VISIT_COLOR }} className="font-semibold">orange line</span>{" "}
-        reads it as a percentage against the right-hand axis
-        {benchmark ? <>, and the dashed line is the {benchmark.toFixed(1)}% OEM average</> : null}.
-        {anyActivity && " The strip underneath is how many visits and calls were logged that month."}
-      </Explain>
-
-      <ResponsiveContainer width="100%" height={230}>
-        <ComposedChart data={data} margin={margin}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-          <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-          <YAxis yAxisId="units" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
-            width={44} tickFormatter={(v: number) => formatCompact(v)} />
-          <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 10, fill: VISIT_COLOR }}
-            axisLine={false} tickLine={false} width={38} unit="%" />
-          <Tooltip
-            contentStyle={{ borderRadius: 12, border: "1px solid #ffe4d3", fontSize: 12 }}
-            itemStyle={{ color: CHART_LABEL }}
-            formatter={(v: number, key: string) => {
-              if (key === "pene") return [`${v}%`, "Penetration"];
-              if (key === "ours") return [n0(v), "YS Sale — ours"];
-              if (key === "missed") return [n0(v), "Winnable, not won"];
-              if (key === "unmade") return [n0(v), "No part number"];
-              return [n0(v), key];
-            }}
-          />
-          <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" iconSize={7}
-            formatter={(value: string) => <span style={{ color: CHART_LABEL }}>{value}</span>} />
-          <Bar yAxisId="units" dataKey="ours" stackId="funnel" name="YS Sale — ours"
-            fill={VISIT_COLOR} radius={[0, 0, 0, 0]} />
-          <Bar yAxisId="units" dataKey="missed" stackId="funnel" name="Winnable, not won"
-            fill={NEUTRAL_BAR} radius={anyUnmade ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
-          {anyUnmade ? (
-            <Bar yAxisId="units" dataKey="unmade" stackId="funnel" name="No part number"
-              fill={TGT_TRACK} radius={[4, 4, 0, 0]} />
-          ) : null}
-          {benchmark ? (
-            <ReferenceLine yAxisId="pct" y={benchmark} stroke={VISIT_COLOR} strokeDasharray="4 4"
-              strokeOpacity={0.5} />
-          ) : null}
-          <Line yAxisId="pct" type="monotone" dataKey="pene" name="Penetration"
-            stroke={VISIT_COLOR} strokeWidth={2}
-            dot={{ r: 3, fill: "#fff", stroke: VISIT_COLOR, strokeWidth: 2 }} connectNulls={false} />
-        </ComposedChart>
-      </ResponsiveContainer>
-
-      {anyActivity && (
-        <ResponsiveContainer width="100%" height={78}>
-          <ComposedChart data={data} margin={margin}>
-            <XAxis dataKey="name" hide />
-            <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
-              width={44} allowDecimals={false} />
-            <Tooltip
-              contentStyle={{ borderRadius: 12, border: "1px solid #ffe4d3", fontSize: 12 }}
-              itemStyle={{ color: CHART_LABEL }}
-              formatter={(v: number, key: string) => [n0(v), key === "visits" ? "Visits" : "Calls"]}
-            />
-            <Bar dataKey="visits" stackId="act" name="Visits" fill={VISIT_COLOR} />
-            <Bar dataKey="calls" stackId="act" name="Calls" fill={CALL_COLOR} radius={[4, 4, 0, 0]} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      )}
-    </div>
-  );
-}
-
-/** Everything about one dealership, opened from any row or dot. */
-function DealerDrawer({ dealerId, headers, benchmark, onClose }: {
-  dealerId: string; headers: Record<string, string>;
-  /** The OEM average, carried in from the tab so a single dealer's chart is
-   *  read against the same yardstick as everything else on the page. */
-  benchmark?: number | null;
-  onClose: () => void;
-}) {
-  const [data, setData] = useState<DealerDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setLoading(true);
-    (async () => {
-      const res = await fetch(`${API_URL}/oe-network/dealer-performance/${dealerId}`, { headers });
-      if (res.ok) setData(await res.json());
-      setLoading(false);
-    })();
-  }, [dealerId, headers]);
-
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
-  }, [onClose]);
-
-  const d = data?.dealer;
-  return (
-    <div className="no-print fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-gray-900/30 backdrop-blur-[2px]" onClick={onClose} />
-      <motion.div
-        initial={{ x: 40, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
-        transition={{ duration: 0.18 }}
-        className="relative w-full max-w-2xl h-full bg-gray-50 overflow-y-auto shadow-2xl"
-      >
-        <div className="sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-orange-100 px-5 py-4 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-lg font-black text-gray-900 truncate">{d?.name ?? "Loading…"}</h2>
-            {d && (
-              <p className="text-[11px] text-gray-400 mt-0.5">
-                {d.city} · {d.state} · {d.oem} · handled by <b className="text-gray-600">{d.salesperson ?? "—"}</b>
-              </p>
-            )}
-          </div>
-          <button onClick={onClose} className="shrink-0 text-gray-400 hover:text-gray-700 p-1">
-            <X size={18} />
-          </button>
-        </div>
-
-        {loading && <div className="p-10 text-center text-sm text-gray-400">Loading…</div>}
-
-        {data && (
-          <div className="p-5 flex flex-col gap-4">
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              <StatCard label="Total sold" value={n0(data.totals.oem_total)}
-                sub="all seat covers, ours or not"
-                icon={<CarFront size={16} />} color="#6b7280" bg="#f3f4f6" />
-              <StatCard label="Winnable" value={data.totals.ysasc == null ? "—" : n0(data.totals.ysasc)}
-                sub={data.totals.ysasc == null ? "not supplied" : `${pct(data.totals.addressable_pct)} of total`}
-                icon={<Package size={16} />} color="#6b7280" bg="#f3f4f6" />
-              <StatCard label="YS Sale" value={n0(data.totals.ys_sale)} icon={<Package size={16} />}
-                color={VISIT_COLOR} bg="#fff4ed" />
-              <StatCard label="Penetration" value={pct(data.totals.penetration)}
-                sub={data.totals.penetration == null ? "needs YSASC" : "of winnable"}
-                icon={<Target size={16} />} color="#16a34a" bg="#f0fdf4" />
-              <StatCard label="Contacts" value={data.totals.visits + data.totals.calls}
-                sub={`${data.totals.visits} visits · ${data.totals.calls} calls`}
-                icon={<Footprints size={16} />} color={CALL_COLOR} bg="#eff6ff" />
-            </div>
-
-            {data.last_field_note && (
-              <div className="bg-white border border-orange-200 rounded-2xl p-4">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-orange-500 mb-1">
-                  Last field visit remark · {shortDate(data.last_field_note.visit_date)} ·{" "}
-                  {data.last_field_note.salesperson}
-                </p>
-                {data.last_field_note.notes.map((nt, i) => (
-                  <p key={i} className="text-sm text-gray-700 leading-relaxed">
-                    <span className="text-[10px] font-bold uppercase text-gray-400 mr-1.5">{nt.label}</span>
-                    {nt.text}
-                  </p>
-                ))}
-              </div>
-            )}
-
-            <DealerTrend rows={data.by_month} benchmark={benchmark}
-              title="This dealership, month by month" subject="this dealership" />
-
-            {data.targets.length > 0 && (
-              <div className="bg-white border border-orange-100 rounded-2xl p-4">
-                <h3 className="text-sm font-bold text-gray-800 mb-2">Target vs achievement</h3>
-                <div className="flex flex-col gap-2">
-                  {data.targets.map((t) => {
-                    const hit = t.target ? Math.round(((t.achievement ?? 0) / t.target) * 100) : null;
-                    return (
-                      <div key={t.label} className="flex items-center gap-3 text-xs">
-                        <span className="w-16 font-bold text-gray-700">{t.label}</span>
-                        <div className="flex-1 h-4 rounded bg-gray-100 relative">
-                          <div className="h-full rounded" style={{
-                            width: `${Math.min(hit ?? 0, 100)}%`,
-                            background: hit !== null && hit >= ON_TRACK_PCT ? OVER_COLOR : VISIT_COLOR,
-                          }} />
-                        </div>
-                        <span className="w-32 text-right tabular-nums text-gray-500">
-                          {n0(t.achievement)} / {n0(t.target)}
-                          {hit !== null && <b className="ml-1 text-gray-700">{hit}%</b>}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div className="bg-white border border-orange-100 rounded-2xl p-4">
-              <h3 className="text-sm font-bold text-gray-800 mb-1">
-                Contact history <span className="text-gray-400 font-medium">({data.history.length})</span>
-              </h3>
-              {data.history.length === 0 && (
-                <p className="text-sm text-gray-400 py-4 text-center">
-                  No contact logged with this dealership yet.
-                </p>
-              )}
-              <div className="flex flex-col divide-y divide-gray-50">
-                {data.history.map((h) => (
-                  <div key={h.id} className="py-3 flex gap-3">
-                    <div className="w-14 shrink-0">
-                      <p className="text-[11px] font-bold text-gray-600">{shortDate(h.visit_date)}</p>
-                      <ModeBadge mode={h.contact_mode} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[11px] text-gray-400">
-                        {h.salesperson}
-                        {h.contact_person && ` · met ${h.contact_person}`}
-                        {h.designation && ` (${h.designation})`}
-                        {h.channel && ` · ${h.channel}`}
-                      </p>
-                      {h.notes.length === 0 && <p className="text-xs text-gray-300 italic">no remark</p>}
-                      {h.notes.map((nt, i) => (
-                        <p key={i} className="text-xs text-gray-700 mt-0.5 leading-relaxed">
-                          <span className="text-[9px] font-bold uppercase text-gray-400 mr-1">{nt.label}</span>
-                          {nt.text}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </motion.div>
-    </div>
-  );
-}
-
-function DealersTab({ headers }: { headers: Record<string, string> }) {
-  const [options, setOptions] = useState<{ oems: string[]; states: string[] } | null>(null);
-  const [oem, setOem] = useState("MSIL");
-  const [salesperson, setSalesperson] = useState("");
-  const [state, setState] = useState("");
-  // Defaults to all time: dealer sales start in January while the log book only
-  // starts in July, so landing on "this month" would open the tab on a month
-  // with no sales in it at all.
-  const [periodMode, setPeriodMode] = useState<PeriodChoice>("all");
-  const [selected, setSelected] = useState("");
-  const [range, setRange] = useState<DateRange>({ from: "", to: "" });
-  const [data, setData] = useState<DealerPerf | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [openDealer, setOpenDealer] = useState<string | null>(null);
-  // Captured from the first unfiltered response and then left alone — the
-  // period list must keep offering every month, not shrink to whatever the
-  // current filter returned.
-  const [allMonths, setAllMonths] = useState<Period[]>([]);
-
-  useEffect(() => {
-    (async () => {
-      const res = await fetch(`${API_URL}/oe-network/filter-options?scope=logs`, { headers });
-      if (res.ok) setOptions(await res.json());
-    })();
-  }, [headers]);
-
-  useEffect(() => {
-    const pp = periodParams(periodMode, selected, range);
-    if (!pp) return;
-    const params = new URLSearchParams(pp);
-    if (oem) params.set("oem", oem);
-    if (salesperson) params.set("salesperson", salesperson);
-    if (state) params.set("state", state);
-    setLoading(true);
-    (async () => {
-      const res = await fetch(`${API_URL}/oe-network/dealer-performance?${params}`, { headers });
-      if (res.ok) {
-        const j: DealerPerf = await res.json();
-        setData(j);
-        setAllMonths((prev) => prev.length ? prev : j.by_month.map((m) => ({
-          year: Number(m.month.slice(0, 4)), month: Number(m.month.slice(5, 7)),
-        })));
-      }
-      setLoading(false);
-    })();
-  }, [periodMode, selected, range, oem, salesperson, state, headers]);
-
-  const optionsByMode = useMemo<Record<PeriodMode, { value: string; label: string }[]>>(
-    () => buildPeriodOptions(allMonths), [allMonths]);
-  const periodOptions =
-    periodMode === "custom" || periodMode === "all" ? [] : optionsByMode[periodMode];
-  const switchMode = (m: PeriodChoice) => {
-    setPeriodMode(m);
-    if (m === "custom" || m === "all") return;
-    const first = optionsByMode[m][0];
-    if (first) setSelected(first.value);
-  };
-
-  const toOpts = (arr: string[] | undefined, all: string) =>
-    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
-
-  // Reps come from the dealer file's own assignment, not from who logged a
-  // visit — the point is to include the dealers a rep never touched.
-  const reps = useMemo(
-    () => [...new Set((data?.by_salesperson ?? [])
-      .map((r) => r.salesperson).filter((s) => s !== "Unassigned"))].sort(),
-    [data],
-  );
-
-  const k = data?.kpis;
-  // The benchmark, NOT this view's own penetration. Filtering to a rep must not
-  // change the yardstick their dealers are measured against, or a weak
-  // territory reads as having the least to gain.
-  const avgPene = k?.benchmark ?? k?.penetration ?? 0;
-  const noSales = !!data && data.dealers.every((d) => !d.has_sales);
-
-  return (
-    <div className="flex flex-col gap-5">
-      <FilterBar>
-        <PeriodControls
-          mode={periodMode} onMode={switchMode}
-          token={selected} onToken={setSelected} options={periodOptions}
-          range={range} onRange={setRange}
-        />
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
-        <Select value={salesperson} onChange={setSalesperson}
-          options={toOpts(reps, "All reps")} placeholder="Rep" />
-        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
-        {(salesperson || state) && (
-          <button onClick={() => { setSalesperson(""); setState(""); }}
-            className="text-[11px] font-semibold text-orange-500 hover:text-orange-600 px-2">
-            Clear
-          </button>
-        )}
-      </FilterBar>
-
-      {/* Sales are monthly figures, so a day range can only cut them to whole
-          months. Saying so beats letting the numbers imply otherwise. */}
-      {periodMode === "custom" && data?.period.date_from && (
-        <p className="text-[11px] text-gray-400 -mt-2">
-          Visits and calls counted {shortDate(data.period.date_from)}–{shortDate(data.period.date_to)}.
-          Dealer sales are reported monthly, so those cover whole months
-          ({MONTH_SHORT[Number(data.period.month_from!.slice(5, 7)) - 1]}–
-          {MONTH_SHORT[Number(data.period.month_to!.slice(5, 7)) - 1]}).
-        </p>
-      )}
-
-      {loading && !data && (
-        <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
-          Loading dealer performance…
-        </div>
-      )}
-
-      {k && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label="Coverage" value={pct(k.coverage)}
-            sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}
-            icon={<Store size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
-          <StatCard label="Penetration" value={pct(k.penetration)}
-            sub={k.ysasc == null
-              ? "needs YSASC from the dealer file"
-              : `${n0(k.ys_sale)} ours ÷ ${n0(k.ysasc)} winnable`}
-            icon={<Target size={18} />} color="#16a34a" bg="#f0fdf4" />
-          <StatCard label="Total sold" value={n0(k.oem_total)}
-            sub="every cover, ours or not"
-            icon={<CarFront size={18} />} color="#6b7280" bg="#f3f4f6" />
-          {/* The product side of the funnel. Kept next to penetration because
-              the two answer different questions and get confused constantly:
-              this one is what we make a part for, not what we sold. */}
-          <StatCard label="Addressable" value={pct(k.addressable_pct)}
-            sub={k.ysasc == null ? "not supplied" : `${n0(k.ysasc)} winnable`}
-            icon={<Percent size={18} />} color="#6b7280" bg="#f3f4f6" />
-          <StatCard label="YS Sale" value={n0(k.ys_sale)}
-            sub={k.target ? `target ${n0(k.target)}` : undefined}
-            icon={<Package size={18} />} color={CALL_COLOR} bg="#eff6ff" />
-          <StatCard label="Contacts" value={n0(k.visits + k.calls)}
-            sub={`${n0(k.visits)} visits · ${n0(k.calls)} calls`}
-            icon={<Footprints size={18} />} color="#8b5cf6" bg="#f5f3ff" />
-        </div>
-      )}
-
-      {noSales && data && (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-800">
-          <b>No dealer sales data for {oem} yet.</b> The OE team's dealer file currently
-          covers MSIL only, so coverage and contact counts are real here but volumes,
-          penetration and targets will stay empty until their {oem} tab arrives.
-        </div>
-      )}
-
-      {data && !noSales && (
-        <>
-          <DealerMap dealers={data.dealers} avgPene={avgPene}
-            onPick={(d) => setOpenDealer(d.id)} />
-          <DealerRankTable dealers={data.dealers} avgPene={avgPene}
-            onPick={(d) => setOpenDealer(d.id)} />
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <CoveragePanel rows={data.by_salesperson} />
-            <QuarterPanel rows={data.by_quarter} />
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <DealerTrend rows={data.by_month} benchmark={avgPene} />
-            <ContactEffectPanel data={data.contact_effect} />
-          </div>
-        </>
-      )}
-
-      {data && noSales && <CoveragePanel rows={data.by_salesperson} />}
-
-      <AnimatePresence>
-        {openDealer && (
-          <DealerDrawer dealerId={openDealer} headers={headers} benchmark={avgPene}
-            onClose={() => setOpenDealer(null)} />
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Plan vs Actual" },
   { id: "dealers", label: "Dealers" },

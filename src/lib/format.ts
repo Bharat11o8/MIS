@@ -10,15 +10,24 @@ export function formatCr(n: number): string {
   return `₹${(n / 1e7).toFixed(1)}Cr`;
 }
 
+// Compact Indian scaling WITHOUT a currency mark, for axes that count things
+// rather than money — unit volumes, seat covers, headcounts. Keeping this
+// separate from formatCompact is the point: a units axis rendered with the
+// rupee formatter reads as money and is believed, and callers were already
+// stripping the symbol back off with .replace("₹", "").
+export function formatCompactNos(n: number): string {
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs >= 1e7) return `${sign}${(abs / 1e7).toFixed(1)}Cr`;
+  if (abs >= 1e5) return `${sign}${(abs / 1e5).toFixed(1)}L`;
+  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(1)}K`;
+  return `${sign}${Math.round(abs).toLocaleString("en-IN")}`;
+}
+
 // Headline values are compact (₹22.5Cr) — the exact rupee figure lives in a
 // hover title. Scales down to L/K so small figures don't render as "₹0.0Cr".
 export function formatCompact(n: number): string {
-  const abs = Math.abs(n);
-  const sign = n < 0 ? "-" : "";
-  if (abs >= 1e7) return `${sign}₹${(abs / 1e7).toFixed(1)}Cr`;
-  if (abs >= 1e5) return `${sign}₹${(abs / 1e5).toFixed(1)}L`;
-  if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)}K`;
-  return `${sign}₹${Math.round(abs).toLocaleString("en-IN")}`;
+  return (n < 0 ? "-₹" : "₹") + formatCompactNos(n).replace(/^-/, "");
 }
 
 export function formatDate(iso: string): string {
