@@ -27,6 +27,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import Select from "@/components/ui/Select";
+import DateRangePicker, { dayPresets } from "@/components/ui/DateRangePicker";
 
 const logoSrc = "/amato-logo.png";
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -372,9 +373,10 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
       {/* Filters + table */}
       <div className="bg-white border border-orange-100 rounded-2xl shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b border-orange-50 flex items-center gap-2 flex-wrap">
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className={inputClass} title="From date" />
-          <span className="text-gray-300 text-xs">–</span>
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className={inputClass} title="To date" />
+          <DateRangePicker
+            value={{ from: fromDate, to: toDate }}
+            onChange={(r) => { setFromDate(r.from); setToDate(r.to); }}
+            presets={dayPresets()} placeholder="All dates" />
           <Select value={oem} onChange={setOem} options={OEM_OPTS} placeholder="All OEMs" />
           <Select value={contactMode} onChange={setContactMode} options={MODE_OPTS} placeholder="Visits + Calls" />
           <div className="relative">

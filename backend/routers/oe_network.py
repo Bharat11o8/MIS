@@ -24,7 +24,7 @@ from models import SheetSource, SyncLog, User
 from routers.auth import get_current_user
 from services.dealer_resolve import DealerIndex
 from services.google_sheets import extract_sheet_id
-from services.oe_dealer_data_sync import parse_dealer_data
+from services.oe_dealer_data_sync import parse_dealer_data, SERIES as DEALER_SERIES
 from services.oe_network_sync import parse_visit_plan, parse_log_book
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.period_filters import parse_date as _parse_date, snap_to_months
@@ -283,8 +283,8 @@ _INSERTS = {MODULE_PLAN: _PLAN_INSERT, MODULE_LOG: _LOG_INSERT, MODULE_TGT: _TGT
 
 _DEALER_MONTHLY_INSERT = text("""
     INSERT INTO oe_dealer_monthly
-        (id, dealer_id, sheet_source_id, month, car_sales, our_sales)
-    VALUES (:id, :dealer_id, :sheet_source_id, :month, :car_sales, :our_sales)
+        (id, dealer_id, sheet_source_id, month, oem_total, ysasc, ys_sale)
+    VALUES (:id, :dealer_id, :sheet_source_id, :month, :oem_total, :ysasc, :ys_sale)
 """)
 
 _DEALER_TARGET_INSERT = text("""
@@ -342,12 +342,12 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
                    "codes": rec["dealer_codes"] or ""})
 
         for m in rec["monthly"]:
-            if m.get("car_sales") is None and m.get("our_sales") is None:
+            if all(m.get(k) is None for k in DEALER_SERIES):
                 continue
             db.execute(_DEALER_MONTHLY_INSERT, {
                 "id": str(uuid.uuid4()), "dealer_id": dealer_id,
                 "sheet_source_id": source_id, "month": m["month"],
-                "car_sales": m.get("car_sales"), "our_sales": m.get("our_sales"),
+                **{k: m.get(k) for k in DEALER_SERIES},
             })
             written += 1
         for t in rec["targets"]:
@@ -1714,7 +1714,10 @@ _SALES_WINDOW = """
 
 _DEALER_AGG_SQL = """
 WITH sales AS (
-    SELECT dealer_id, SUM(car_sales) AS car_sales, SUM(our_sales) AS our_sales
+    -- SUM(ysasc) is NULL only when no month in range supplied one, which is
+    -- what makes penetration honestly unavailable rather than wrong.
+    SELECT dealer_id, SUM(oem_total) AS oem_total,
+           SUM(ysasc) AS ysasc, SUM(ys_sale) AS ys_sale
     FROM oe_dealer_monthly WHERE {sales_window} GROUP BY 1
 ),
 acts AS (
@@ -1736,8 +1739,9 @@ tgts AS (
     GROUP BY 1
 )
 SELECT d.id, d.oem, d.name, d.city, d.state, d.salesperson, d.dealer_codes,
-       COALESCE(s.car_sales, 0) AS car_sales,
-       COALESCE(s.our_sales, 0) AS our_sales,
+       COALESCE(s.oem_total, 0) AS oem_total,
+       s.ysasc                  AS ysasc,
+       COALESCE(s.ys_sale, 0)   AS ys_sale,
        COALESCE(a.contacts, 0)  AS contacts,
        COALESCE(a.visits, 0)    AS visits,
        COALESCE(a.calls, 0)     AS calls,
@@ -1750,15 +1754,46 @@ LEFT JOIN tgts  t ON t.dealer_id = d.id
 WHERE d.is_active
   AND (s.dealer_id IS NOT NULL OR a.dealer_id IS NOT NULL)
   {extra}
-ORDER BY COALESCE(s.our_sales, 0) DESC, d.name
+ORDER BY COALESCE(s.ys_sale, 0) DESC, d.name
 """
 
 
-def _pene(our, cars) -> Optional[float]:
-    """Penetration as a RATIO OF SUMS, matching the OE file's own AVG PENE.
-    Averaging monthly percentages would weight a 12-car month like a 1,200-car
-    one and quietly disagree with their sheet."""
-    return round(100.0 * our / cars, 2) if cars else None
+def _ratio(num, den) -> Optional[float]:
+    """A percentage as a RATIO OF SUMS, never the mean of monthly percentages.
+    Averaging the monthly figures would weight a 12-unit month like a 1,200-unit
+    one and quietly disagree with the OE team's own sheet."""
+    return round(100.0 * num / den, 2) if den else None
+
+
+def _funnel(oem_total, ysasc, ys_sale) -> dict:
+    """The dealer file's three figures and the three ratios read off them.
+
+    The funnel narrows: oem_total (every seat cover the dealer sold) ⊇ ysasc
+    (those on a vehicle we hold a part number for) ⊇ ys_sale (ours).
+
+      penetration     ys_sale ÷ ysasc — the headline. What we converted of what
+                      we could have won.
+      share           ys_sale ÷ oem_total — our slice of the dealer's whole
+                      seat-cover business. This is what "penetration" used to
+                      mean here, kept because it is the number that says how
+                      big the dealer is to us overall.
+      addressable_pct ysasc ÷ oem_total — how much of that dealer's business we
+                      even make a part for. A low value is a product gap, NOT a
+                      selling failure, and must never be read as one.
+
+    penetration is NULL when ysasc is absent rather than falling back to
+    oem_total: a silent fallback would report the old, much lower number
+    (11.8% network-wide vs 20.1%) under the new name.
+    """
+    total, avail, ours = oem_total or 0, ysasc, ys_sale or 0
+    return {
+        "oem_total": total,
+        "ysasc": avail,
+        "ys_sale": ours,
+        "penetration": _ratio(ours, avail) if avail is not None else None,
+        "share": _ratio(ours, total),
+        "addressable_pct": _ratio(avail, total) if avail is not None else None,
+    }
 
 
 def _dealer_months(db: Session, extra: str, params: dict) -> list:
@@ -1768,7 +1803,8 @@ def _dealer_months(db: Session, extra: str, params: dict) -> list:
     read against the sales bars on one axis.
     """
     sales = db.execute(text(f"""
-        SELECT m.month, SUM(m.car_sales) AS car_sales, SUM(m.our_sales) AS our_sales
+        SELECT m.month, SUM(m.oem_total) AS oem_total,
+               SUM(m.ysasc) AS ysasc, SUM(m.ys_sale) AS ys_sale
         FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
         WHERE {_SALES_WINDOW.replace('month', 'm.month')} {extra}
         GROUP BY 1 ORDER BY 1
@@ -1782,16 +1818,18 @@ def _dealer_months(db: Session, extra: str, params: dict) -> list:
         GROUP BY 1 ORDER BY 1
     """), params).mappings().all()
 
+    empty = {"oem_total": None, "ysasc": None, "ys_sale": None,
+             "penetration": None, "share": None, "addressable_pct": None}
+
     by_month: dict = {}
     for r in sales:
-        by_month[r["month"]] = {"month": r["month"].isoformat(),
-                                "car_sales": r["car_sales"], "our_sales": r["our_sales"],
-                                "penetration": _pene(r["our_sales"], r["car_sales"]),
-                                "visits": 0, "calls": 0}
+        by_month[r["month"]] = {
+            "month": r["month"].isoformat(), "visits": 0, "calls": 0,
+            **_funnel(r["oem_total"], r["ysasc"], r["ys_sale"]),
+        }
     for r in acts:
         b = by_month.setdefault(r["month"], {"month": r["month"].isoformat(),
-                                             "car_sales": None, "our_sales": None,
-                                             "penetration": None, "visits": 0, "calls": 0})
+                                             "visits": 0, "calls": 0, **empty})
         b["visits"], b["calls"] = r["visits"], r["calls"]
     return [by_month[k] for k in sorted(by_month)]
 
@@ -1814,7 +1852,8 @@ def _dealer_quarters(db: Session, extra: str, params: dict) -> list:
     out = []
     for r in rows:
         sales = db.execute(text(f"""
-            SELECT SUM(m.car_sales) AS car_sales, SUM(m.our_sales) AS our_sales
+            SELECT SUM(m.oem_total) AS oem_total,
+                   SUM(m.ysasc) AS ysasc, SUM(m.ys_sale) AS ys_sale
             FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
             WHERE m.month >= :q_start AND m.month <= :q_end {extra}
         """), {**params, "q_start": r["period_start"], "q_end": r["period_end"]}).mappings().first()
@@ -1827,9 +1866,7 @@ def _dealer_quarters(db: Session, extra: str, params: dict) -> list:
             "period_end": r["period_end"].isoformat(),
             "target": r["target"],
             "achievement": r["achievement"],
-            "car_sales": sales["car_sales"],
-            "our_sales": sales["our_sales"],
-            "penetration": _pene(sales["our_sales"] or 0, sales["car_sales"] or 0),
+            **_funnel(sales["oem_total"], sales["ysasc"], sales["ys_sale"]),
         })
     return out
 
@@ -1848,7 +1885,7 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
     """
     rows = db.execute(text(f"""
         WITH dm AS (
-            SELECT m.dealer_id, m.month, m.car_sales, m.our_sales,
+            SELECT m.dealer_id, m.month, m.oem_total, m.ysasc, m.ys_sale,
                    COALESCE(c.n, 0) AS contacts
             FROM oe_dealer_monthly m
             JOIN oe_dealerships d ON d.id = m.dealer_id
@@ -1867,7 +1904,8 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
                     WHEN contacts <= 4 THEN '3-4'
                     ELSE '5+' END AS bucket,
                COUNT(*) AS dealer_months,
-               SUM(car_sales) AS car_sales, SUM(our_sales) AS our_sales
+               SUM(oem_total) AS oem_total, SUM(ysasc) AS ysasc,
+               SUM(ys_sale) AS ys_sale
         FROM dm GROUP BY 1
     """), params).mappings().all()
 
@@ -1887,9 +1925,7 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
         "buckets": [{
             "bucket": b,
             "dealer_months": buckets[b]["dealer_months"],
-            "car_sales": buckets[b]["car_sales"],
-            "our_sales": buckets[b]["our_sales"],
-            "penetration": _pene(buckets[b]["our_sales"], buckets[b]["car_sales"]),
+            **_funnel(buckets[b]["oem_total"], buckets[b]["ysasc"], buckets[b]["ys_sale"]),
         } for b in order if b in buckets],
     }
 
@@ -1918,7 +1954,7 @@ def dealer_detail(
         raise HTTPException(status_code=404, detail="Dealer not found")
 
     sales = db.execute(text("""
-        SELECT month, car_sales, our_sales FROM oe_dealer_monthly
+        SELECT month, oem_total, ysasc, ys_sale FROM oe_dealer_monthly
         WHERE dealer_id = :id ORDER BY month
     """), {"id": dealer_id}).mappings().all()
     acts = db.execute(text("""
@@ -1928,16 +1964,18 @@ def dealer_detail(
         FROM oe_visit_logs WHERE dealer_id = :id GROUP BY 1 ORDER BY 1
     """), {"id": dealer_id}).mappings().all()
 
+    empty = {"oem_total": None, "ysasc": None, "ys_sale": None,
+             "penetration": None, "share": None, "addressable_pct": None}
+
     months: dict = {}
     for r in sales:
-        months[r["month"]] = {"month": r["month"].isoformat(),
-                              "car_sales": r["car_sales"], "our_sales": r["our_sales"],
-                              "penetration": _pene(r["our_sales"] or 0, r["car_sales"] or 0),
-                              "visits": 0, "calls": 0}
+        months[r["month"]] = {
+            "month": r["month"].isoformat(), "visits": 0, "calls": 0,
+            **_funnel(r["oem_total"], r["ysasc"], r["ys_sale"]),
+        }
     for r in acts:
         b = months.setdefault(r["month"], {"month": r["month"].isoformat(),
-                                           "car_sales": None, "our_sales": None,
-                                           "penetration": None, "visits": 0, "calls": 0})
+                                           "visits": 0, "calls": 0, **empty})
         b["visits"], b["calls"] = r["visits"], r["calls"]
 
     targets = [{
@@ -1980,8 +2018,13 @@ def dealer_detail(
         })
 
     last_visit = next((h for h in history if h["contact_mode"] == "Visit" and h["notes"]), None)
-    tot_cars = sum(m["car_sales"] or 0 for m in months.values())
-    tot_ours = sum(m["our_sales"] or 0 for m in months.values())
+    # Summed from the months rather than re-queried, and ysasc stays None unless
+    # at least one month supplied it — so a dealer whose history predates the
+    # three-series file reports no penetration instead of a made-up one.
+    tot_total = sum(m["oem_total"] or 0 for m in months.values())
+    tot_ours = sum(m["ys_sale"] or 0 for m in months.values())
+    avail = [m["ysasc"] for m in months.values() if m["ysasc"] is not None]
+    tot_avail = sum(avail) if avail else None
 
     return {
         "dealer": {
@@ -1991,8 +2034,7 @@ def dealer_detail(
             "source": d["source"],
         },
         "totals": {
-            "car_sales": tot_cars, "our_sales": tot_ours,
-            "penetration": _pene(tot_ours, tot_cars),
+            **_funnel(tot_total, tot_avail, tot_ours),
             "visits": sum(h["contact_mode"] == "Visit" for h in history),
             "calls": sum(h["contact_mode"] == "Calling" for h in history),
         },
@@ -2040,16 +2082,17 @@ def dealer_performance(
         "id": str(r["id"]), "oem": r["oem"], "name": r["name"],
         "city": r["city"] or "", "state": r["state"],
         "salesperson": r["salesperson"], "codes": r["dealer_codes"],
-        "car_sales": r["car_sales"], "our_sales": r["our_sales"],
-        "penetration": _pene(r["our_sales"], r["car_sales"]),
+        **_funnel(r["oem_total"], r["ysasc"], r["ys_sale"]),
         "contacts": r["contacts"], "visits": r["visits"], "calls": r["calls"],
         "last_contact": r["last_contact"].isoformat() if r["last_contact"] else None,
         "target": r["target"], "achievement": r["achievement"],
         "has_sales": r["has_sales"],
     } for r in rows]
 
-    tot_cars = sum(d["car_sales"] for d in dealers)
-    tot_ours = sum(d["our_sales"] for d in dealers)
+    tot_total = sum(d["oem_total"] for d in dealers)
+    tot_ours = sum(d["ys_sale"] for d in dealers)
+    avail = [d["ysasc"] for d in dealers if d["ysasc"] is not None]
+    tot_avail = sum(avail) if avail else None
     contacted = sum(1 for d in dealers if d["contacts"])
 
     # The yardstick "opportunity" is measured against, and it must NOT move when
@@ -2062,20 +2105,23 @@ def dealer_performance(
     _dealer_scope(bench_where, params, oem, None, None)
     bench_extra = (" AND " + " AND ".join(bench_where)) if bench_where else ""
     bench = db.execute(text(f"""
-        SELECT SUM(m.car_sales) AS cars, SUM(m.our_sales) AS ours
+        SELECT SUM(m.oem_total) AS oem_total, SUM(m.ysasc) AS ysasc,
+               SUM(m.ys_sale) AS ys_sale
         FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
         WHERE {_SALES_WINDOW.replace('month', 'm.month')} {bench_extra}
     """), params).mappings().first()
+    bench_f = _funnel(bench["oem_total"], bench["ysasc"], bench["ys_sale"])
 
     kpis = {
         "dealers": len(dealers),
         "contacted": contacted,
         "coverage": round(100.0 * contacted / len(dealers), 1) if dealers else None,
-        "car_sales": tot_cars,
-        "our_sales": tot_ours,
-        "penetration": _pene(tot_ours, tot_cars),
-        # Whole-OEM penetration for this period, unaffected by the other filters.
-        "benchmark": _pene(bench["ours"] or 0, bench["cars"] or 0),
+        **_funnel(tot_total, tot_avail, tot_ours),
+        # Whole-OEM figures for this period, unaffected by the other filters.
+        # Opportunity is measured against `benchmark`, so it has to be the same
+        # KIND of ratio as each dealer's own penetration — ys_sale ÷ ysasc.
+        "benchmark": bench_f["penetration"],
+        "benchmark_share": bench_f["share"],
         "visits": sum(d["visits"] for d in dealers),
         "calls": sum(d["calls"] for d in dealers),
         "target": sum(d["target"] or 0 for d in dealers),
@@ -2086,17 +2132,20 @@ def dealer_performance(
     for d in dealers:
         sp = d["salesperson"] or "Unassigned"
         b = by_sp.setdefault(sp, {"salesperson": sp, "assigned": 0, "contacted": 0,
-                                  "car_sales": 0, "our_sales": 0, "visits": 0,
-                                  "calls": 0, "target": 0, "achievement": 0})
+                                  "oem_total": 0, "ysasc": None, "ys_sale": 0,
+                                  "visits": 0, "calls": 0, "target": 0, "achievement": 0})
         b["assigned"] += 1
         b["contacted"] += 1 if d["contacts"] else 0
-        for k in ("car_sales", "our_sales", "visits", "calls"):
+        for k in ("oem_total", "ys_sale", "visits", "calls"):
             b[k] += d[k]
+        # Stays None until some dealer in the group actually has one.
+        if d["ysasc"] is not None:
+            b["ysasc"] = (b["ysasc"] or 0) + d["ysasc"]
         b["target"] += d["target"] or 0
         b["achievement"] += d["achievement"] or 0
     for b in by_sp.values():
         b["coverage"] = round(100.0 * b["contacted"] / b["assigned"], 1) if b["assigned"] else None
-        b["penetration"] = _pene(b["our_sales"], b["car_sales"])
+        b.update(_funnel(b["oem_total"], b["ysasc"], b["ys_sale"]))
 
     return {
         "period": {
@@ -2107,7 +2156,7 @@ def dealer_performance(
         },
         "kpis": kpis,
         "dealers": dealers,
-        "by_salesperson": sorted(by_sp.values(), key=lambda b: -b["our_sales"]),
+        "by_salesperson": sorted(by_sp.values(), key=lambda b: -b["ys_sale"]),
         "by_month": _dealer_months(db, extra, params),
         "by_quarter": _dealer_quarters(db, extra, params),
         "contact_effect": _contact_effect(db, extra, params),

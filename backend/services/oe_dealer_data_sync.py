@@ -2,36 +2,52 @@
 AutoForm MIS — parser for the OE team's dealer data file.
 
 One tab per OEM ("MSIL", and the rest as their files arrive). Each tab is one
-row per dealer OUTLET with an identity block, then the dealer's own vehicle
-sales month by month, then our units at that dealer month by month, then the
-quarter targets:
+row per dealer OUTLET with an identity block, then THREE monthly series, then
+the quarter targets:
 
     DEALER NAME | DEALER CITY | STATES | SALES PERSON | CODE
-    JAN'26 … JULY'26 | TOTAL
+    TOTAL MSIL JAN'26 | TOTAL YS JAN'26 | … (interleaved, one pair per month)
+    TOTAL MSIL | TOTAL YS NOS.
     YSC JAN'26 … YSC JULY'26 | YSC TOTAL | YSC AVERAGE | AVG PENE
     AMJ'26 TGT | AMJ'26 ACH | JAS'26 TGT
     AUG'26 (VISIT)
 
+The three series are a funnel, in the team's own words:
+
+    TOTAL <OEM>   every seat cover that dealer sold, ours or anyone's
+    TOTAL YS      of those, the ones on a vehicle we hold a part number for
+                  — "YSASC", YS Available Seat Covers
+    YSC           what we actually sold them — "YS Sale"
+
+so oem_total ⊇ ysasc ⊇ ys_sale. Penetration is now ys_sale ÷ ysasc: measuring
+against oem_total charges a rep for cars we make nothing for.
+
 Design notes:
 
-  • The month columns GROW — a new pair appears every month, and the header is
+  • The month columns GROW — a new set appears every month, and the header is
     the only thing that says which month it is. So columns are discovered by
     matching their headers, never by position, and the parser needs no changes
-    when August's columns land.
+    when August's columns land. The first two series are INTERLEAVED and the
+    third is a separate block; because nothing keys off position, that costs
+    nothing here.
+  • The OEM's own name is in the header ("TOTAL MSIL JAN'26"), so the pattern
+    matches TOTAL <anything except YS> <month> rather than hardcoding MSIL.
+    A TATA tab writing "TOTAL TATA JAN'26" needs no code change.
   • We unpivot to one row per dealer per month. "Quarter vs quarter", "growth
     of this dealer" and an arbitrary date range are then all just row filters
     instead of column arithmetic.
-  • Derived columns are IGNORED, not ingested: TOTAL, YSC TOTAL, YSC AVERAGE
-    and AVG PENE are all recomputable from the monthly rows, and a stored copy
-    can only drift from them. Penetration is YSC TOTAL ÷ TOTAL — a ratio of
-    sums, not the mean of the monthly ratios. Aggregate it the same way or our
-    numbers won't tie back to theirs.
+  • Derived columns are IGNORED, not ingested: TOTAL MSIL, TOTAL YS NOS.,
+    YSC TOTAL, YSC AVERAGE and AVG PENE are all recomputable from the monthly
+    rows, and a stored copy can only drift from them. Note that the totals and
+    the monthly columns share a prefix, so the patterns are anchored — a bare
+    "TOTAL MSIL" must not be read as a month.
 
-    That decision paid for itself immediately: in the file as received, AVG
-    PENE is shifted up by one row from KHIVRAJ MOTORS (sheet row 174) to the
-    end, so 216 of 404 dealers display the NEXT dealer's penetration. TOTAL and
-    YSC TOTAL are both sound — it is only that one derived column. Recomputing
-    means we are unaffected, and it is worth telling the OE team.
+    That decision has now paid for itself twice. In the two-series file, AVG
+    PENE was shifted up a row from sheet row 174, so 216 of 404 dealers showed
+    the NEXT dealer's number. In the three-series file, AVG PENE still divides
+    by TOTAL MSIL rather than the new denominator (182 of 403 rows match the
+    old formula, 13 match the new, the rest match neither). We recompute, so
+    neither has ever reached a screen.
   • `AUG'26 (VISIT)` is ignored too. It is empty in the file: that column is
     what the MIS reports back to them, not something we read.
   • The trailing grand-total rows carry no dealer name, so requiring a name
@@ -41,6 +57,11 @@ Design notes:
     (GHAZIABAD and NOIDA are filed under "DELHI NCR" though they are in Uttar
     Pradesh), and the master's spellings have to match the form's state
     dropdown. It is only used as a last resort for a dealer we have never seen.
+
+The funnel is CHECKED, not assumed: a month where ysasc > oem_total, or
+ys_sale > ysasc, is reported as an error rather than stored quietly. That check
+caught a real one on arrival — "TOTAL MSIL MAR'26" had been filled with
+February's values on 401 of 404 rows.
 """
 from __future__ import annotations
 
@@ -68,9 +89,24 @@ REQUIRED_HEADERS = {"DEALER NAME", "DEALER CITY"}
 # "JAN'26", "JULY'26", "JUNE 26". Anchored, so "AUG'26 (VISIT)" does NOT match —
 # that column is ours to report, not to read.
 _MONTH_RE = re.compile(r"^(?P<mon>[A-Z]+)\s*'?\s*(?P<yy>\d{2}|\d{4})$")
-_YSC_RE = re.compile(r"^YSC\s+(?P<rest>.+)$")
+
+# The three monthly series. Each is anchored and ends in a month, so the derived
+# grand-total columns that share their prefixes — "TOTAL MSIL", "TOTAL YS NOS.",
+# "YSC TOTAL" — cannot match: none of them ends in something _MONTH_RE accepts.
+#
+# _OEM_TOTAL_RE deliberately does not name the OEM. The header carries it
+# ("TOTAL MSIL JAN'26"), and a TATA tab saying "TOTAL TATA JAN'26" must work
+# untouched. YS is excluded by the negative lookahead so the two interleaved
+# series can't be confused for one another.
+_OEM_TOTAL_RE = re.compile(r"^TOTAL\s+(?!YS\b)(?P<oem>.+?)\s+(?P<month>\S.*)$")
+_YSASC_RE = re.compile(r"^TOTAL\s+YS\s+(?P<month>\S.*)$")
+_YS_SALE_RE = re.compile(r"^YSC\s+(?P<month>\S.*)$")
+
 # "AMJ'26 TGT", "JAS'26 ACH"
 _QTR_RE = re.compile(r"^(?P<tag>AMJ|JAS|OND|JFM)\s*'?\s*(?P<yy>\d{2}|\d{4})\s*(?P<kind>TGT|ACH)$")
+
+# What a month's three figures are called, in the order the funnel narrows.
+SERIES = ("oem_total", "ysasc", "ys_sale")
 
 
 def _year(yy: str) -> int:
@@ -119,24 +155,35 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
         h_row, cols = header
         oem = _norm_header(title)
 
-        months = {c: d for h, c in cols.items()
-                  if (d := _month_from_header(h)) is not None}
-        ysc = {}
+        # {series_name: {column_index: month}} — one pass, driven by the header
+        # text alone. _YSASC_RE is tried before _OEM_TOTAL_RE only for clarity;
+        # the negative lookahead already keeps them disjoint.
+        series: dict[str, dict[int, date]] = {s: {} for s in SERIES}
         for h, c in cols.items():
-            m = _YSC_RE.match(h)
-            if m and (d := _month_from_header(m.group("rest").strip())) is not None:
-                ysc[c] = d
+            for name, rx in (("ysasc", _YSASC_RE), ("oem_total", _OEM_TOTAL_RE),
+                             ("ys_sale", _YS_SALE_RE)):
+                m = rx.match(h)
+                if m and (d := _month_from_header(m.group("month").strip())) is not None:
+                    series[name][c] = d
+                    break
+
         quarters = {c: q for h, c in cols.items()
                     if (q := _quarter_from_header(h)) is not None}
 
-        if not months and not ysc:
+        if not any(series.values()):
             errors.append(f"'{title}': no month columns recognised — headers were "
                           f"{sorted(cols)[:12]}")
             skipped.append(title)
             continue
-        if not ysc:
-            errors.append(f"'{title}': found car-sales months but no YSC columns, so "
-                          f"penetration cannot be computed for this OEM")
+        if not series["ys_sale"]:
+            errors.append(f"'{title}': no YSC columns, so nothing of ours is recorded "
+                          f"for this OEM and no penetration can be computed")
+        # A tab still in the two-series format parses fine and simply carries no
+        # addressable figure; say so once rather than let every penetration come
+        # back empty with no explanation.
+        if not series["ysasc"]:
+            errors.append(f"'{title}': no 'TOTAL YS' columns — this tab is still in the "
+                          f"two-series format, so YSASC penetration is unavailable for it")
 
         name_c, city_c = cols["DEALER NAME"], cols["DEALER CITY"]
         state_c = cols.get("STATES", cols.get("STATE"))
@@ -153,10 +200,24 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
             city = _clean(g(city_c)) or ""
 
             monthly = {}
-            for c, d in months.items():
-                monthly.setdefault(d, {})["car_sales"] = _int(g(c))
-            for c, d in ysc.items():
-                monthly.setdefault(d, {})["our_sales"] = _int(g(c))
+            for s in SERIES:
+                for c, d in series[s].items():
+                    monthly.setdefault(d, {})[s] = _int(g(c))
+
+            # The funnel has to narrow. Where it doesn't, the source is wrong,
+            # and saying so beats storing a penetration over 100% and letting
+            # someone find it on a dashboard.
+            for d, v in sorted(monthly.items()):
+                tot, avail, ours = v.get("oem_total"), v.get("ysasc"), v.get("ys_sale")
+                where = f"{name} / {city or '?'} — {d:%b %Y}"
+                if avail is not None and tot is not None and avail > tot:
+                    errors.append(
+                        f"'{title}': {where} has YSASC {avail:,} above TOTAL {tot:,}; "
+                        f"the addressable figure cannot exceed the total")
+                if ours is not None and avail is not None and ours > avail:
+                    errors.append(
+                        f"'{title}': {where} has YS Sale {ours:,} above YSASC {avail:,}; "
+                        f"we cannot have sold more than was addressable")
 
             targets: dict[tuple, dict] = {}
             for c, (q, fy, start, end, kind) in quarters.items():
@@ -199,7 +260,7 @@ def _merge(into: dict, other: dict) -> None:
         if tgt is None:
             into["monthly"].append(m)
             continue
-        for k in ("car_sales", "our_sales"):
+        for k in SERIES:
             if m.get(k) is not None:
                 tgt[k] = (tgt.get(k) or 0) + m[k]
     into["monthly"].sort(key=lambda m: m["month"])

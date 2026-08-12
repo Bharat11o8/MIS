@@ -24,7 +24,61 @@ from sqlalchemy import text
 
 from database import SessionLocal
 from routers.oe_network import sync_dealer_data
-from services.oe_dealer_data_sync import parse_dealer_grids
+from services.oe_dealer_data_sync import parse_dealer_grids, SERIES
+
+
+def _funnel_report(records: list) -> None:
+    """Print the three series per month, so a bad column is visible before it lands.
+
+    The check that matters is that the funnel narrows — every seat cover the
+    dealer sold, then the ones we hold a part number for, then ours.
+
+    The copied-column check is per dealer, not on the totals. When the March
+    file arrived, its TOTAL MSIL column was a copy of February on 401 of 404
+    rows, but the two months' totals still differed by 412 because three rows
+    were genuinely updated — so comparing month totals would have waved it
+    through. Adjacent months normally agree on a handful of rows (1-11 in the
+    file as received); a few hundred means the column was never repointed.
+    """
+    months: dict = {}
+    for rec in records:
+        for m in rec["monthly"]:
+            acc = months.setdefault(m["month"], {s: 0 for s in SERIES})
+            for s in SERIES:
+                acc[s] += m.get(s) or 0
+
+    if not months:
+        return
+
+    # Per dealer per month, so an unchanged column can be counted row by row.
+    by_month: dict = {}
+    for rec in records:
+        for m in rec["monthly"]:
+            if m.get("oem_total") is not None:
+                by_month.setdefault(m["month"], {})[id(rec)] = m["oem_total"]
+
+    print(f"\n{'month':<10}{'total':>12}{'addressable':>14}{'ours':>10}"
+          f"{'addr%':>8}{'pene%':>8}")
+    prev_d = None
+    for d in sorted(months):
+        v = months[d]
+        total, avail, ours = v["oem_total"], v["ysasc"], v["ys_sale"]
+        addr = f"{100*avail/total:.1f}" if total else "-"
+        pene = f"{100*ours/avail:.1f}" if avail else "-"
+
+        flag = ""
+        if prev_d is not None:
+            cur, prv = by_month.get(d, {}), by_month.get(prev_d, {})
+            shared = cur.keys() & prv.keys()
+            same = sum(1 for k in shared if cur[k] == prv[k])
+            if shared and same / len(shared) > 0.5:
+                flag = (f"  <-- {same}/{len(shared)} dealers unchanged from "
+                        f"{prev_d:%b} - copied column?")
+
+        label = f"{d:%b %Y}"
+        print(f"{label:<10}{total:>12,}{avail:>14,}{ours:>10,}"
+              f"{addr:>8}{pene:>8}{flag}")
+        prev_d = d
 
 
 def main() -> None:
@@ -47,6 +101,9 @@ def main() -> None:
     print(f"quarters      : {quarters}")
     print(f"monthly rows  : {sum(len(r['monthly']) for r in records)}")
     print(f"target rows   : {sum(len(r['targets']) for r in records)}")
+    _funnel_report(records)
+    if errors:
+        print()
     for e in errors:
         print(f"  ! {e}")
 
