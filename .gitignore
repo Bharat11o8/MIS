@@ -25,7 +25,7 @@ Local_sheets/
 DEPLOY.md
 DEV_AND_DEPLOY.md
 tunnel-vps-db.ps1
-
+CLAUDE.md
 # ── IDE & tooling ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/
