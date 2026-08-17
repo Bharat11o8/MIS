@@ -1121,9 +1121,18 @@ def available_periods(
     log_months = db.execute(text("""
         SELECT DISTINCT log_year AS year, log_month AS month FROM oe_visit_logs ORDER BY 1, 2
     """)).fetchall()
+    # The months the dealer sales file covers. The Dealers tab needs these
+    # BEFORE its first request: its period picker defaults to a month, and it
+    # cannot pick one out of a response it has not fetched yet.
+    dealer_months = db.execute(text("""
+        SELECT DISTINCT EXTRACT(YEAR FROM month)::int  AS year,
+                        EXTRACT(MONTH FROM month)::int AS month
+        FROM oe_dealer_monthly ORDER BY 1, 2
+    """)).fetchall()
     return {
         "plan_months": [{"year": r.year, "month": r.month} for r in plan_months],
         "log_months": [{"year": r.year, "month": r.month} for r in log_months],
+        "dealer_months": [{"year": r.year, "month": r.month} for r in dealer_months],
     }
 
 
@@ -2007,6 +2016,12 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
 @router.get("/dealer-performance/{dealer_id}")
 def dealer_detail(
     dealer_id: str,
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None),
+    from_ym: Optional[str] = Query(None),
+    to_ym: Optional[str] = Query(None),
+    from_date: Optional[str] = Query(None),
+    to_date: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2014,12 +2029,22 @@ def dealer_detail(
     contacts on the same timeline, their quarter targets, and every contact we
     have logged with the remarks the rep wrote.
 
-    Deliberately NOT period-filtered. This opens from a row in a filtered table,
-    and the question it answers — "what is the story at this dealer" — is the
-    one place where clipping the history to the current filter would hide the
-    context that makes the row make sense.
+    Returns BOTH scopes, because the drawer needs both and conflating them is a
+    trap either way:
+
+      • `totals`   — the same period the tab is filtered to, so the headline
+                     figures reconcile with the table row that was clicked.
+                     Opening a dealer from an August table and reading lifetime
+                     totals made the drawer look like it disagreed with the row.
+      • `lifetime` — every month on record, shown as context underneath.
+
+    `by_month`, `targets` and `history` stay unfiltered on purpose: a trend
+    chart clipped to one month is not a trend, and the contact log is a dated
+    list where the reader can see the dates for themselves.
     """
     _require_access(db, current_user)
+    m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
+                                                from_date, to_date)
     d = db.execute(text("""
         SELECT id, oem, name, city, state, salesperson, dealer_codes, source
         FROM oe_dealerships WHERE id = :id
@@ -2052,13 +2077,18 @@ def dealer_detail(
                                            "visits": 0, "calls": 0, **empty})
         b["visits"], b["calls"] = r["visits"], r["calls"]
 
+    # period_start/period_end travel with each quarter so the drawer can scope
+    # these to the selected period the same way the tab's Quarter panel does —
+    # a quarter counts if it OVERLAPS the period, and is never pro-rated.
     targets = [{
         "quarter": t["quarter"], "fy_year": t["fy_year"],
         "label": f"{ {1: 'AMJ', 2: 'JAS', 3: 'OND', 4: 'JFM'}[int(t['quarter'][1])] } "
                  f"'{str(t['period_start'].year)[2:]}",
+        "period_start": t["period_start"].isoformat(),
+        "period_end": t["period_end"].isoformat(),
         "target": t["target"], "achievement": t["achievement"],
     } for t in db.execute(text("""
-        SELECT quarter, fy_year, period_start, target, achievement
+        SELECT quarter, fy_year, period_start, period_end, target, achievement
         FROM oe_dealer_targets WHERE dealer_id = :id ORDER BY period_start
     """), {"id": dealer_id}).mappings().all()]
 
@@ -2092,13 +2122,28 @@ def dealer_detail(
         })
 
     last_visit = next((h for h in history if h["contact_mode"] == "Visit" and h["notes"]), None)
-    # Summed from the months rather than re-queried, and ysasc stays None unless
-    # at least one month supplied it — so a dealer whose history predates the
-    # three-series file reports no penetration instead of a made-up one.
-    tot_total = sum(m["oem_total"] or 0 for m in months.values())
-    tot_ours = sum(m["ys_sale"] or 0 for m in months.values())
-    avail = [m["ysasc"] for m in months.values() if m["ysasc"] is not None]
-    tot_avail = sum(avail) if avail else None
+
+    def totals_for(keys, contacts) -> dict:
+        """Summed from the months already loaded rather than re-queried, and
+        ysasc stays None unless at least one month in scope supplied it — so a
+        dealer whose history predates the three-series file reports no
+        penetration instead of a made-up one."""
+        rows = [months[k] for k in keys]
+        avail = [m["ysasc"] for m in rows if m["ysasc"] is not None]
+        return {
+            **_funnel(sum(m["oem_total"] or 0 for m in rows),
+                      sum(avail) if avail else None,
+                      sum(m["ys_sale"] or 0 for m in rows)),
+            "visits": sum(h["contact_mode"] == "Visit" for h in contacts),
+            "calls": sum(h["contact_mode"] == "Calling" for h in contacts),
+            "months": len(rows),
+        }
+
+    in_months = [k for k in months
+                 if (m_from is None or k >= m_from) and (m_to is None or k <= m_to)]
+    in_contacts = [h for h in history
+                   if h["visit_date"] and (d_from is None or h["visit_date"] >= d_from.isoformat())
+                   and (d_to is None or h["visit_date"] <= d_to.isoformat())]
 
     return {
         "dealer": {
@@ -2107,10 +2152,18 @@ def dealer_detail(
             "salesperson": d["salesperson"], "codes": d["dealer_codes"],
             "source": d["source"],
         },
-        "totals": {
-            **_funnel(tot_total, tot_avail, tot_ours),
-            "visits": sum(h["contact_mode"] == "Visit" for h in history),
-            "calls": sum(h["contact_mode"] == "Calling" for h in history),
+        # The tab's period — reconciles with the row that was clicked.
+        "totals": totals_for(sorted(in_months), in_contacts),
+        # Every month on record, shown alongside as context.
+        "lifetime": totals_for(sorted(months), history),
+        "period": {
+            "month_from": m_from.isoformat() if m_from else None,
+            "month_to": m_to.isoformat() if m_to else None,
+            "date_from": d_from.isoformat() if d_from else None,
+            "date_to": d_to.isoformat() if d_to else None,
+            # True when the tab is on "all time", in which case the two scopes
+            # are the same figures and the UI shows only one.
+            "all_time": m_from is None and m_to is None,
         },
         "by_month": [months[k] for k in sorted(months)],
         "targets": targets,

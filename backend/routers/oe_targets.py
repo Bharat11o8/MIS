@@ -30,7 +30,7 @@ from models import User
 from routers.auth import get_current_user
 from routers.oe_network import _require_access
 from services.oe_targets_sync import QUARTER_TAGS
-from services.period_filters import date_bounds, month_value
+from services.period_filters import month_bounds
 
 MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -112,7 +112,9 @@ def filter_options(db: Session = Depends(get_db), current_user: User = Depends(g
 def summary(
     fy_year: Optional[int] = Query(None, description="FY start year — 2026 means FY26-27"),
     quarter: Optional[int] = Query(None, ge=1, le=4),
-    from_date: Optional[str] = Query(None, description="YYYY-MM-DD; use instead of fy_year+quarter"),
+    from_ym: Optional[str] = Query(None, description="YYYY-MM; the shared period controls"),
+    to_ym: Optional[str] = Query(None),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD; the custom day range"),
     to_date: Optional[str] = Query(None),
     oem: Optional[str] = None,
     category: Optional[str] = None,
@@ -132,17 +134,17 @@ def summary(
     _require_access(db, current_user)
 
     where, params = _filters(oem, category, salesperson, region)
-    d1, d2 = date_bounds(from_date, to_date)
-    if d1 and d2:
+    # Three ways in, in priority order: an explicit month/day range from the
+    # shared period controls, the FY+quarter the sheets are published as, or
+    # nothing at all — which is the "all time" preset and means every month.
+    pm_from, pm_to = month_bounds(from_ym, to_ym, from_date, to_date)
+    if pm_from and pm_to:
         where.append("(period_year * 100 + period_month) BETWEEN :pm_from AND :pm_to")
-        params |= {"pm_from": month_value(d1), "pm_to": month_value(d2)}
+        params |= {"pm_from": pm_from, "pm_to": pm_to}
     elif fy_year is not None and quarter is not None:
         where += ["fy_year = :fy_year", "quarter = :quarter"]
         params |= {"fy_year": fy_year, "quarter": quarter}
-    else:
-        raise HTTPException(status_code=400,
-                            detail="Provide fy_year+quarter or from_date+to_date")
-    where_sql = " AND ".join(where)
+    where_sql = " AND ".join(where) if where else "TRUE"
 
     if not db.execute(text(f"SELECT 1 FROM oe_targets WHERE {where_sql} LIMIT 1"), params).first():
         raise HTTPException(status_code=404, detail="No target data for this selection")
@@ -198,11 +200,15 @@ def summary(
 
     # A date range can straddle quarters, so the label names the months it
     # actually covers rather than claiming to be one quarter.
-    if d1 and d2:
-        label = (f"{MONTH_SHORT[d1.month - 1]} {d1.year}" if (d1.year, d1.month) == (d2.year, d2.month)
-                 else f"{MONTH_SHORT[d1.month - 1]} {d1.year} – {MONTH_SHORT[d2.month - 1]} {d2.year}")
-    else:
+    if pm_from and pm_to:
+        y1, m1 = divmod(pm_from, 100)
+        y2, m2 = divmod(pm_to, 100)
+        label = (f"{MONTH_SHORT[m1 - 1]} {y1}" if pm_from == pm_to
+                 else f"{MONTH_SHORT[m1 - 1]} {y1} – {MONTH_SHORT[m2 - 1]} {y2}")
+    elif fy_year is not None and quarter is not None:
         label = f"{QUARTER_TAGS[quarter]} {_fy_label(fy_year)}"
+    else:
+        label = "All time"
 
     return {
         "fy_year": fy_year, "quarter": quarter,
