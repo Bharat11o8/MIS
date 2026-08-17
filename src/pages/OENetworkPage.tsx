@@ -11,7 +11,6 @@ import {
 } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import Select from "@/components/ui/Select";
-import DateRangePicker from "@/components/ui/DateRangePicker";
 import { useToast } from "@/components/ui/Toast";
 import { formatCompact, formatCompactNos, formatDate } from "@/lib/format";
 
@@ -19,9 +18,11 @@ import {
   API_URL, MONTH_FULL, MONTH_SHORT,
   VISIT_COLOR, CALL_COLOR, TGT_TRACK, NEUTRAL_BAR, CHART_LABEL, OVER_COLOR,
   UNOWNED_COLOR, ON_TRACK_PCT, QUARTER_MONTHS,
-  buildPeriodOptions, periodParams, PeriodControls, FilterBar,
-  monthToken, tokenLabel, shortDate, firstName, coverageColor, ModeBadge, StatCard,
-  type Period, type PeriodMode, type PeriodChoice, type DateRange,
+  periodParams, periodMonthBounds, monthInBounds, PeriodControls, usePeriod,
+  FilterBar, FilterActions, ClearFilters, FilterSpinner,
+  RefreshButton, PdfButton, SyncButton, FILTER_LABELS, filterOpts,
+  monthToken, tokenLabel, shortDate, firstName, coverageColor, ModeBadge, StatCard, KPI,
+  type Period,
 } from "./oe-network/shared";
 import DealersTab from "./oe-network/dealers";
 
@@ -192,7 +193,7 @@ function Pagination({ page, total, perPage, onPage }: {
   if (pages <= 1) return null;
   return (
     <div className="flex items-center justify-between pt-3">
-      <p className="text-[11px] text-gray-400">
+      <p className="text-[11px] text-gray-500">
         Page {page} of {pages} · {total.toLocaleString("en-IN")} rows
       </p>
       <div className="flex gap-2">
@@ -230,7 +231,7 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
   const w = (n: number) => barWidth(n, max);
 
   if (ranked.length === 0) {
-    return <p className="text-xs text-gray-400 py-6 text-center">No plan or log data for this period</p>;
+    return <p className="text-xs text-gray-500 py-6 text-center">No plan or log data for this period</p>;
   }
 
   return (
@@ -256,11 +257,15 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
               {r.visits > r.planned && r.planned > 0 && (
                 <div className="absolute inset-y-0 w-[2px]" style={{ left: w(r.planned), background: "rgba(255,255,255,0.9)" }} />
               )}
-              {/* Done-out-of-planned reads at the bar tip, where the eye already is. */}
-              <span className="absolute top-1/2 -translate-y-1/2 text-[9px] font-bold leading-none whitespace-nowrap"
+              {/* Done-out-of-planned reads at the bar tip, where the eye already is.
+                  The planned figure is dark, NOT grey: it lands on the pale grey
+                  planned track, so a grey-on-grey number was unreadable — and it
+                  is half the comparison the row exists to make. Dark neutral
+                  rather than blue, which already means "call" on this chart. */}
+              <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-bold leading-none whitespace-nowrap"
                 style={{ left: `calc(${w(r.visits)} + 5px)`, color: VISIT_COLOR }}>
                 {r.visits}
-                {r.planned > 0 && <span className="font-semibold text-gray-400">/{r.planned}</span>}
+                {r.planned > 0 && <span className="text-gray-800">/{r.planned}</span>}
               </span>
             </div>
             {/* Calls — same scale, deliberately outside the coverage measure */}
@@ -277,7 +282,7 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
             <p className={`text-sm font-black leading-none ${coverageColor(r.coverage_pct)}`}>
               {r.coverage_pct != null ? `${r.coverage_pct}%` : "—"}
             </p>
-            <p className="text-[9px] text-gray-400 mt-0.5">{r.dealerships_contacted} dealers</p>
+            <p className="text-[9px] text-gray-500 mt-0.5">{r.dealerships_contacted} dealers</p>
           </div>
         </div>
       ))}
@@ -290,7 +295,10 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
           <span className="w-2.5 h-2.5 rounded-sm" style={{ background: CALL_COLOR }} /> Calls
         </span>
         <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: TGT_TRACK }} /> Planned
+          {/* Outlined: TGT_TRACK is a background track colour, so as a bare
+              swatch on a white card it is all but invisible. */}
+          <span className="w-2.5 h-2.5 rounded-sm"
+            style={{ background: TGT_TRACK, border: "1px solid #b6bcc6" }} /> Planned
         </span>
       </div>
     </div>
@@ -302,10 +310,7 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
 // ══════════════════════════════════════════════════════════════════════════════
 function OverviewTab({ headers }: { headers: Record<string, string> }) {
   const toast = useToast();
-  const [periods, setPeriods] = useState<{ plan_months: Period[]; log_months: Period[] } | null>(null);
-  const [periodMode, setPeriodMode] = useState<PeriodChoice>("monthly");
-  const [range, setRange] = useState<DateRange>({ from: "", to: "" });
-  const [selected, setSelected] = useState<string>("");
+  const period = usePeriod("monthly");
   const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[]; contact_modes: string[] } | null>(null);
   const [salesperson, setSalesperson] = useState("");
   const [oem, setOem] = useState("");
@@ -320,6 +325,9 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  // The trend follows the period like every other panel; the surrounding
+  // history is one click away rather than the default.
+  const [trendScope, setTrendScope] = useState<"period" | "all">("period");
   const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
@@ -340,22 +348,23 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
         const stamps = sources.map((s) => s.last_synced_at).filter(Boolean) as string[];
         setLastSynced(stamps.length ? stamps.sort()[stamps.length - 1] : null);
       }
-      if (!perRes.ok) return;
+      if (!perRes.ok) { setLoading(false); return; }
       const data = await perRes.json();
-      setPeriods(data);
-      const union = [...data.plan_months, ...data.log_months]
-        .map(monthToken)
-        .sort((a, b) => {
-          const [ya, ma] = a.split("-").map(Number);
-          const [yb, mb] = b.split("-").map(Number);
-          return ya - yb || ma - mb;
-        });
-      // Keep the user's chosen period across sync refreshes.
-      if (union.length) setSelected((prev) => prev || union[union.length - 1]);
-      else setLoading(false);
+      // Either sheet can carry a month the other doesn't, so the union is what
+      // the picker should offer. buildPeriodOptions dedupes the overlap.
+      const union: Period[] = [...data.plan_months, ...data.log_months];
+      period.setMonths(union);
+      if (!union.length) setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
+
+  // Land on the newest month that has data, and keep the user's chosen period
+  // across sync refreshes — this only fires while nothing is selected.
+  useEffect(() => {
+    if (!period.token && period.options.length) period.setToken(period.options[0].value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period.options]);
 
   const handleSyncAll = async () => {
     setSyncing(true);
@@ -380,7 +389,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
   };
 
   useEffect(() => {
-    const pp = periodParams(periodMode, selected, range);
+    const pp = periodParams(period.mode, period.token, period.range);
     if (!pp) return;
     // Same entity filters everywhere; mode applies only to the log analytics
     // (coverage is by definition visits-vs-plan), period scoping only to the
@@ -400,52 +409,38 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
       pvaParams.set(k, v);
     }
 
+    // Abort on supersede: three requests go out per filter change, and without
+    // this a slow earlier set can resolve after a newer one and leave the page
+    // showing a filter the user has already moved off.
+    const ctrl = new AbortController();
+    const opts = { headers, signal: ctrl.signal };
     setLoading(true);
     (async () => {
-      const [pvaRes, anaRes, allRes] = await Promise.all([
-        fetch(`${API_URL}/oe-network/plan-vs-actual?${pvaParams}`, { headers }),
-        fetch(`${API_URL}/oe-network/log-analytics?${periodScoped}`, { headers }),
-        fetch(`${API_URL}/oe-network/log-analytics?${logParams}`, { headers }),
-      ]);
-      if (pvaRes.ok) setPva(await pvaRes.json());
-      if (anaRes.ok) setAnalytics(await anaRes.json());
-      if (allRes.ok) setTrend((await allRes.json()).monthly_trend);
-      setLoading(false);
+      try {
+        const [pvaRes, anaRes, allRes] = await Promise.all([
+          fetch(`${API_URL}/oe-network/plan-vs-actual?${pvaParams}`, opts),
+          fetch(`${API_URL}/oe-network/log-analytics?${periodScoped}`, opts),
+          fetch(`${API_URL}/oe-network/log-analytics?${logParams}`, opts),
+        ]);
+        if (pvaRes.ok) setPva(await pvaRes.json());
+        if (anaRes.ok) setAnalytics(await anaRes.json());
+        if (allRes.ok) setTrend((await allRes.json()).monthly_trend);
+        setLoading(false);
+      } catch { /* aborted — the newer request owns the loading flag now */ }
     })();
+    return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, periodMode, range, salesperson, oem, state, city, mode, qDebounced, refresh]);
+  }, [period.token, period.mode, period.range, salesperson, oem, state, city, mode, qDebounced, refresh]);
 
   const hasFilters = Boolean(salesperson || oem || state || city || mode || q);
   const clearFilters = () => {
     setSalesperson(""); setOem(""); setState(""); setCity(""); setMode(""); setQ("");
   };
 
-  // Union of months that exist in either sheet, then the quarter/FY option
-  // lists derived from them — so future data makes new options appear on its own.
-  const optionsByMode = useMemo<Record<PeriodMode, { value: string; label: string }[]>>(() => {
-    if (!periods) return { monthly: [], quarterly: [], yearly: [] };
-    // Either sheet can carry a month the other doesn't, so the union is what
-    // the picker should offer.
-    const months = new Map<string, Period>();
-    [...periods.plan_months, ...periods.log_months].forEach((p) => months.set(monthToken(p), p));
-    return buildPeriodOptions([...months.values()]);
-  }, [periods]);
-
-  const periodOptions =
-    periodMode === "custom" || periodMode === "all" ? [] : optionsByMode[periodMode];
-
-  // Switching views lands on the latest period of that view, never an empty selection.
-  const switchMode = (m: PeriodChoice) => {
-    setPeriodMode(m);
-    if (m === "custom" || m === "all") return;   // neither needs a token
-    const first = optionsByMode[m][0];
-    if (first) setSelected(first.value);
-  };
-
-  if (!loading && optionsByMode.monthly.length === 0) {
+  if (!loading && period.months.length === 0) {
     return (
-      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
-        No data yet — register and sync the visit plan and log book sheets from the <b>Sheets</b> tab.
+      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
+        No data yet — register and sync the visit plan and log book sheets from the <b>Data Source Sheets</b> tab.
       </div>
     );
   }
@@ -454,72 +449,65 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
     name: r.key, Visits: r.visits, Calls: r.calls, Total: r.total,
   }));
   const stateChart = (analytics?.by_state ?? []).slice(0, 10).map((r) => ({ name: r.key, Contacts: r.total }));
-  const trendChart = trend.map((t) => ({
-    name: `${MONTH_SHORT[t.month - 1]} ${String(t.year).slice(2)}`, Visits: t.visits, Calls: t.calls,
-  }));
+  // The trend arrives whole (it is the one call that is not period-scoped
+  // server-side) and is cut here, so switching scope costs no request.
+  const trendBounds = periodMonthBounds(period.mode, period.token, period.range);
+  const trendChart = trend
+    .filter((t) => trendScope === "all" || monthInBounds(t.year, t.month, trendBounds))
+    .map((t) => ({
+      name: `${MONTH_SHORT[t.month - 1]} ${String(t.year).slice(2)}`, Visits: t.visits, Calls: t.calls,
+    }));
+  // "All time" is only a distinct choice when a period is actually narrowing it.
+  const trendScopeable = trendBounds !== null;
 
-  const toOpts = (arr: string[] | undefined, all: string) =>
-    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
 
   return (
     <div className="flex flex-col gap-5">
       <FilterBar>
         <PeriodControls
-          mode={periodMode} onMode={switchMode}
-          token={selected} onToken={setSelected} options={periodOptions}
-          range={range} onRange={setRange}
+          mode={period.mode} onMode={period.switchMode}
+          token={period.token} onToken={period.setToken} options={period.options}
+          range={period.range} onRange={period.setRange}
         />
-        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
-        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
-        <Select value={city} onChange={setCity} options={toOpts(options?.cities, "All cities")} placeholder="City" />
-        <Select value={mode} onChange={setMode} options={toOpts(options?.contact_modes, "Visits + Calls")} placeholder="Mode" />
+        <Select value={salesperson} onChange={setSalesperson}
+          options={filterOpts(options?.salespersons, "salesperson")}
+          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
+          placeholder={FILTER_LABELS.oem.placeholder} />
+        <Select value={state} onChange={setState} options={filterOpts(options?.states, "state")}
+          placeholder={FILTER_LABELS.state.placeholder} />
+        <Select value={city} onChange={setCity} options={filterOpts(options?.cities, "city")}
+          placeholder={FILTER_LABELS.city.placeholder} />
+        <Select value={mode} onChange={setMode} options={filterOpts(options?.contact_modes, "mode")}
+          placeholder={FILTER_LABELS.mode.placeholder} />
         <div className="relative">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search dealership…"
             className={`${inputClass} pl-8 w-40`} />
         </div>
-        {hasFilters && (
-          <button onClick={clearFilters}
-            className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
-            <X size={12} /> Clear
-          </button>
-        )}
-        {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
-        <div className="flex items-center gap-2 ml-auto">
+        <ClearFilters show={hasFilters} onClear={clearFilters} />
+        <FilterSpinner show={loading} />
+        <FilterActions>
           {lastSynced && (
-            <span className="text-[10px] text-gray-400 hidden xl:block" title="Most recent sheet sync">
+            <span className="text-[10px] text-gray-500 hidden xl:block" title="Most recent sheet sync">
               Data as of {formatDate(lastSynced)}
             </span>
           )}
-          <button onClick={() => setRefresh((x) => x + 1)} disabled={loading}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 transition-all"
-            title="Re-fetch this view (and its filters) from the server — no Google Sheets pull">
-            <RefreshCw size={11} /> Refresh
-          </button>
-          <button onClick={handleSyncAll} disabled={syncing}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-white px-3 py-1.5 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-50 transition-all"
-            title="Re-pull the log book and the latest visit plan from Google Sheets">
-            {syncing
-              ? <><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Syncing…</>
-              : <><RefreshCw size={11} /> Sync</>}
-          </button>
-          <button onClick={() => window.print()}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all"
-            title="Print this view or save it as a PDF">
-            <Printer size={12} /> PDF
-          </button>
-        </div>
+          <RefreshButton onClick={() => setRefresh((x) => x + 1)} disabled={loading} />
+          <SyncButton onClick={handleSyncAll} syncing={syncing}
+            title="Re-pull the log book and the latest visit plan from Google Sheets" />
+          <PdfButton />
+        </FilterActions>
       </FilterBar>
 
       {/* Visit plans are written per month with no day on them, so coverage can
           only be measured month-for-month. Saying so beats showing a percentage
           that looks like it honours the dates and doesn't. */}
-      {periodMode === "custom" && range.from && range.to && (
-        <p className="no-print text-[11px] text-gray-400 -mt-2">
+      {period.mode === "custom" && period.range.from && period.range.to && (
+        <p className="no-print text-[11px] text-gray-500 -mt-2">
           Plans are set monthly, so this compares whole months
-          ({shortDate(range.from)} → {shortDate(range.to)} covers{" "}
-          {MONTH_SHORT[Number(range.from.slice(5, 7)) - 1]}–{MONTH_SHORT[Number(range.to.slice(5, 7)) - 1]}).
+          ({shortDate(period.range.from)} → {shortDate(period.range.to)} covers{" "}
+          {MONTH_SHORT[Number(period.range.from.slice(5, 7)) - 1]}–{MONTH_SHORT[Number(period.range.to.slice(5, 7)) - 1]}).
           Field activity below is counted to the exact day.
         </p>
       )}
@@ -527,11 +515,11 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
       {/* Print-only context line — the filter bar is hidden on paper */}
       <div className="print-only">
         <p className="text-sm font-bold text-gray-900">
-          {periodOptions.find((o) => o.value === selected)?.label ?? ""}
+          {period.options.find((o) => o.value === period.token)?.label ?? ""}
           {salesperson && ` · ${salesperson}`}{oem && ` · ${oem}`}{state && ` · ${state}`}
           {city && ` · ${city}`}{mode && ` · ${mode}`}{qDebounced && ` · “${qDebounced}”`}
         </p>
-        <p className="text-[10px] text-gray-400">
+        <p className="text-[10px] text-gray-500">
           {lastSynced ? `Data as of ${formatDate(lastSynced)} · ` : ""}
           Printed {new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
         </p>
@@ -540,25 +528,32 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <StatCard label="Planned Visits" value={pva?.totals.planned ?? 0}
-          icon={<Target size={18} />} color="#a855f7" bg="#f5f3ff" />
+          icon={<Target size={18} />} {...KPI.target} />
         <StatCard label="Visits Done" value={pva?.totals.visits ?? 0}
-          icon={<Footprints size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
+          icon={<Footprints size={18} />} {...KPI.visits} />
         <StatCard label="Calls Made" value={pva?.totals.calls ?? 0}
-          icon={<Phone size={18} />} color={CALL_COLOR} bg="#eff6ff" />
+          icon={<Phone size={18} />} {...KPI.calls} />
         <StatCard label="Coverage" value={pva?.totals.coverage_pct != null ? `${pva.totals.coverage_pct}%` : "—"}
-          sub="visits done vs planned" icon={<CheckCircle2 size={18} />} color="#22c55e" bg="#f0fdf4" />
+          sub="visits done vs planned" icon={<CheckCircle2 size={18} />} {...KPI.conversion} />
         <StatCard label="Dealerships" value={analytics?.kpis.dealerships ?? 0}
-          sub="contacted this period" icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
+          sub="contacted this period" icon={<Building2 size={18} />} {...KPI.reach} />
       </div>
 
       {/* Plan vs actual */}
       <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
         <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Plan vs Actual — by Salesperson</h3>
-        <p className="text-[10px] text-gray-400 mb-1">Ranked by coverage — field visits against the advance plan</p>
+        <p className="text-[10px] text-gray-500 mb-1">Ranked by coverage — field visits against the advance plan</p>
         <PlanVsActualChart rows={pva?.rows ?? []} />
-        <p className="text-[10px] text-gray-400 mt-3">
+        <p className="text-[10px] text-gray-500 mt-3">
           Coverage compares field visits (not calls) against the advance plan. Names are matched across the two
           sheets automatically.
+          {/* This panel is the one thing on the tab the Mode filter does NOT
+              reach — coverage is visits-vs-plan by definition. Silently not
+              responding reads as a bug, so say it, but only when it applies. */}
+          {mode && (
+            <> The <b className="text-gray-500">{mode}</b> filter does not apply here:
+              a plan is a plan of visits, so this panel always measures visits.</>
+          )}
         </p>
       </div>
 
@@ -588,18 +583,58 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
         </div>
 
         <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Monthly Trend — All Time</h3>
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={trendChart} margin={{ top: 16, right: 16, left: -18, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
-              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Line type="monotone" dataKey="Visits" stroke={VISIT_COLOR} strokeWidth={2} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="Calls" stroke={CALL_COLOR} strokeWidth={2} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
+          <div className="flex items-start justify-between flex-wrap gap-2">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                Monthly Trend{trendScope === "all" || !trendScopeable ? " — All Time" : ""}
+              </h3>
+              <p className="text-[10px] text-gray-500 mb-3">
+                {trendScope === "all" || !trendScopeable
+                  ? "Every month on record"
+                  : "The months in the selected period"}
+                {hasFilters ? " · follows the other filters too" : ""}.
+              </p>
+            </div>
+            {/* Only offered when a period is actually narrowing the data —
+                on "all time" the two choices would show the same chart. */}
+            {trendScopeable && (
+              <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5 shrink-0 no-print">
+                {([["period", "Period"], ["all", "All time"]] as const).map(([k, label]) => (
+                  <button key={k} onClick={() => setTrendScope(k)}
+                    className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all ${
+                      trendScope === k ? "bg-white text-brand-orange shadow-sm" : "text-gray-500 hover:text-gray-700"
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {trendChart.length === 0 ? (
+            <div className="h-[260px] flex flex-col items-center justify-center gap-2">
+              <p className="text-sm text-gray-500">No activity in the selected period.</p>
+              <button onClick={() => setTrendScope("all")}
+                className="text-xs font-semibold text-brand-orange hover:text-orange-600 underline underline-offset-2">
+                Show all time instead
+              </button>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart data={trendChart} margin={{ top: 16, right: 16, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {/* A one-month period is a single point: without a visible dot a
+                    line chart of one value draws nothing at all. */}
+                <Line type="monotone" dataKey="Visits" stroke={VISIT_COLOR} strokeWidth={2}
+                  dot={{ r: trendChart.length === 1 ? 5 : 3 }} />
+                <Line type="monotone" dataKey="Calls" stroke={CALL_COLOR} strokeWidth={2}
+                  dot={{ r: trendChart.length === 1 ? 5 : 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
 
@@ -627,7 +662,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
                 </div>
               );
             })}
-            {(analytics?.by_oem ?? []).length === 0 && <p className="text-xs text-gray-400">No data</p>}
+            {(analytics?.by_oem ?? []).length === 0 && <p className="text-xs text-gray-500">No data</p>}
           </div>
           <div className="flex items-center gap-4 mt-3">
             <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
@@ -659,13 +694,13 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
       {analytics?.kpis.avg_car_sales != null && (
         <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
           <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-1">Dealer-Reported Monthly Figures (averages)</h3>
-          <p className="text-[10px] text-gray-400 mb-3">
+          <p className="text-[10px] text-gray-500 mb-3">
             Average of what dealerships reported during contacts — these are the dealers' own monthly numbers, not Amato sales.
           </p>
           <div className="grid grid-cols-3 gap-3">
-            <StatCard label="Avg Car Sales" value={analytics.kpis.avg_car_sales ?? "—"} icon={<CarFront size={18} />} color="#6b7280" bg="#f9fafb" />
-            <StatCard label="Avg Seat Cover Sales" value={analytics.kpis.avg_seat_cover_sales ?? "—"} icon={<Users size={18} />} color="#6b7280" bg="#f9fafb" />
-            <StatCard label="Avg Mats Sales" value={analytics.kpis.avg_mats_sales ?? "—"} icon={<Users size={18} />} color="#6b7280" bg="#f9fafb" />
+            <StatCard label="Avg Car Sales" value={analytics.kpis.avg_car_sales ?? "—"} icon={<CarFront size={18} />} {...KPI.neutral} />
+            <StatCard label="Avg Seat Cover Sales" value={analytics.kpis.avg_seat_cover_sales ?? "—"} icon={<Users size={18} />} {...KPI.neutral} />
+            <StatCard label="Avg Mats Sales" value={analytics.kpis.avg_mats_sales ?? "—"} icon={<Users size={18} />} {...KPI.neutral} />
           </div>
         </div>
       )}
@@ -679,7 +714,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
 
 /** "How long since we touched this dealer" — green ≤15d, amber ≤45d, red beyond. */
 function RecencyBadge({ days }: { days: number | null }) {
-  if (days == null) return <span className="text-gray-300">—</span>;
+  if (days == null) return <span className="text-gray-400">—</span>;
   const label = days === 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`;
   const [color, bg] =
     days <= 15 ? ["#16a34a", "#f0fdf4"] : days <= 45 ? ["#d97706", "#fffbeb"] : ["#ef4444", "#fef2f2"];
@@ -809,8 +844,6 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
     }
   };
 
-  const toOpts = (arr: string[] | undefined, all: string) =>
-    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
   const adhMonthOptions = planMonths
     .map((p) => ({ value: monthToken(p), label: tokenLabel(monthToken(p)) }))
     .reverse();
@@ -827,13 +860,13 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
       {/* Network health KPIs — follow the directory filters below */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="Network Dealers" value={dirSummary?.dealers ?? 0}
-          sub="unique dealerships contacted" icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
+          sub="unique dealerships contacted" icon={<Building2 size={18} />} {...KPI.reach} />
         <StatCard label="Active" value={dirSummary?.active_30 ?? 0}
-          sub="contacted in the last 30 days" icon={<CheckCircle2 size={18} />} color="#22c55e" bg="#f0fdf4" />
+          sub="contacted in the last 30 days" icon={<CheckCircle2 size={18} />} {...KPI.conversion} />
         <StatCard label="Going Cold" value={dirSummary?.stale_45 ?? 0}
-          sub="no contact for 45+ days" icon={<Clock size={18} />} color="#ef4444" bg="#fef2f2" />
+          sub="no contact for 45+ days" icon={<Clock size={18} />} {...KPI.danger} />
         <StatCard label="Avg Attach Rate" value={attach?.overall.attach_pct != null ? `${attach.overall.attach_pct}%` : "—"}
-          sub="seat covers vs dealer car sales" icon={<Percent size={18} />} color="#a855f7" bg="#f5f3ff" />
+          sub="seat covers vs dealer car sales" icon={<Percent size={18} />} {...KPI.neutral} />
       </div>
 
       {/* Plan adherence — dealer level */}
@@ -841,12 +874,14 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
         <div className="flex items-start justify-between flex-wrap gap-2 mb-1">
           <div className="min-w-0 flex-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Plan Adherence — Dealer Level</h3>
-            <p className="text-[10px] text-gray-400">
+            <p className="text-[10px] text-gray-500">
               Was each planned dealership actually contacted? Names are matched approximately across the two sheets.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0 ml-auto">
-            <Select value={adhSp} onChange={setAdhSp} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
+            <Select value={adhSp} onChange={setAdhSp}
+              options={filterOpts(options?.salespersons, "salesperson")}
+              placeholder={FILTER_LABELS.salesperson.placeholder} />
             <Select value={adhMonth} onChange={setAdhMonth} options={adhMonthOptions} placeholder="Month…" />
             {adhLoading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
           </div>
@@ -870,7 +905,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
             <div key={r.salesperson} className="border border-gray-100 rounded-xl overflow-hidden">
               <button onClick={() => setExpandedSp(expandedSp === r.salesperson ? null : r.salesperson)}
                 className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-orange-50/40 text-left transition-colors">
-                <ChevronRight size={14} className={`text-gray-300 shrink-0 transition-transform ${expandedSp === r.salesperson ? "rotate-90" : ""}`} />
+                <ChevronRight size={14} className={`text-gray-400 shrink-0 transition-transform ${expandedSp === r.salesperson ? "rotate-90" : ""}`} />
                 <span className="text-xs font-semibold text-gray-700 flex-1 min-w-0 truncate">
                   {r.salesperson}
                   {r.planned === 0 && (
@@ -878,7 +913,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                   )}
                 </span>
                 <span className="hidden md:flex items-center gap-3 text-[11px] shrink-0">
-                  <span className="text-gray-400">{r.planned} planned</span>
+                  <span className="text-gray-500">{r.planned} planned</span>
                   <span className="text-green-600 font-semibold">{r.visited} visited</span>
                   <span className="font-semibold" style={{ color: CALL_COLOR }}>{r.called_only} called</span>
                   <span className="text-red-500 font-semibold">{r.missed} missed</span>
@@ -897,7 +932,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                         <div className="overflow-x-auto">
                           <table className="w-full text-xs">
                             <thead>
-                              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-gray-100">
                                 <th className="py-1.5 pr-3">Planned Dealer</th>
                                 <th className="py-1.5 pr-3">OEM</th>
                                 <th className="py-1.5 pr-3">City</th>
@@ -914,7 +949,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                                   <td className="py-1.5 pr-3 text-gray-500">{d.oem ?? "—"}</td>
                                   <td className="py-1.5 pr-3 text-gray-500">{d.city ?? "—"}</td>
                                   <td className="py-1.5 pr-3"><StatusPill status={d.status} /></td>
-                                  <td className="py-1.5 pr-3 text-gray-400">
+                                  <td className="py-1.5 pr-3 text-gray-500">
                                     {d.log_dealership && d.log_dealership.toLowerCase() !== d.dealer_name.toLowerCase()
                                       ? d.log_dealership : d.log_dealership ? "✓" : "—"}
                                   </td>
@@ -949,7 +984,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
             </div>
           ))}
           {!adhLoading && (adh?.rows ?? []).length === 0 && (
-            <p className="text-xs text-gray-400 py-4 text-center">No plan or log data for this month</p>
+            <p className="text-xs text-gray-500 py-4 text-center">No plan or log data for this month</p>
           )}
         </div>
       </div>
@@ -959,17 +994,21 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
         <div className="flex items-start justify-between flex-wrap gap-2 mb-3">
           <div className="min-w-0 flex-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Dealer Directory</h3>
-            <p className="text-[10px] text-gray-400">Every dealership ever contacted — click a row for its full history</p>
+            <p className="text-[10px] text-gray-500">Every dealership ever contacted — click a row for its full history</p>
           </div>
           <div className="flex items-center gap-2 flex-wrap shrink-0 ml-auto">
             <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search dealer…"
                 className={`${inputClass} pl-8 w-40`} />
             </div>
-            <Select value={dirSp} onChange={setDirSp} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
-            <Select value={dirOem} onChange={setDirOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
-            <Select value={dirState} onChange={setDirState} options={toOpts(options?.states, "All states")} placeholder="State" />
+            <Select value={dirSp} onChange={setDirSp}
+              options={filterOpts(options?.salespersons, "salesperson")}
+              placeholder={FILTER_LABELS.salesperson.placeholder} />
+            <Select value={dirOem} onChange={setDirOem} options={filterOpts(options?.oems, "oem")}
+              placeholder={FILTER_LABELS.oem.placeholder} />
+            <Select value={dirState} onChange={setDirState} options={filterOpts(options?.states, "state")}
+              placeholder={FILTER_LABELS.state.placeholder} />
             <Select value={sort} onChange={setSort} options={sortOptions} placeholder="Sort" />
           </div>
         </div>
@@ -981,7 +1020,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                  <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-gray-100">
                     <th className="py-2 pr-3">Dealership</th>
                     <th className="py-2 pr-3">OEM</th>
                     <th className="py-2 pr-3">Last Contact</th>
@@ -1000,10 +1039,10 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                         className="border-b border-gray-50 hover:bg-orange-50/40 cursor-pointer align-top">
                         <td className="py-2 pr-3 min-w-[160px]">
                           <span className="flex items-start gap-1">
-                            <ChevronRight size={12} className={`text-gray-300 mt-0.5 shrink-0 transition-transform ${expandedDealer === r.dealer_name ? "rotate-90" : ""}`} />
+                            <ChevronRight size={12} className={`text-gray-400 mt-0.5 shrink-0 transition-transform ${expandedDealer === r.dealer_name ? "rotate-90" : ""}`} />
                             <span>
                               <span className="font-semibold text-gray-700">{r.dealer_name}</span>
-                              <span className="block text-[10px] text-gray-400">
+                              <span className="block text-[10px] text-gray-500">
                                 {[r.city, r.state].filter(Boolean).join(", ") || "—"}
                               </span>
                             </span>
@@ -1030,17 +1069,17 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                               <div className="py-3 flex justify-center"><div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" /></div>
                             ) : (
                               <div className="flex flex-col">
-                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">
                                   Contact history ({histories[r.dealer_name].length})
                                 </p>
                                 {histories[r.dealer_name].map((c, i) => (
                                   <div key={i} className="flex items-start gap-3 py-1.5 border-b border-orange-100/50 last:border-0">
-                                    <span className="text-[10px] text-gray-400 w-14 shrink-0 pt-0.5">{shortDate(c.visit_date)}</span>
+                                    <span className="text-[10px] text-gray-500 w-14 shrink-0 pt-0.5">{shortDate(c.visit_date)}</span>
                                     <ModeBadge mode={c.contact_mode} />
                                     <span className="text-[11px] font-semibold text-gray-600 w-24 shrink-0 truncate" title={c.salesperson ?? undefined}>
                                       {c.salesperson ? firstName(c.salesperson) : "—"}
                                     </span>
-                                    <span className="text-[11px] text-gray-400 shrink-0 whitespace-nowrap">
+                                    <span className="text-[11px] text-gray-500 shrink-0 whitespace-nowrap">
                                       {[
                                         c.car_sales != null ? `${c.car_sales} cars` : null,
                                         c.seat_cover_sales != null ? `${c.seat_cover_sales} SC` : null,
@@ -1058,7 +1097,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                     </Fragment>
                   ))}
                   {dealers.length === 0 && (
-                    <tr><td colSpan={9} className="py-6 text-center text-gray-400">No dealerships match these filters</td></tr>
+                    <tr><td colSpan={9} className="py-6 text-center text-gray-500">No dealerships match these filters</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1071,7 +1110,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
       {/* Attach rate by OEM */}
       <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
         <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-1">Seat-Cover Attach Rate by OEM</h3>
-        <p className="text-[10px] text-gray-400 mb-3">
+        <p className="text-[10px] text-gray-500 mb-3">
           Seat-cover sales as a share of each dealer's own car sales, averaged per dealer first — how deep we are in
           each OEM's network, all time.
         </p>
@@ -1084,10 +1123,10 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
                   style={{ width: `${Math.min(((r.attach_pct ?? 0) / attachMax) * 100, 100)}%`, background: "#a855f7" }} />
               </div>
               <span className="text-xs font-bold text-purple-600 w-14 text-right">{r.attach_pct != null ? `${r.attach_pct}%` : "—"}</span>
-              <span className="text-[10px] text-gray-400 w-20 text-right shrink-0">{r.dealers} dealer{r.dealers === 1 ? "" : "s"}</span>
+              <span className="text-[10px] text-gray-500 w-20 text-right shrink-0">{r.dealers} dealer{r.dealers === 1 ? "" : "s"}</span>
             </div>
           ))}
-          {(attach?.by_oem ?? []).length === 0 && <p className="text-xs text-gray-400">No dealer-reported figures yet</p>}
+          {(attach?.by_oem ?? []).length === 0 && <p className="text-xs text-gray-500">No dealer-reported figures yet</p>}
         </div>
       </div>
     </div>
@@ -1131,7 +1170,7 @@ function CategoryPanel({ categories, activeCategory, activeTheme, onPick }: {
   activeCategory: string; activeTheme: string;
   onPick: (category: string, theme: string) => void;
 }) {
-  if (!categories.length) return <p className="text-xs text-gray-400 py-2">No remarks in this slice.</p>;
+  if (!categories.length) return <p className="text-xs text-gray-500 py-2">No remarks in this slice.</p>;
   const total = categories.reduce((s, c) => s + c.count, 0);
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
@@ -1147,7 +1186,7 @@ function CategoryPanel({ categories, activeCategory, activeTheme, onPick }: {
               title={`${c.count} note${c.count === 1 ? "" : "s"} — click to ${on && !activeTheme ? "clear" : "filter"}`}>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[11px] font-bold" style={{ color: m.color }}>{c.label}</span>
-                <span className="text-[10px] text-gray-400">{share}%</span>
+                <span className="text-[10px] text-gray-500">{share}%</span>
               </div>
               <p className="text-xl font-black leading-tight" style={{ color: m.color }}>{c.count}</p>
               <div className="h-1 rounded-full mt-1.5 overflow-hidden" style={{ background: "#f1f0ee" }}>
@@ -1192,18 +1231,18 @@ function PersonCard({ p, active, onPick }: {
         active ? "border-orange-300 ring-2 ring-orange-100" : "border-orange-100"
       }`}>
       <div className="flex items-center gap-2.5">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-100 to-orange-50 text-orange-500 flex items-center justify-center font-black text-sm shrink-0">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-100 to-orange-50 text-brand-orange flex items-center justify-center font-black text-sm shrink-0">
           {(p.salesperson[0] || "?").toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-bold text-gray-800 truncate" title={p.salesperson}>{p.salesperson}</p>
-          <p className="text-[10px] text-gray-400">
+          <p className="text-[10px] text-gray-500">
             <b className="text-gray-600">{p.remarks}</b> notes · {p.dealers} dealer{p.dealers === 1 ? "" : "s"}
           </p>
         </div>
         <div className="text-right shrink-0">
           <span className="text-[10px] font-bold" style={{ color: VISIT_COLOR }}>{p.visits}V</span>
-          <span className="text-[10px] font-bold text-gray-300"> · </span>
+          <span className="text-[10px] font-bold text-gray-500"> · </span>
           <span className="text-[10px] font-bold" style={{ color: CALL_COLOR }}>{p.calls}C</span>
         </div>
       </div>
@@ -1240,10 +1279,7 @@ function PersonCard({ p, active, onPick }: {
 }
 
 function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
-  const [logMonths, setLogMonths] = useState<Period[]>([]);
-  const [periodMode, setPeriodMode] = useState<PeriodChoice>("monthly");
-  const [range, setRange] = useState<DateRange>({ from: "", to: "" });
-  const [selected, setSelected] = useState("");
+  const period = usePeriod("monthly");
   const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[]; contact_modes: string[] } | null>(null);
 
   const [salesperson, setSalesperson] = useState("");
@@ -1274,37 +1310,26 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
       ]);
       if (optRes.ok) setOptions(await optRes.json());
       if (perRes.ok) {
+        // Only the months that actually have logs — this tab reads the log book.
         const p = await perRes.json();
-        setLogMonths(p.log_months);
+        period.setMonths(p.log_months);
         if (!p.log_months.length) setLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
-  // Period option lists derived from the months that actually have logs.
-  const optionsByMode = useMemo(() => buildPeriodOptions(logMonths), [logMonths]);
-
-  const periodOptions =
-    periodMode === "custom" || periodMode === "all" ? [] : optionsByMode[periodMode];
+  // Land on the newest month that has logs, once the lists are built.
   useEffect(() => {
-    // Land on the latest available period once the lists are built.
-    if (!selected && optionsByMode.monthly.length) setSelected(optionsByMode.monthly[0].value);
+    if (!period.token && period.options.length) period.setToken(period.options[0].value);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [optionsByMode]);
-
-  const switchMode = (m: PeriodChoice) => {
-    setPeriodMode(m);
-    if (m === "custom" || m === "all") return;   // neither needs a token
-    const first = optionsByMode[m][0];
-    if (first) setSelected(first.value);
-  };
+  }, [period.options]);
 
   // Any change to the slice resets to the first page of the feed.
-  useEffect(() => { setPage(1); }, [selected, periodMode, range, salesperson, oem, state, city, mode, category, theme, qDeb]);
+  useEffect(() => { setPage(1); }, [period.token, period.mode, period.range, salesperson, oem, state, city, mode, category, theme, qDeb]);
 
   useEffect(() => {
-    const pp = periodParams(periodMode, selected, range);
+    const pp = periodParams(period.mode, period.token, period.range);
     if (!pp) return;
     const params = new URLSearchParams({ ...pp, page: String(page), per_page: "30" });
     if (salesperson) params.set("salesperson", salesperson);
@@ -1315,17 +1340,22 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
     if (category) params.set("category", category);
     if (theme) params.set("theme", theme);
     if (qDeb) params.set("q", qDeb);
+    // Abort on supersede — this tab filters on eight things plus a debounced
+    // search, so out-of-order responses are easy to provoke.
+    const ctrl = new AbortController();
     setLoading(true);
     (async () => {
-      const res = await fetch(`${API_URL}/oe-network/remarks?${params}`, { headers });
-      if (res.ok) setData(await res.json());
-      setLoading(false);
+      try {
+        const res = await fetch(`${API_URL}/oe-network/remarks?${params}`,
+          { headers, signal: ctrl.signal });
+        if (res.ok) setData(await res.json());
+        setLoading(false);
+      } catch { /* aborted — the newer request owns the loading flag now */ }
     })();
+    return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, periodMode, range, salesperson, oem, state, city, mode, category, theme, qDeb, page, refreshKey]);
+  }, [period.token, period.mode, period.range, salesperson, oem, state, city, mode, category, theme, qDeb, page, refreshKey]);
 
-  const toOpts = (arr: string[] | undefined, all: string) =>
-    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
   const hasFilters = Boolean(salesperson || oem || state || city || mode || category || theme || q);
   const clearFilters = () => {
     setSalesperson(""); setOem(""); setState(""); setCity(""); setMode("");
@@ -1334,10 +1364,10 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
   const categoryLabel = (key: string) =>
     data?.categories.find((c) => c.key === key)?.label ?? key;
 
-  if (!loading && optionsByMode.monthly.length === 0) {
+  if (!loading && period.months.length === 0) {
     return (
-      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
-        No log book data yet — register and sync the log book from the <b>Sheets</b> tab.
+      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
+        No log book data yet — register and sync the log book from the <b>Data Source Sheets</b> tab.
       </div>
     );
   }
@@ -1348,41 +1378,37 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
     <div className="flex flex-col gap-5">
       <FilterBar>
         <PeriodControls
-          mode={periodMode} onMode={switchMode}
-          token={selected} onToken={setSelected} options={periodOptions}
-          range={range} onRange={setRange}
+          mode={period.mode} onMode={period.switchMode}
+          token={period.token} onToken={period.setToken} options={period.options}
+          range={period.range} onRange={period.setRange}
         />
-        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
-        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
-        <Select value={city} onChange={setCity} options={toOpts(options?.cities, "All cities")} placeholder="City" />
-        <Select value={mode} onChange={setMode} options={toOpts(options?.contact_modes, "Visits + Calls")} placeholder="Mode" />
+        <Select value={salesperson} onChange={setSalesperson}
+          options={filterOpts(options?.salespersons, "salesperson")}
+          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
+          placeholder={FILTER_LABELS.oem.placeholder} />
+        <Select value={state} onChange={setState} options={filterOpts(options?.states, "state")}
+          placeholder={FILTER_LABELS.state.placeholder} />
+        <Select value={city} onChange={setCity} options={filterOpts(options?.cities, "city")}
+          placeholder={FILTER_LABELS.city.placeholder} />
+        <Select value={mode} onChange={setMode} options={filterOpts(options?.contact_modes, "mode")}
+          placeholder={FILTER_LABELS.mode.placeholder} />
         <div className="relative">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search remark or dealer…"
             className={`${inputClass} pl-8 w-44`} />
         </div>
-        {hasFilters && (
-          <button onClick={clearFilters}
-            className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
-            <X size={12} /> Clear
-          </button>
-        )}
-        {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
-        <button onClick={() => setRefreshKey((k) => k + 1)} disabled={loading}
-          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 transition-all"
-          title="Re-fetch this view (and its filters) from the server">
-          <RefreshCw size={11} /> Refresh
-        </button>
-        <button onClick={() => window.print()}
-          className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
-          <Printer size={12} /> PDF
-        </button>
+        <ClearFilters show={hasFilters} onClear={clearFilters} />
+        <FilterSpinner show={loading} />
+        <FilterActions>
+          <RefreshButton onClick={() => setRefreshKey((k) => k + 1)} disabled={loading} />
+          <PdfButton />
+        </FilterActions>
       </FilterBar>
 
       <div className="print-only">
         <p className="text-sm font-bold text-gray-900">
-          Field Activity · {periodOptions.find((o) => o.value === selected)?.label ?? ""}
+          Field Activity · {period.options.find((o) => o.value === period.token)?.label ?? ""}
           {salesperson && ` · ${salesperson}`}{oem && ` · ${oem}`}
           {category && ` · ${categoryLabel(category)}`}{theme && ` · ${themeMeta(theme).label}`}
           {qDeb && ` · “${qDeb}”`}
@@ -1395,15 +1421,17 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
           sub={data && data.kpis.notes > data.kpis.remarks
             ? `${data.kpis.notes.toLocaleString("en-IN")} notes across categories`
             : "field notes logged"}
-          icon={<MessageSquare size={18} />} color="#f46617" bg="#fff4ed" />
+          icon={<MessageSquare size={18} />} {...KPI.ours} />
         <StatCard label="Dealers Touched" value={data?.kpis.dealers ?? 0}
-          icon={<Building2 size={18} />} color="#0ea5e9" bg="#f0f9ff" />
+          icon={<Building2 size={18} />} {...KPI.reach} />
+        {/* Grey, not purple: purple is reserved for a target nobody owns, and a
+            headcount of people is the one thing it must never look like. */}
         <StatCard label="People Active" value={data?.kpis.salespersons ?? 0}
-          icon={<Users size={18} />} color="#a855f7" bg="#f5f3ff" />
+          icon={<Users size={18} />} {...KPI.neutral} />
         <StatCard label="Visits" value={data?.kpis.visits ?? 0}
-          icon={<Footprints size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
+          icon={<Footprints size={18} />} {...KPI.visits} />
         <StatCard label="Calls" value={data?.kpis.calls ?? 0}
-          icon={<Phone size={18} />} color={CALL_COLOR} bg="#eff6ff" />
+          icon={<Phone size={18} />} {...KPI.calls} />
       </div>
 
       {/* What's being reported — theme filter row */}
@@ -1413,14 +1441,14 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
               <Tag size={13} /> What the field is reporting
             </h3>
-            <p className="text-[10px] text-gray-400">
+            <p className="text-[10px] text-gray-500">
               Grouped by the category the rep chose on the form, then auto-tagged within it. Click a category — or a
               tag inside one — to filter the log below.
             </p>
           </div>
           {(category || theme) && (
             <button onClick={() => { setCategory(""); setTheme(""); }}
-              className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
+              className="flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-red-500">
               <X size={12} /> Clear
               {category && ` ${categoryLabel(category)}`}{theme && ` · ${themeMeta(theme).label}`}
             </button>
@@ -1436,13 +1464,13 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
           <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By Salesperson — click to focus</h3>
           {salesperson && (
             <button onClick={() => setSalesperson("")}
-              className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
+              className="flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-red-500">
               <X size={12} /> Show everyone
             </button>
           )}
         </div>
         {(data?.by_salesperson ?? []).length === 0 ? (
-          <div className="bg-white border border-orange-100 rounded-2xl p-8 text-center text-xs text-gray-400">
+          <div className="bg-white border border-orange-100 rounded-2xl p-8 text-center text-xs text-gray-500">
             No remarks for this selection.
           </div>
         ) : (
@@ -1463,19 +1491,19 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
             {category && <CategoryChip categoryKey={category} label={categoryLabel(category)} />}
             {theme && <ThemeChip themeKey={theme} />}
           </h3>
-          <p className="text-[10px] text-gray-400">{data?.feed.total.toLocaleString("en-IN") ?? 0} remarks</p>
+          <p className="text-[10px] text-gray-500">{data?.feed.total.toLocaleString("en-IN") ?? 0} remarks</p>
         </div>
 
         <div className="flex flex-col divide-y divide-gray-50">
           {feed.map((r) => (
             <div key={r.id} className="py-3 flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-4">
               <div className="flex items-center gap-2 sm:w-40 shrink-0">
-                <span className="text-[10px] text-gray-400 w-12 shrink-0">{shortDate(r.visit_date)}</span>
+                <span className="text-[10px] text-gray-500 w-12 shrink-0">{shortDate(r.visit_date)}</span>
                 <ModeBadge mode={r.contact_mode} />
               </div>
               <div className="sm:w-36 shrink-0 min-w-0">
                 <p className="text-xs font-semibold text-gray-700 truncate" title={r.dealership ?? undefined}>{r.dealership ?? "—"}</p>
-                <p className="text-[10px] text-gray-400 truncate">
+                <p className="text-[10px] text-gray-500 truncate">
                   {r.salesperson ? firstName(r.salesperson) : "—"}{r.oem && ` · ${r.oem}`}
                 </p>
               </div>
@@ -1503,7 +1531,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
             </div>
           ))}
           {feed.length === 0 && !loading && (
-            <p className="py-8 text-center text-xs text-gray-400">No remarks match these filters.</p>
+            <p className="py-8 text-center text-xs text-gray-500">No remarks match these filters.</p>
           )}
         </div>
 
@@ -1537,7 +1565,7 @@ const categoryLabel = (c: string | null | undefined) =>
   (c && (CATEGORY_LABELS[c] ?? c)) || "—";
 
 function achColor(pct: number | null) {
-  if (pct == null) return "text-gray-400";
+  if (pct == null) return "text-gray-500";
   if (pct >= ON_TRACK_PCT) return "text-green-600";
   if (pct >= 80) return "text-amber-600";
   return "text-red-500";
@@ -1583,7 +1611,7 @@ function TargetBulletChart({
   const w = (n: number) => barWidth(n, max);
 
   if (!all.length) {
-    return <p className="text-xs text-gray-400 py-6 text-center">Nothing to show for these filters</p>;
+    return <p className="text-xs text-gray-500 py-6 text-center">Nothing to show for these filters</p>;
   }
 
   return (
@@ -1601,7 +1629,7 @@ function TargetBulletChart({
             <div className="w-[118px] shrink-0 min-w-0">
               <p className={`text-xs font-semibold truncate ${r.unowned ? "italic text-violet-600" : "text-gray-700"}`}
                 title={r.key}>{r.key}</p>
-              {r.sub && <p className="text-[9px] text-gray-400 truncate" title={r.sub}>{r.sub}</p>}
+              {r.sub && <p className="text-[9px] text-gray-500 truncate" title={r.sub}>{r.sub}</p>}
             </div>
 
             <div className="relative h-5 flex-1 min-w-0">
@@ -1626,7 +1654,9 @@ function TargetBulletChart({
               <p className={`text-sm font-black leading-none ${achColor(pct)}`}>
                 {pct != null ? `${pct}%` : "—"}
               </p>
-              <p className="text-[9px] text-gray-400 mt-0.5">of {fmt(tgt)}</p>
+              {/* The target is half the comparison, so it is dark like the
+                  planned figure on the Plan vs Actual bullets — not a caption. */}
+              <p className="text-[10px] font-semibold text-gray-700 mt-0.5">of {fmt(tgt)}</p>
             </div>
           </div>
         );
@@ -1641,7 +1671,10 @@ function TargetBulletChart({
           Behind — under {ON_TRACK_PCT}%
         </span>
         <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: TGT_TRACK }} /> Target
+          {/* Outlined for the same reason as the Planned swatch — a bare
+              TGT_TRACK square is all but invisible on a white card. */}
+          <span className="w-2.5 h-2.5 rounded-sm"
+            style={{ background: TGT_TRACK, border: "1px solid #b6bcc6" }} /> Target
         </span>
         <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
           <span className="w-[2px] h-3 bg-gray-400 rounded" /> Target mark, once beaten
@@ -1659,9 +1692,11 @@ function TargetBulletChart({
 
 function TargetsTab({ headers }: { headers: Record<string, string> }) {
   const [periods, setPeriods] = useState<TgtPeriod[]>([]);
-  const [token, setToken] = useState("");
-  const [useRange, setUseRange] = useState(false);
-  const [range, setRange] = useState<DateRange>({ from: "", to: "" });
+  // The same five presets as every other tab. Targets are published per quarter,
+  // but they are STORED one row per month, so a month/FY/day selection is just
+  // as answerable — and having this tab alone offer a different set of period
+  // controls was the single biggest inconsistency left in the module.
+  const period = usePeriod("monthly");
   const [options, setOptions] = useState<{ oems: string[]; categories: string[]; salespersons: string[]; regions: string[] } | null>(null);
   const [metric, setMetric] = useState<Metric>("value");
   const [oem, setOem] = useState("");
@@ -1687,43 +1722,53 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
         // sheet and hitting Refresh has to be able to clear this state without
         // a remount, which only happened by luck when switching tabs.
         setEmpty(p.length === 0);
-        if (p.length) setToken(p[0].token);
-        else setLoading(false);
+        // The period picker offers exactly the months a registered quarter
+        // covers, so no preset can select a period that must come back empty.
+        const months = p.flatMap((q) => (QUARTER_MONTHS[q.quarter] ?? []).map((m) => ({
+          year: m >= 4 ? q.fy_year : q.fy_year + 1, month: m,
+        })));
+        period.setMonths(months);
+        if (!p.length) setLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
+  // Land on the newest month that actually holds targets, once the list arrives.
   useEffect(() => {
-    // Targets are stored per month inside their quarter, so a date range picks
-    // whole months. A range covering Apr–Jun reads identically to Q1.
-    let params: URLSearchParams;
-    if (useRange) {
-      // Half a range is not a question we can ask. Drop what's on screen rather
-      // than leaving the previous quarter's numbers sitting under a custom
-      // period the user is still typing — they read as that period's answer.
-      if (!range.from || !range.to) { setData(null); setLoading(false); return; }
-      params = new URLSearchParams({ from_date: range.from, to_date: range.to });
-    } else {
-      if (!token) return;
-      const [fy, q] = token.split("-Q");
-      params = new URLSearchParams({ fy_year: fy, quarter: q });
-    }
+    if (!period.token && period.options.length) period.setToken(period.options[0].value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period.options]);
+
+  useEffect(() => {
+    // Targets are stored per month inside their quarter, so every preset —
+    // month, quarter, FY, day range — reduces to whole months server-side.
+    // A range covering Apr–Jun reads identically to picking Q1.
+    const pp = periodParams(period.mode, period.token, period.range);
+    // Half a custom range is not a question we can ask. Drop what's on screen
+    // rather than leaving the previous period's numbers sitting under a period
+    // the user is still typing — they read as that period's answer.
+    if (!pp) { setData(null); setLoading(false); return; }
+    const params = new URLSearchParams(pp);
     if (oem) params.set("oem", oem);
     if (category) params.set("category", category);
     if (salesperson) params.set("salesperson", salesperson);
     if (region) params.set("region", region);
+    // Abort on supersede, like every other tab.
+    const ctrl = new AbortController();
     setLoading(true);
     (async () => {
-      const res = await fetch(`${API_URL}/oe-network/targets/summary?${params}`, { headers });
-      setData(res.ok ? await res.json() : null);
-      setLoading(false);
+      try {
+        const res = await fetch(`${API_URL}/oe-network/targets/summary?${params}`,
+          { headers, signal: ctrl.signal });
+        setData(res.ok ? await res.json() : null);
+        setLoading(false);
+      } catch { /* aborted — the newer request owns the loading flag now */ }
     })();
+    return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, useRange, range, oem, category, salesperson, region, refreshKey]);
+  }, [period.mode, period.token, period.range, oem, category, salesperson, region, refreshKey]);
 
-  const toOpts = (arr: string[] | undefined, all: string) =>
-    [{ value: "", label: all }, ...(arr ?? []).map((v) => ({ value: v, label: v }))];
   const activeFilters = [
     oem && `OEM ${oem}`,
     category && categoryLabel(category),
@@ -1732,16 +1777,8 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
   ].filter(Boolean) as string[];
   const hasFilters = activeFilters.length > 0;
   const clearFilters = () => { setOem(""); setCategory(""); setSalesperson(""); setRegion(""); };
-  // A range the user is still filling in — a real state, not an empty result.
-  const rangeIncomplete = useRange && !(range.from && range.to);
-  // Every month covered by a registered quarter, so the picker can grey out the
-  // rest instead of letting someone select a period that can only come back empty.
-  const targetMonths = useMemo(
-    () => periods.flatMap((p) =>
-      (QUARTER_MONTHS[p.quarter] ?? []).map(
-        (m) => `${m >= 4 ? p.fy_year : p.fy_year + 1}-${String(m).padStart(2, "0")}`)),
-    [periods],
-  );
+  // A custom range the user is still filling in — a real state, not an empty result.
+  const rangeIncomplete = period.mode === "custom" && !(period.range.from && period.range.to);
   const fmt = fmtBy(metric);
   const k = data?.kpis;
   const kv = k ? pick(k, metric) : null;
@@ -1753,8 +1790,8 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
 
   if (empty) {
     return (
-      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
-        No target data yet — register a quarter's target sheet from the <b>Sheets</b> tab.
+      <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
+        No target data yet — register a quarter's target sheet from the <b>Data Source Sheets</b> tab.
       </div>
     );
   }
@@ -1772,62 +1809,40 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
   return (
     <div className="flex flex-col gap-5">
       <FilterBar>
-        {/* Targets are published per quarter, so that stays the default way in;
-            the range is for reading part of one, or across two. */}
-        <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
-          {([false, true] as const).map((r) => (
-            <button key={String(r)} onClick={() => setUseRange(r)}
-              className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all ${
-                useRange === r ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
-              }`}>
-              {r ? "custom" : "quarterly"}
-            </button>
-          ))}
-        </div>
-        {useRange ? (
-          // Months, not days: a target is a figure for a whole month, and the
-          // API snaps any range to month boundaries anyway. Months we hold no
-          // sheet for are greyed out, so the empty-range dead end is much
-          // harder to walk into than it was with a free-typed date.
-          <DateRangePicker value={range} onChange={setRange} granularity="month"
-            enabledMonths={targetMonths} placeholder="Pick months" />
-        ) : (
-          <Select value={token} onChange={setToken}
-            options={periods.map((p) => ({ value: p.token, label: p.label }))} placeholder="Quarter…" />
-        )}
+        <PeriodControls
+          mode={period.mode} onMode={period.switchMode}
+          token={period.token} onToken={period.setToken} options={period.options}
+          range={period.range} onRange={period.setRange}
+        />
         <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
           {(["value", "nos"] as Metric[]).map((m) => (
             <button key={m} onClick={() => setMetric(m)}
               className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all ${
-                metric === m ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                metric === m ? "bg-white text-brand-orange shadow-sm" : "text-gray-500 hover:text-gray-700"
               }`}>
               {m === "value" ? "Value" : "Units"}
             </button>
           ))}
         </div>
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
+        {/* Person first, then OEM — the same order as every other tab. */}
+        <Select value={salesperson} onChange={setSalesperson}
+          options={filterOpts(options?.salespersons, "salesperson")}
+          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
+          placeholder={FILTER_LABELS.oem.placeholder} />
+        <Select value={region} onChange={setRegion} options={filterOpts(options?.regions, "region")}
+          placeholder={FILTER_LABELS.region.placeholder} />
+        {/* Product carries its own labels, so it can't use filterOpts. */}
         <Select value={category} onChange={setCategory}
-          options={[{ value: "", label: "All products" },
+          options={[{ value: "", label: FILTER_LABELS.product.all },
                     ...(options?.categories ?? []).map((c) => ({ value: c, label: categoryLabel(c) }))]}
-          placeholder="Product" />
-        <Select value={salesperson} onChange={setSalesperson} options={toOpts(options?.salespersons, "All salespersons")} placeholder="Salesperson" />
-        <Select value={region} onChange={setRegion} options={toOpts(options?.regions, "All regions")} placeholder="Region" />
-        {hasFilters && (
-          <button onClick={clearFilters}
-            className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
-            <X size={12} /> Clear
-          </button>
-        )}
-        {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
-        <button onClick={() => setRefreshKey((k) => k + 1)} disabled={loading}
-          className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 disabled:opacity-50 transition-all"
-          title="Re-fetch this view (and its filters) from the server">
-          <RefreshCw size={11} /> Refresh
-        </button>
-        <button onClick={() => window.print()}
-          className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
-          <Printer size={12} /> PDF
-        </button>
+          placeholder={FILTER_LABELS.product.placeholder} />
+        <ClearFilters show={hasFilters} onClear={clearFilters} />
+        <FilterSpinner show={loading} />
+        <FilterActions>
+          <RefreshButton onClick={() => setRefreshKey((k) => k + 1)} disabled={loading} />
+          <PdfButton />
+        </FilterActions>
       </FilterBar>
 
       <div className="print-only">
@@ -1838,31 +1853,29 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
       </div>
 
       {!data && !loading ? (
-        <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
+        <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
           {rangeIncomplete ? (
             "Pick a start and an end date to read targets across a custom period."
           ) : (
             <>
               <p className="text-sm font-semibold text-gray-500 mb-1.5">
-                {useRange
-                  ? `No targets for ${shortDate(range.from)} – ${shortDate(range.to)}`
+                {period.mode === "custom"
+                  ? `No targets for ${shortDate(period.range.from)} – ${shortDate(period.range.to)}`
                   : "No targets match this selection"}
               </p>
               {/* Two different causes, and the wrong guess sends someone editing
                   dates when a filter is what emptied the screen. Name both. */}
-              {useRange && (
-                <p>
-                  Targets are published per quarter, and only{" "}
-                  <b className="text-gray-600">{periods.map((p) => p.label).join(", ") || "—"}</b>{" "}
-                  {periods.length === 1 ? "has" : "have"} been registered.
-                </p>
-              )}
+              <p>
+                Targets are published per quarter, and only{" "}
+                <b className="text-gray-600">{periods.map((p) => p.label).join(", ") || "—"}</b>{" "}
+                {periods.length === 1 ? "has" : "have"} been registered.
+              </p>
               {hasFilters && (
                 <p className="mt-1.5">
                   The <b className="text-gray-600">{activeFilters.join(" + ")}</b>{" "}
                   filter{activeFilters.length > 1 ? "s" : ""} may be excluding everything —{" "}
                   <button onClick={clearFilters}
-                    className="font-semibold text-orange-500 hover:text-orange-600 underline underline-offset-2">
+                    className="font-semibold text-brand-orange hover:text-orange-600 underline underline-offset-2">
                     clear {activeFilters.length > 1 ? "them" : "it"}
                   </button>{" "}
                   to check.
@@ -1875,24 +1888,24 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <StatCard label={metric === "value" ? "Target Value" : "Target Units"}
-              value={kv ? fmt(kv.tgt) : "—"} icon={<Target size={18} />} color="#a855f7" bg="#f5f3ff" />
+              value={kv ? fmt(kv.tgt) : "—"} icon={<Target size={18} />} {...KPI.target} />
             <StatCard label={metric === "value" ? "Achieved Value" : "Achieved Units"}
-              value={kv ? fmt(kv.ach) : "—"} icon={<TrendingUp size={18} />} color={VISIT_COLOR} bg="#fff4ed" />
+              value={kv ? fmt(kv.ach) : "—"} icon={<TrendingUp size={18} />} {...KPI.ours} />
             <StatCard label="Achievement" value={kv?.pct != null ? `${kv.pct}%` : "—"}
               sub={metric === "value" ? "on value" : "on units"}
-              icon={<Percent size={18} />} color={(kv?.pct ?? 0) >= ON_TRACK_PCT ? OVER_COLOR : "#f59e0b"}
-              bg={(kv?.pct ?? 0) >= ON_TRACK_PCT ? "#f0fdf4" : "#fffbeb"} />
+              icon={<Percent size={18} />}
+              {...((kv?.pct ?? 0) >= ON_TRACK_PCT ? KPI.conversion : KPI.warning)} />
             <StatCard label="Gap"
               value={kv ? `${kv.ach - kv.tgt >= 0 ? "+" : "−"}${fmt(Math.abs(kv.ach - kv.tgt))}` : "—"}
               sub={kv && kv.ach >= kv.tgt ? "ahead of target" : "short of target"}
-              icon={<Building2 size={18} />} color={kv && kv.ach >= kv.tgt ? "#22c55e" : "#ef4444"}
-              bg={kv && kv.ach >= kv.tgt ? "#f0fdf4" : "#fef2f2"} />
+              icon={<Building2 size={18} />}
+              {...(kv && kv.ach >= kv.tgt ? KPI.conversion : KPI.danger)} />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By Salesperson</h3>
-              <p className="text-[10px] text-gray-400 mb-1">
+              <p className="text-[10px] text-gray-500 mb-1">
                 Ranked by target size
                 {data?.unattributed && " · the last row is not a person — see the note below"}
               </p>
@@ -1902,7 +1915,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
 
             <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By OEM</h3>
-              <p className="text-[10px] text-gray-400 mb-1">All of an OEM's products clubbed together — use the Product filter to split seat covers, mats and accessories</p>
+              <p className="text-[10px] text-gray-500 mb-1">All of an OEM's products clubbed together — use the Product filter to split seat covers, mats and accessories</p>
               <TargetBulletChart rows={data?.by_oem ?? []} metric={metric} />
             </div>
           </div>
@@ -1934,7 +1947,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
 
             <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">By Region</h3>
-              <p className="text-[10px] text-gray-400 mb-1">
+              <p className="text-[10px] text-gray-500 mb-1">
                 Regions come from the sheet's own "NAME- REGION" column, so an OEM that
                 writes a territory differently gets its own row
               </p>
@@ -1949,7 +1962,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                  <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-gray-100">
                     <th className="py-2 pr-3">OEM</th>
                     <th className="py-2 pr-3">Product</th>
                     <th className="py-2 pr-3 text-right">Target</th>
@@ -1980,7 +1993,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
               </table>
             </div>
             {data?.unattributed && (
-              <p className="text-[10px] text-gray-400 mt-3">
+              <p className="text-[10px] text-gray-500 mt-3">
                 <b className="text-violet-600">Accessories</b> for {data.unattributed.oems.join(" and ")} are
                 agreed as one number for the OEM and are not split between salespeople, so they carry no name
                 and no region. They are counted in the KPIs, in <i>By OEM</i> and in <i>Month by Month</i>; in{" "}
@@ -1991,7 +2004,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
               </p>
             )}
             {croreOems.length > 0 && metric === "value" && (
-              <p className="text-[10px] text-gray-400 mt-3">
+              <p className="text-[10px] text-gray-500 mt-3">
                 {croreOems.join(", ")} are entered in the source sheet in crores to two decimals, so their money
                 figures carry a ±₹1 lakh rounding per cell. Unit counts are exact.
               </p>
@@ -2156,7 +2169,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
     <div key={s.id} className="flex items-center justify-between gap-3 py-2.5 border-b border-gray-50 last:border-0">
       <div className="min-w-0">
         <p className="text-xs font-semibold text-gray-700 truncate">{s.label}</p>
-        <p className="text-[10px] text-gray-400 flex items-center gap-1">
+        <p className="text-[10px] text-gray-500 flex items-center gap-1">
           {statusIcon(s.last_sync_status)}
           {s.last_synced_at ? `Last synced ${formatDate(s.last_synced_at)}` : "Never synced"}
         </p>
@@ -2169,7 +2182,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
             : <><RefreshCw size={11} /> Sync Now</>}
         </button>
         <button onClick={() => handleDelete(s)} disabled={deletingId === s.id}
-          className="flex items-center text-gray-300 hover:text-red-500 p-1.5 rounded-lg border border-transparent hover:border-red-100 transition-all disabled:opacity-40">
+          className="flex items-center text-gray-500 hover:text-red-500 p-1.5 rounded-lg border border-transparent hover:border-red-100 transition-all disabled:opacity-40">
           <Trash2 size={13} />
         </button>
       </div>
@@ -2184,10 +2197,10 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           <div className="flex items-center justify-between mb-2">
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Advance Visit Plans</h3>
-              <p className="text-[10px] text-gray-400">One sheet per month — salesperson tabs are detected automatically</p>
+              <p className="text-[10px] text-gray-500">One sheet per month — salesperson tabs are detected automatically</p>
             </div>
             <button onClick={() => setShowAddPlan(!showAddPlan)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
               <Plus size={13} /> Add Month
             </button>
           </div>
@@ -2211,7 +2224,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           </AnimatePresence>
           {planSources.length
             ? planSources.map(sourceRow)
-            : <p className="text-xs text-gray-400 py-3">No visit plan sheets registered yet.</p>}
+            : <p className="text-xs text-gray-500 py-3">No visit plan sheets registered yet.</p>}
         </div>
 
         {/* Log book */}
@@ -2219,11 +2232,11 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           <div className="flex items-center justify-between mb-2">
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Log Book</h3>
-              <p className="text-[10px] text-gray-400">The continuous Google Form responses sheet</p>
+              <p className="text-[10px] text-gray-500">The continuous Google Form responses sheet</p>
             </div>
             {logSources.length === 0 && (
               <button onClick={() => setShowAddLog(!showAddLog)}
-                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
                 <Plus size={13} /> Add Sheet
               </button>
             )}
@@ -2244,7 +2257,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           </AnimatePresence>
           {logSources.length
             ? logSources.map(sourceRow)
-            : <p className="text-xs text-gray-400 py-3">No log book registered yet.</p>}
+            : <p className="text-xs text-gray-500 py-3">No log book registered yet.</p>}
         </div>
       </div>
 
@@ -2253,12 +2266,12 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         <div className="flex items-center justify-between mb-2">
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Quarterly Targets</h3>
-            <p className="text-[10px] text-gray-400">
+            <p className="text-[10px] text-gray-500">
               One sheet per quarter — OEM blocks are found by their headers, and money in crores is converted automatically
             </p>
           </div>
           <button onClick={() => setShowAddTgt(!showAddTgt)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
             <Plus size={13} /> Add Quarter
           </button>
         </div>
@@ -2282,7 +2295,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         </AnimatePresence>
         {tgtSources.length
           ? tgtSources.map(sourceRow)
-          : <p className="text-xs text-gray-400 py-3">No target sheets registered yet.</p>}
+          : <p className="text-xs text-gray-500 py-3">No target sheets registered yet.</p>}
       </div>
 
       {/* Dealer data — one workbook, a tab per OEM, no period to pick: the
@@ -2292,13 +2305,13 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
           <div className="min-w-0 flex-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Dealer Data</h3>
-            <p className="text-[10px] text-gray-400">
+            <p className="text-[10px] text-gray-500">
               The dealership view file — Total &lt;OEM&gt;, YSASC and YS Sale per dealer per
               month, plus quarterly target and achievement columns
             </p>
           </div>
           <button onClick={() => setShowAddDd(!showAddDd)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
+            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
             <Plus size={13} /> Add Sheet
           </button>
         </div>
@@ -2318,7 +2331,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         </AnimatePresence>
         {ddSources.length
           ? ddSources.map(sourceRow)
-          : <p className="text-xs text-gray-400 py-3">No dealer data sheet registered yet.</p>}
+          : <p className="text-xs text-gray-500 py-3">No dealer data sheet registered yet.</p>}
       </div>
 
       {/* Last sync result */}
@@ -2326,11 +2339,11 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
           <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Last Sync Result</h3>
           <div className="flex flex-wrap gap-6 text-xs">
-            <span><b className="text-gray-800">{lastResult.rows_total}</b> <span className="text-gray-400">rows read</span></span>
-            <span><b className="text-green-600">{lastResult.rows_inserted}</b> <span className="text-gray-400">loaded</span></span>
-            <span><b className="text-gray-600">{lastResult.rows_deleted}</b> <span className="text-gray-400">replaced</span></span>
+            <span><b className="text-gray-800">{lastResult.rows_total}</b> <span className="text-gray-500">rows read</span></span>
+            <span><b className="text-green-600">{lastResult.rows_inserted}</b> <span className="text-gray-500">loaded</span></span>
+            <span><b className="text-gray-600">{lastResult.rows_deleted}</b> <span className="text-gray-500">replaced</span></span>
             {lastResult.skipped_tabs.length > 0 && (
-              <span className="text-gray-400">Skipped tabs: {lastResult.skipped_tabs.join(", ")}</span>
+              <span className="text-gray-500">Skipped tabs: {lastResult.skipped_tabs.join(", ")}</span>
             )}
           </div>
           {lastResult.errors.length > 0 && (
@@ -2352,7 +2365,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 border-b border-gray-100">
+              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-gray-100">
                 <th className="py-2 pr-3">Sheet</th>
                 <th className="py-2 pr-3">Type</th>
                 <th className="py-2 pr-3 text-right">Rows</th>
@@ -2378,7 +2391,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
                 </tr>
               ))}
               {history.length === 0 && (
-                <tr><td colSpan={6} className="py-6 text-center text-gray-400">No syncs yet</td></tr>
+                <tr><td colSpan={6} className="py-6 text-center text-gray-500">No syncs yet</td></tr>
               )}
             </tbody>
           </table>
@@ -2396,11 +2409,11 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 // this page is for visualisation, and a flat filterable table is what the source
 // spreadsheet already does better.
 const TABS: { id: TabId; label: string }[] = [
-  { id: "overview", label: "Plan vs Actual" },
+  { id: "overview", label: "Visit/Calling" },
   { id: "dealers", label: "Dealers" },
   { id: "activity", label: "Field Activity" },
   { id: "targets", label: "Targets" },
-  { id: "sheets", label: "Sheets" },
+  { id: "sheets", label: "Data Source Sheets" },
 ];
 
 const TAB_SUBTITLES: Record<TabId, string> = {
@@ -2421,28 +2434,33 @@ export default function OENetworkPage() {
     <div className="p-6 flex flex-col gap-5">
       {/* Print-only header (the interactive chrome is hidden on paper) */}
       <div className="print-only mb-2">
-        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-gray-400">Amato · OE Network</div>
+        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-gray-500">Amato · OE Network</div>
         <div className="text-xl font-bold text-gray-900 mt-0.5">{TABS.find((t) => t.id === activeTab)?.label}</div>
       </div>
 
       {/* Header */}
+      {/* The title block must shrink (min-w-0 flex-1) and the tab strip must not
+          (shrink-0), or a long subtitle pushes the tabs onto their own row —
+          which is why the tab strip sat beside the title on Field Activity and
+          below it on Dealers. The subtitle truncates instead of moving them. */}
       <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="no-print flex items-center justify-between flex-wrap gap-3">
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="flex items-center gap-3">
             <span className="page-title-dark">OE NETWORK</span>
             <span className="page-title-orange">{TABS.find((t) => t.id === activeTab)?.label.toUpperCase()}</span>
           </h1>
-          <div className="flex items-center gap-2 mt-1">
-            <div className="w-8 h-0.5 bg-gray-800 rounded" />
-            <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">{TAB_SUBTITLES[activeTab]}</p>
+          <div className="flex items-center gap-2 mt-1 min-w-0">
+            <div className="w-8 h-0.5 bg-gray-800 rounded shrink-0" />
+            <div className="w-4 h-0.5 rounded shrink-0" style={{ background: "#f46617" }} />
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500 truncate"
+              title={TAB_SUBTITLES[activeTab]}>{TAB_SUBTITLES[activeTab]}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1 shrink-0">
           {TABS.map((t) => (
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
-                activeTab === t.id ? "bg-white text-orange-500 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                activeTab === t.id ? "bg-white text-brand-orange shadow-sm" : "text-gray-500 hover:text-gray-700"
               }`}>
               {t.label}
             </button>

@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { X, Printer, Store, Target, CarFront, Percent, Package, Footprints } from "lucide-react";
+import { Store, Target, CarFront, Percent, Package, Footprints } from "lucide-react";
 import Select from "@/components/ui/Select";
 import {
-  API_URL, MONTH_SHORT, FilterBar, PeriodControls, StatCard,
-  periodParams, usePeriod, useFilterOptions, toOpts, shortDate, type Period,
+  API_URL, MONTH_SHORT, FilterBar, FilterActions, ClearFilters, FilterSpinner,
+  RefreshButton, PdfButton, PeriodControls, StatCard,
+  periodParams, usePeriod, useFilterOptions, filterOpts, FILTER_LABELS,
+  shortDate, type Period,
 } from "../shared";
 import { type DealerPerf, KPI, n0, pct } from "./model";
 import DealerMap from "./DealerMap";
 import DealerRankTable from "./DealerRankTable";
+import DealerDirectory from "./DealerDirectory";
 import DealerTrend from "./DealerTrend";
 import DealerDrawer from "./DealerDrawer";
 import { CoveragePanel, QuarterPanel, ContactEffectPanel } from "./panels";
@@ -22,13 +25,39 @@ export default function DealersTab({ headers }: { headers: Record<string, string
   const [oem, setOem] = useState("MSIL");
   const [salesperson, setSalesperson] = useState("");
   const [state, setState] = useState("");
-  // Defaults to all time: dealer sales start in January while the log book only
-  // starts in July, so landing on "this month" would open the tab on a month
-  // with no sales in it at all.
-  const period = usePeriod("all");
+  // Monthly, like every other tab. It lands on the newest month the dealer
+  // FILE actually covers, not the current calendar month — dealer sales run
+  // ahead of or behind the log book, so "this month" could be a month with no
+  // sales in it at all.
+  const period = usePeriod("monthly");
   const [data, setData] = useState<DealerPerf | null>(null);
   const [loading, setLoading] = useState(true);
   const [openDealer, setOpenDealer] = useState<string | null>(null);
+  // Bumped by Refresh — re-runs the fetch without changing any filter.
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // The months the dealer file covers, fetched up front. This cannot come from
+  // the dealer-performance response the way it used to: the period picker now
+  // defaults to a month, so with no month chosen no request fires at all, and
+  // the list would never arrive to choose one from.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/oe-network/periods`, { headers, signal: ctrl.signal });
+        if (!res.ok) return;
+        const j: { dealer_months?: Period[] } = await res.json();
+        const months = j.dealer_months ?? [];
+        period.setMonths(months);
+        // Newest month that actually holds dealer sales.
+        const newest = [...months].sort((a, b) => b.year - a.year || b.month - a.month)[0];
+        if (newest) period.setToken(`${newest.year}-${newest.month}`);
+        else setLoading(false);   // nothing registered yet — stop the spinner
+      } catch { /* aborted or offline — the picker simply stays empty */ }
+    })();
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headers, refreshKey]);
 
   useEffect(() => {
     const pp = periodParams(period.mode, period.token, period.range);
@@ -45,22 +74,13 @@ export default function DealersTab({ headers }: { headers: Record<string, string
       try {
         const res = await fetch(`${API_URL}/oe-network/dealer-performance?${params}`,
           { headers, signal: ctrl.signal });
-        if (res.ok) {
-          const j: DealerPerf = await res.json();
-          setData(j);
-          // Captured from the first response and then left alone — the period
-          // list must keep offering every month, not shrink to whatever the
-          // current filter returned.
-          period.setMonths((prev: Period[]) => prev.length ? prev : j.by_month.map((m) => ({
-            year: Number(m.month.slice(0, 4)), month: Number(m.month.slice(5, 7)),
-          })));
-        }
+        if (res.ok) setData(await res.json());
         setLoading(false);
       } catch { /* aborted — the newer request owns the loading flag now */ }
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period.mode, period.token, period.range, oem, salesperson, state, headers]);
+  }, [period.mode, period.token, period.range, oem, salesperson, state, headers, refreshKey]);
 
   // Reps come from filter-options (the dealer file's own assignment), NOT from
   // this view's by_salesperson rows — those are computed AFTER the rep/state
@@ -83,32 +103,31 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           token={period.token} onToken={period.setToken} options={period.options}
           range={period.range} onRange={period.setRange}
         />
-        <Select value={oem} onChange={setOem} options={toOpts(options?.oems, "All OEMs")} placeholder="OEM" />
+        {/* Canonical order and vocabulary — person, then OEM, then geography.
+            This dropdown said "Rep" while every other tab called the same field
+            "Salesperson". */}
         <Select value={salesperson} onChange={setSalesperson}
-          options={toOpts(reps, "All reps")} placeholder="Rep" />
-        <Select value={state} onChange={setState} options={toOpts(options?.states, "All states")} placeholder="State" />
-        {(salesperson || state) && (
-          <button onClick={() => { setSalesperson(""); setState(""); }}
-            className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-red-500">
-            <X size={12} /> Clear
-          </button>
-        )}
+          options={filterOpts(reps, "salesperson")}
+          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
+          placeholder={FILTER_LABELS.oem.placeholder} />
+        <Select value={state} onChange={setState} options={filterOpts(options?.states, "state")}
+          placeholder={FILTER_LABELS.state.placeholder} />
+        <ClearFilters show={!!(salesperson || state)}
+          onClear={() => { setSalesperson(""); setState(""); }} />
         {/* A refetch after the first load used to be invisible — old numbers sat
             on screen with nothing saying a newer answer was on its way. */}
-        {loading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
-        <div className="flex items-center gap-2 ml-auto">
-          <button onClick={() => window.print()}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all"
-            title="Print this view or save it as a PDF">
-            <Printer size={12} /> PDF
-          </button>
-        </div>
+        <FilterSpinner show={loading} />
+        <FilterActions>
+          <RefreshButton onClick={() => setRefreshKey((n) => n + 1)} disabled={loading} />
+          <PdfButton />
+        </FilterActions>
       </FilterBar>
 
       {/* Sales are monthly figures, so a day range can only cut them to whole
           months. Saying so beats letting the numbers imply otherwise. */}
       {period.mode === "custom" && data?.period.date_from && (
-        <p className="text-[11px] text-gray-400 -mt-2">
+        <p className="text-[11px] text-gray-500 -mt-2">
           Visits and calls counted {shortDate(data.period.date_from)}–{shortDate(data.period.date_to)}.
           Dealer sales are reported monthly, so those cover whole months
           ({MONTH_SHORT[Number(data.period.month_from!.slice(5, 7)) - 1]}–
@@ -117,7 +136,7 @@ export default function DealersTab({ headers }: { headers: Record<string, string
       )}
 
       {loading && !data && (
-        <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-400">
+        <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
           Loading dealer performance…
         </div>
       )}
@@ -179,9 +198,20 @@ export default function DealersTab({ headers }: { headers: Record<string, string
 
       {data && noSales && <CoveragePanel rows={data.by_salesperson} />}
 
+      {/* The complete searchable list — kept even when there are no sales for
+          this OEM yet, because the dealers and their contact history are real. */}
+      {data && data.dealers.length > 0 && (
+        <DealerDirectory dealers={data.dealers} avgPene={avgPene}
+          onPick={(d) => setOpenDealer(d.id)} />
+      )}
+
       <AnimatePresence>
         {openDealer && (
+          // The tab's period goes in with it: the drawer's headline figures are
+          // scoped to the same window as the row that was clicked, so the two
+          // reconcile instead of appearing to disagree.
           <DealerDrawer dealerId={openDealer} headers={headers} benchmark={avgPene}
+            periodQuery={periodParams(period.mode, period.token, period.range) ?? {}}
             onClose={() => setOpenDealer(null)} />
         )}
       </AnimatePresence>

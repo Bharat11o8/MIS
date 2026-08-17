@@ -8,11 +8,16 @@ import Explain from "./Explain";
  *  The bottom list applies a VOLUME FLOOR. Ranked purely by penetration the
  *  worst dealers are simply the smallest ones, which is true and useless —
  *  the floor makes it read "big dealers we are failing at" instead. */
+/** How many rows the list can show. The whole dealer set is already on the
+ *  client, so this is a slice — no refetch, no server round trip. */
+const COUNTS = [10, 20, 30, 50] as const;
+
 export default function DealerRankTable({ dealers, avgPene, onPick }: {
   dealers: PerfDealer[]; avgPene: number; onPick: (d: PerfDealer) => void;
 }) {
   const [metric, setMetric] = useState<RankMetric>("gap");
   const [end, setEnd] = useState<"top" | "bottom">("top");
+  const [count, setCount] = useState<number>(20);
 
   const withSales = dealers.filter((d) => d.has_sales);
   // The floor is on ADDRESSABLE volume, matching what the ranked metrics divide
@@ -28,7 +33,10 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
   const pool = flooring ? withSales.filter((d) => (d.ysasc ?? 0) >= floor) : withSales;
   const sorted = [...pool].sort((a, b) =>
     rankValue(b, metric, avgPene) - rankValue(a, metric, avgPene));
-  const rows = (end === "top" ? sorted : [...sorted].reverse()).slice(0, 20);
+  const rows = (end === "top" ? sorted : [...sorted].reverse()).slice(0, count);
+  // Asking for 50 out of a pool of 31 is not an error, but the heading must not
+  // claim 50 — otherwise a short list reads as data missing.
+  const short = rows.length < count;
 
   return (
     <div className="bg-white border border-orange-100 rounded-2xl p-5 print-avoid-break">
@@ -39,9 +47,9 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
       <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-bold text-gray-800">
-            {end === "top" ? "Top" : "Bottom"} 20 · {meta.label}
+            {end === "top" ? "Top" : "Bottom"} {rows.length} · {meta.label}
           </h3>
-          <p className="text-[11px] text-gray-400">{meta.what}</p>
+          <p className="text-[11px] text-gray-500">{meta.what}</p>
         </div>
         <div className="flex items-center gap-2 no-print shrink-0 ml-auto">
           <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
@@ -52,6 +60,9 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
                 }`}>{e}</button>
             ))}
           </div>
+          <Select value={String(count)} onChange={(v) => setCount(Number(v))}
+            className="min-w-[92px]"
+            options={COUNTS.map((n) => ({ value: String(n), label: `${n} rows` }))} />
           <Select value={metric} onChange={(v) => setMetric(v as RankMetric)}
             options={(Object.keys(RANK_META) as RankMetric[]).map((k) => ({ value: k, label: RANK_META[k].label }))} />
         </div>
@@ -59,9 +70,15 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
 
       <Explain>
         <b className="text-gray-600">
-          Showing the {end === "top" ? "top" : "bottom"} 20:
+          Showing the {end === "top" ? "top" : "bottom"} {rows.length}:
         </b>{" "}
         {end === "top" ? meta.top : meta.bottom}
+        {short && (
+          // Says why the list is shorter than asked for, so it can't be read as
+          // rows failing to load.
+          <> Only <b>{rows.length}</b> dealership{rows.length === 1 ? "" : "s"} qualif
+            {rows.length === 1 ? "ies" : "y"} here, fewer than the {count} requested.</>
+        )}
         {flooring && (
           <> Only dealers with <b>{n0(floor)}+</b> YSASC covers are included, otherwise
             the bottom of a share-based list is just the smallest dealerships.</>
@@ -77,7 +94,7 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-[10px] uppercase tracking-wider text-gray-400 border-b border-gray-100">
+            <tr className="text-[10px] uppercase tracking-wider text-gray-500 border-b border-gray-100">
               <th className="text-left font-bold py-2 pl-1">#</th>
               <th className="text-left font-bold py-2">Dealership</th>
               <th className="text-left font-bold py-2">Rep</th>
@@ -107,13 +124,13 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
                     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(d); }
                   }}
                   className="border-b border-gray-50 hover:bg-orange-50/40 focus:bg-orange-50/40 focus:outline-none cursor-pointer">
-                  <td className="py-2 pl-1 text-gray-300 font-semibold">{i + 1}</td>
+                  <td className="py-2 pl-1 text-gray-500 font-semibold">{i + 1}</td>
                   <td className="py-2">
                     <span className="font-semibold text-gray-800">{d.name}</span>
-                    <span className="text-gray-400"> · {d.city}</span>
+                    <span className="text-gray-500"> · {d.city}</span>
                   </td>
                   <td className="py-2 text-gray-500">{d.salesperson ?? "—"}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-400">{n0(d.oem_total)}</td>
+                  <td className="py-2 text-right tabular-nums text-gray-500">{n0(d.oem_total)}</td>
                   <td className="py-2 text-right tabular-nums text-gray-600">
                     {d.ysasc == null ? "—" : n0(d.ysasc)}
                   </td>
@@ -121,7 +138,7 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
                   {/* No penetration is "no data", not "bad" — the dash must stay
                       grey, never inherit the below-average red. */}
                   <td className={`py-2 text-right tabular-nums font-semibold ${
-                    d.penetration == null ? "text-gray-300"
+                    d.penetration == null ? "text-gray-500"
                       : d.penetration >= avgPene ? "text-green-600" : "text-red-500"}`}>
                     {pct(d.penetration)}
                   </td>
@@ -129,7 +146,7 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
                       a dealer already selling MORE than network average would
                       predict, which is worth seeing. */}
                   <td className={`py-2 text-right tabular-nums font-semibold ${
-                    gap > 0 ? "text-brand-orange" : gap < 0 ? "text-green-600" : "text-gray-300"}`}>
+                    gap > 0 ? "text-brand-orange" : gap < 0 ? "text-green-600" : "text-gray-500"}`}>
                     {gap > 0 ? `+${n0(gap)}` : gap < 0 ? `−${n0(-gap)}` : "—"}
                   </td>
                   <td className="py-2 pr-1 text-right tabular-nums">

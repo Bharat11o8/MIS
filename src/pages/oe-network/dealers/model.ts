@@ -2,7 +2,9 @@
 // dealer-centric half of the OE Network module. Every other tab is keyed on the
 // rep; this one is keyed on the dealership, which is how the OE team's own file
 // is keyed and how leadership asks its questions.
-import { VISIT_COLOR, CALL_COLOR } from "../shared";
+// KPI (the StatCard colour roles) lives in ../shared and is used module-wide;
+// re-exported here so the dealer components keep one import.
+export { KPI } from "../shared";
 
 /**
  * The dealer file's funnel, in the OE team's own vocabulary:
@@ -71,35 +73,36 @@ export interface PerfContact {
   car_sales: number | null; seat_cover_sales: number | null; mats_sales: number | null;
   notes: DealerNote[];
 }
+/** Funnel plus the activity counts and how many months it was summed over. */
+export type DealerTotals = Funnel & { visits: number; calls: number; months: number };
+
 export interface DealerDetail {
   dealer: PerfDealer & { source: string };
-  totals: Funnel & { visits: number; calls: number };
+  /** Scoped to the period the tab is filtered to, so the drawer's headline
+   *  figures reconcile with the row that was clicked. */
+  totals: DealerTotals;
+  /** Every month on record — context, shown underneath. */
+  lifetime: DealerTotals;
+  period: {
+    month_from: string | null; month_to: string | null;
+    date_from: string | null; date_to: string | null;
+    /** The tab is on "all time", so both scopes are the same figures. */
+    all_time: boolean;
+  };
   by_month: DealerMonth[];
-  targets: { quarter: string; fy_year: number; label: string; target: number | null; achievement: number | null }[];
+  targets: {
+    quarter: string; fy_year: number; label: string;
+    /** Inclusive quarter bounds, so the drawer can keep the quarters that
+     *  overlap the selected period — never pro-rated, same rule as the tab. */
+    period_start: string; period_end: string;
+    target: number | null; achievement: number | null;
+  }[];
   last_field_note: PerfContact | null;
   history: PerfContact[];
 }
 
 export const n0 = (n: number | null | undefined) => (n ?? 0).toLocaleString("en-IN");
 export const pct = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `${n}%`);
-
-/**
- * One colour identity per idea, used identically on the tab's KPI row and in
- * the dealer drawer, so the same metric never changes colour between the two
- * (it used to: YS Sale was blue on the tab and orange in the drawer).
- *
- *   ours       — orange: our sales, matching the funnel band ("ours" is orange
- *                everywhere on this tab)
- *   conversion — green: ratios of winning (penetration)
- *   activity   — blue: contacts and coverage, the calls-blue entity family
- *   neutral    — grey: context figures (total sold, YSASC, addressable)
- */
-export const KPI = {
-  ours: { color: VISIT_COLOR, bg: "#fff4ed" },
-  conversion: { color: "#16a34a", bg: "#f0fdf4" },
-  activity: { color: CALL_COLOR, bg: "#eff6ff" },
-  neutral: { color: "#6b7280", bg: "#f3f4f6" },
-} as const;
 
 /** Rankings a dealer list can be read by. `gap` is the one that matters most:
  *  units we would gain at this dealer if it merely performed like the network

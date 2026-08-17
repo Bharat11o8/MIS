@@ -78,7 +78,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
         is ours; the{" "}
         <span style={{ color: FUNNEL_MISSED }} className="font-semibold">dark grey</span>{" "}
         is what we could have won and didn&apos;t
-        {anyUnmade && <>; the <span className="font-semibold text-gray-400">pale grey</span>{" "}
+        {anyUnmade && <>; the <span className="font-semibold text-gray-500">pale grey</span>{" "}
         on top is business we make no part for, which no amount of selling reaches</>}.
         So the orange measured against{" "}
         {anyUnmade ? <b className="text-gray-600">orange + dark grey</b> : "the bar"}{" "}
@@ -146,8 +146,11 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
               itemStyle={{ color: CHART_LABEL }}
               formatter={(v: number, name: string) => [n0(v), name]}
             />
-            <Bar dataKey="visits" stackId="act" name="Visits" fill={ACT_VISIT} />
-            <Bar dataKey="calls" stackId="act" name="Calls" fill={CALL_COLOR} radius={[4, 4, 0, 0]} />
+            {/* Capped: the strip is only 78px tall, and with few months a bar
+                otherwise grows to ~70px wide — a 70×8 blue slab reads as a
+                rendering glitch, not as "one call in August". */}
+            <Bar dataKey="visits" stackId="act" name="Visits" fill={ACT_VISIT} maxBarSize={26} />
+            <Bar dataKey="calls" stackId="act" name="Calls" fill={CALL_COLOR} radius={[3, 3, 0, 0]} maxBarSize={26} />
           </ComposedChart>
         </ResponsiveContainer>
       )}

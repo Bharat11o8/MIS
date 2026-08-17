@@ -35,7 +35,7 @@ export function CoveragePanel({ rows }: { rows: DealerSpRow[] }) {
               </span>
             </div>
             <span className={`w-28 shrink-0 text-[11px] font-bold tabular-nums ${coverageColor(r.coverage)}`}>
-              {pct(r.coverage)} <span className="text-gray-400 font-medium">of {r.assigned}</span>
+              {pct(r.coverage)} <span className="text-gray-500 font-medium">of {r.assigned}</span>
             </span>
           </div>
         ))}
@@ -67,20 +67,20 @@ export function QuarterPanel({ rows }: { rows: DealerQuarter[] }) {
             <div key={`${r.fy_year}${r.quarter}`}>
               <div className="flex items-baseline justify-between mb-1.5">
                 <span className="text-xs font-bold text-gray-700">{r.label}</span>
-                <span className="text-[11px] text-gray-400">
+                <span className="text-[11px] text-gray-500">
                   {r.ysasc == null ? n0(r.oem_total) + " sold" : `${n0(r.ysasc)} YSASC`}
                   {" · "}{pct(r.penetration)} penetration
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Target</span>
+                <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Target</span>
                 <div className="flex-1 h-4 rounded bg-gray-100">
                   <div className="h-full rounded" style={{ width: `${(tgt / max) * 100}%`, background: NEUTRAL_BAR }} />
                 </div>
                 <span className="w-16 text-right text-[11px] font-semibold tabular-nums text-gray-500">{n0(tgt)}</span>
               </div>
               <div className="flex items-center gap-2 mt-1">
-                <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Achieved</span>
+                <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Achieved</span>
                 <div className="flex-1 h-4 rounded bg-gray-100">
                   <div className="h-full rounded transition-all" style={{
                     width: `${(ach / max) * 100}%`,
@@ -96,7 +96,7 @@ export function QuarterPanel({ rows }: { rows: DealerQuarter[] }) {
                 // the tracks without a hand-tuned padding value.
                 <div className="flex gap-2 mt-1">
                   <span className="w-16 shrink-0" />
-                  <p className="text-[10px] text-gray-400">
+                  <p className="text-[10px] text-gray-500">
                     {ach ? `${hitPct}% of target` : "quarter still open"}
                   </p>
                 </div>
@@ -133,7 +133,7 @@ export function ContactEffectPanel({ data }: { data: DealerPerf["contact_effect"
               opacity: 0.35 + 0.65 * ((b.penetration ?? 0) / max),
             }} />
             <span className="text-[10px] font-semibold text-gray-500">{b.bucket}</span>
-            <span className="text-[9px] text-gray-400">{b.dealer_months} mo</span>
+            <span className="text-[9px] text-gray-500">{b.dealer_months} mo</span>
           </div>
         ))}
       </div>
