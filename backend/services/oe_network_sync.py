@@ -23,7 +23,7 @@ import re
 from datetime import date, timedelta
 from typing import Optional
 
-from services.google_sheets import get_sheets_service
+from services.google_sheets import get_sheets_service, SHEETS_RETRIES
 
 # Google Sheets serial-number epoch (UNFORMATTED_VALUE renders dates as serials).
 _SHEETS_EPOCH = date(1899, 12, 30)
@@ -188,16 +188,27 @@ def _cut(s: Optional[str], limit: int) -> Optional[str]:
 
 def _fetch_all_grids(sheet_id: str) -> dict:
     """{tab_title: ragged grid}. UNFORMATTED_VALUE so numbers stay numbers and
-    date cells arrive as serials rather than locale-formatted strings."""
+    date cells arrive as serials rather than locale-formatted strings.
+
+    Two API calls whatever the workbook's size: one for the tab titles, one
+    batchGet for every tab's values. Both retry on 429/5xx — a sync that dies on
+    a transient blip is a sync someone has to sit and redo.
+    """
     service = get_sheets_service()
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    # fields= keeps this to the titles. The default response carries every
+    # sheet's full properties — grid size, tab colour, merges, conditional
+    # formats — none of which is read here, and it is the larger payload on a
+    # workbook with many tabs.
+    meta = service.spreadsheets().get(
+        spreadsheetId=sheet_id, fields="sheets.properties.title",
+    ).execute(num_retries=SHEETS_RETRIES)
     titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
     if not titles:
         return {}
     resp = service.spreadsheets().values().batchGet(
         spreadsheetId=sheet_id, ranges=[f"'{t}'" for t in titles],
         valueRenderOption="UNFORMATTED_VALUE",
-    ).execute()
+    ).execute(num_retries=SHEETS_RETRIES)
     return {t: vr.get("values", []) for t, vr in zip(titles, resp.get("valueRanges", []))}
 
 

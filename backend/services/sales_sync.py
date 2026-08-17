@@ -16,7 +16,7 @@ months never need to be cleaned up by the team.
 import re
 from typing import Optional, Tuple
 
-from services.google_sheets import get_sheets_service
+from services.google_sheets import get_sheets_service, SHEETS_RETRIES
 
 # ── Fixed vocab ──────────────────────────────────────────────────────────────
 DEPOT_CANON = {
@@ -58,7 +58,7 @@ def fetch_workbook_grids(sheet_id: str):
       skipped_tabs — titles that didn't match a recognizable month/year
     """
     service = get_sheets_service()
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    meta = service.spreadsheets().get(spreadsheetId=sheet_id, fields="sheets.properties.title").execute(num_retries=SHEETS_RETRIES)
     titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
 
     recognized = []
@@ -70,7 +70,7 @@ def fetch_workbook_grids(sheet_id: str):
     grids = {}
     if recognized:
         ranges = [f"'{title}'!A1:AB120" for title, _ in recognized]
-        resp = service.spreadsheets().values().batchGet(spreadsheetId=sheet_id, ranges=ranges).execute()
+        resp = service.spreadsheets().values().batchGet(spreadsheetId=sheet_id, ranges=ranges).execute(num_retries=SHEETS_RETRIES)
         for (title, (year, month)), value_range in zip(recognized, resp.get("valueRanges", [])):
             grids[title] = (year, month, value_range.get("values", []))
 

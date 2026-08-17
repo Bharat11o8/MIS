@@ -41,7 +41,7 @@ import calendar
 from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
 
-from services.google_sheets import get_sheets_service
+from services.google_sheets import get_sheets_service, SHEETS_RETRIES
 
 ITEM_COL = 1   # col A — section number (blank on line-item rows)
 LABEL_COL = 2  # col B — Particulars / label
@@ -405,7 +405,7 @@ def fetch_finance_grids(sheet_id: str) -> dict:
     so numbers come through as numbers and date cells as serials (handled by
     _parse_period), rather than locale-formatted strings."""
     service = get_sheets_service()
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    meta = service.spreadsheets().get(spreadsheetId=sheet_id, fields="sheets.properties.title").execute(num_retries=SHEETS_RETRIES)
     titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
     if not titles:
         return {}
@@ -413,7 +413,7 @@ def fetch_finance_grids(sheet_id: str) -> dict:
     resp = service.spreadsheets().values().batchGet(
         spreadsheetId=sheet_id, ranges=ranges,
         valueRenderOption="UNFORMATTED_VALUE",
-    ).execute()
+    ).execute(num_retries=SHEETS_RETRIES)
     grids = {}
     for title, value_range in zip(titles, resp.get("valueRanges", [])):
         grids[title] = value_range.get("values", [])

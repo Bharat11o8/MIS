@@ -8,8 +8,31 @@ import json
 import base64
 import re
 
+import httplib2
+import google_auth_httplib2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+# Seconds before a stalled Sheets call is abandoned. Without this httplib2 has
+# NO timeout at all: a connection that stops responding mid-download hangs the
+# request forever, and the UI just spins with nothing to report. A sync that
+# fails after two minutes is far more useful than one that never returns.
+SHEETS_TIMEOUT = int(os.getenv("SHEETS_TIMEOUT_SECONDS") or 120)
+
+# Retries for the transient failures Google actually returns under load — 429
+# (rate limited) and 5xx. googleapiclient backs off exponentially between
+# attempts. Pass to .execute(num_retries=SHEETS_RETRIES) on every sheet read;
+# without it a single blip fails a whole sync the user then has to redo.
+SHEETS_RETRIES = int(os.getenv("SHEETS_RETRIES") or 3)
+
+
+def _timed_http(creds, timeout: int):
+    """An authorised transport that gives up rather than hanging.
+
+    httplib2.Http is not thread-safe, so this builds a fresh one per client —
+    every sync constructs its own service, so nothing is shared across requests.
+    """
+    return google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=timeout))
 
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Read + write — used only by the visit-log form, which appends response rows.
@@ -34,18 +57,26 @@ def load_service_account_info() -> dict:
     return json.loads(base64.b64decode(raw))
 
 
-def get_sheets_service():
+def get_sheets_service(timeout: int = SHEETS_TIMEOUT):
+    """Read-only Sheets client with a hard timeout.
+
+    static_discovery keeps the API description local — otherwise the first call
+    of every sync fetches a discovery document over the network before it can
+    even ask for the data.
+    """
     info = load_service_account_info()
     creds = service_account.Credentials.from_service_account_info(info, scopes=SHEETS_SCOPES)
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+    return build("sheets", "v4", http=_timed_http(creds, timeout),
+                 cache_discovery=False, static_discovery=True)
 
 
-def get_sheets_service_rw():
+def get_sheets_service_rw(timeout: int = SHEETS_TIMEOUT):
     """Read/write Sheets client — for appending form responses. Kept separate
     from get_sheets_service so nothing in the sync path can accidentally write."""
     info = load_service_account_info()
     creds = service_account.Credentials.from_service_account_info(info, scopes=SHEETS_WRITE_SCOPES)
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+    return build("sheets", "v4", http=_timed_http(creds, timeout),
+                 cache_discovery=False, static_discovery=True)
 
 
 def extract_sheet_id(raw: str) -> str:
@@ -86,16 +117,20 @@ def get_drive_service():
     owned by a real account, into a My Drive folder — see _oauth_user_creds), then
     domain-wide delegation (VISIT_LOG_DRIVE_AS_USER), then the plain service
     account (only works for a Shared Drive, which has no per-user quota)."""
+    # Same hard timeout as the Sheets clients — a stalled photo upload would
+    # otherwise hang the visit-log form submission indefinitely.
     user_creds = _oauth_user_creds()
     if user_creds is not None:
-        return build("drive", "v3", credentials=user_creds, cache_discovery=False)
+        return build("drive", "v3", http=_timed_http(user_creds, SHEETS_TIMEOUT),
+                     cache_discovery=False, static_discovery=True)
 
     info = load_service_account_info()
     creds = service_account.Credentials.from_service_account_info(info, scopes=DRIVE_UPLOAD_SCOPES)
     as_user = (os.getenv("VISIT_LOG_DRIVE_AS_USER") or "").strip()
     if as_user:
         creds = creds.with_subject(as_user)
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    return build("drive", "v3", http=_timed_http(creds, SHEETS_TIMEOUT),
+                 cache_discovery=False, static_discovery=True)
 
 
 def upload_photo_to_folder(file_bytes: bytes, filename: str, mime_type: str, folder_id: str) -> str:
@@ -110,6 +145,9 @@ def upload_photo_to_folder(file_bytes: bytes, filename: str, mime_type: str, fol
 
     drive = get_drive_service()
     media = MediaInMemoryUpload(file_bytes, mimetype=mime_type or "application/octet-stream", resumable=False)
+    # Deliberately NOT num_retries: this creates a file. A 5xx can arrive after
+    # the upload actually landed, so retrying risks a duplicate photo against
+    # the same visit. The reads in the sync path are idempotent and do retry.
     created = drive.files().create(
         body={"name": filename, "parents": [folder_id]},
         media_body=media,

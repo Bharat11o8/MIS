@@ -19,7 +19,7 @@ only the calendar year is a manual input (the header text never carries one).
 import re
 from typing import Optional, Tuple
 
-from services.google_sheets import get_sheets_service
+from services.google_sheets import get_sheets_service, SHEETS_RETRIES
 
 REQUIRED_HEADERS = {"DISTRIBUTOR", "AREA HEAD", "TARGET"}
 
@@ -174,14 +174,14 @@ def parse_distributor_grid(grid, calendar_year: int) -> Tuple[list, list]:
 def fetch_distributor_grid(sheet_id: str):
     """Fetches the grid of a quarterly Depot-to-Distributor sheet's single tab."""
     service = get_sheets_service()
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    meta = service.spreadsheets().get(spreadsheetId=sheet_id, fields="sheets.properties.title").execute(num_retries=SHEETS_RETRIES)
     tabs = meta.get("sheets", [])
     if not tabs:
         return []
     tab_title = tabs[0]["properties"]["title"]
     resp = service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab_title}'!A1:J200"
-    ).execute()
+    ).execute(num_retries=SHEETS_RETRIES)
     return resp.get("values", [])
 
 
