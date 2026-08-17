@@ -35,10 +35,10 @@ export default function RevenueProfitTrendChart({ salesSeries, grossSeries, nett
     <div className="card-premium p-6">
       <div className="mb-5">
         <h3 className="text-sm font-bold text-gray-800">Revenue &amp; Profit Trend</h3>
-        <p className="text-[11px] text-gray-400">Summed within each period — a flow figure, unlike the Balance Sheet</p>
+        <p className="text-[11px] text-gray-500">Summed within each period — a flow figure, unlike the Balance Sheet</p>
       </div>
       {trendData.length < 2 ? (
-        <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">Not enough history yet — sync more periods to see a trend.</div>
+        <div className="h-[220px] flex items-center justify-center text-sm text-gray-500">Not enough history yet — sync more periods to see a trend.</div>
       ) : (
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={trendData}>

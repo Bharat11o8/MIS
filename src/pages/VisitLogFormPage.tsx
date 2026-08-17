@@ -433,13 +433,13 @@ function SelectField({
             disabled ? "bg-gray-50 cursor-not-allowed" : ""
           } ${open ? "border-orange-400 ring-4 ring-orange-100" : ""}`}
         >
-          <span className={value ? "text-gray-900" : "text-gray-400"}>
+          <span className={value ? "text-gray-900" : "text-gray-500"}>
             {value || (disabled ? hint ?? "Select…" : placeholder ?? "Select…")}
           </span>
           <motion.span
             animate={{ rotate: open ? 180 : 0 }}
             transition={{ duration: 0.18 }}
-            className="text-gray-400 shrink-0"
+            className="text-gray-500 shrink-0"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" strokeWidth="1.6"
@@ -518,7 +518,7 @@ function SearchableField({
       <div className="relative">
         <Search
           size={15}
-          className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+          className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
         />
         <input
           className={`${fieldBase} pl-10 ${disabled ? "bg-gray-50" : ""}`}
@@ -538,7 +538,7 @@ function SearchableField({
           <button
             type="button"
             onClick={() => { onChange(""); setQuery(""); }}
-            className="absolute right-3 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full flex items-center justify-center text-gray-400 active:bg-gray-100"
+            className="absolute right-3 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full flex items-center justify-center text-gray-500 active:bg-gray-100"
             aria-label={`Clear ${label}`}
           >
             <X size={14} />
@@ -591,9 +591,9 @@ function DerivedCity({ city }: { city: string }) {
       <Label required>{FIELD_LABELS.city}</Label>
       <div className={`${fieldBase} flex items-center justify-between bg-gray-50 text-gray-700`}>
         <span>{city}</span>
-        <MapPin size={15} className="text-gray-400 shrink-0" />
+        <MapPin size={15} className="text-gray-500 shrink-0" />
       </div>
-      <p className="text-xs text-gray-400">From the selected dealership.</p>
+      <p className="text-xs text-gray-500">From the selected dealership.</p>
     </div>
   );
 }
@@ -645,7 +645,7 @@ function AddDealerPanel({
         <span className="text-xs font-bold uppercase tracking-wider text-orange-700">
           New dealership · {oem} · {state}
         </span>
-        <button type="button" onClick={onClose} aria-label="Cancel" className="text-gray-400 active:text-gray-600">
+        <button type="button" onClick={onClose} aria-label="Cancel" className="text-gray-500 active:text-gray-600">
           <X size={16} />
         </button>
       </div>
@@ -1107,7 +1107,7 @@ export default function VisitLogFormPage() {
                       className="w-full h-[52px] px-4 rounded-2xl text-base bg-gray-50 border border-gray-200 flex items-center gap-2.5 text-gray-700"
                       aria-readonly="true"
                     >
-                      <CalendarDays size={16} className="shrink-0 text-gray-400" />
+                      <CalendarDays size={16} className="shrink-0 text-gray-500" />
                       <span>{formatDisplayDate(form.visit_date)}</span>
                     </div>
                   </div>
@@ -1347,7 +1347,7 @@ export default function VisitLogFormPage() {
                         </div>
                       ) : (
                         <label className="flex flex-col items-center justify-center gap-2 h-32 rounded-2xl border-2 border-dashed border-gray-200 active:border-orange-300 active:bg-orange-50/40 transition-colors cursor-pointer">
-                          <ImagePlus size={22} className="text-gray-400" />
+                          <ImagePlus size={22} className="text-gray-500" />
                           <span className="text-sm text-gray-500 font-medium">Choose from gallery</span>
                           <input
                             type="file"
@@ -1362,7 +1362,7 @@ export default function VisitLogFormPage() {
                 )}
               </AnimatePresence>
 
-              <p className="text-center text-[10px] text-gray-400 uppercase tracking-wider">
+              <p className="text-center text-[10px] text-gray-500 uppercase tracking-wider">
                 © {new Date().getFullYear()} Amato Automotive
               </p>
             </motion.form>

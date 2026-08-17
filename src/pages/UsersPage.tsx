@@ -136,7 +136,7 @@ export default function UsersPage() {
             <ShieldCheck size={22} />
           </div>
           <p className="text-sm font-bold text-gray-700">Access Restricted</p>
-          <p className="text-xs text-gray-400">User management is only available to Super Admin accounts.</p>
+          <p className="text-xs text-gray-500">User management is only available to Super Admin accounts.</p>
         </div>
       </div>
     );
@@ -154,7 +154,7 @@ export default function UsersPage() {
           <div className="flex items-center gap-2 mt-1">
             <div className="w-8 h-0.5 bg-gray-800 rounded" />
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
               Create & Manage Team Accounts
             </p>
           </div>
@@ -193,7 +193,7 @@ export default function UsersPage() {
       {/* Toolbar */}
       <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[220px] max-w-sm">
-          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-300" />
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -215,7 +215,7 @@ export default function UsersPage() {
         >
           <Shuffle size={13} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
-        <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 ml-auto">
+        <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500 ml-auto">
           {filtered.length} of {users.length} users
         </p>
       </motion.div>
@@ -227,7 +227,7 @@ export default function UsersPage() {
             <thead>
               <tr className="border-y border-gray-50 bg-gray-50/50">
                 {["User", "Role", "Department", "Access", "Status", "Password", "Created", ""].map((h) => (
-                  <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-3 first:pl-6 last:pr-6">
+                  <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-4 py-3 first:pl-6 last:pr-6">
                     {h}
                   </th>
                 ))}
@@ -235,9 +235,9 @@ export default function UsersPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading ? (
-                <tr><td colSpan={8} className="text-center py-8 text-sm text-gray-400">Loading users…</td></tr>
+                <tr><td colSpan={8} className="text-center py-8 text-sm text-gray-500">Loading users…</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-8 text-sm text-gray-400">No users match the current filters.</td></tr>
+                <tr><td colSpan={8} className="text-center py-8 text-sm text-gray-500">No users match the current filters.</td></tr>
               ) : filtered.map((u) => {
                 const isSelf = u.id === me?.id;
                 return (
@@ -248,8 +248,8 @@ export default function UsersPage() {
                           {u.name.charAt(0).toUpperCase()}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-xs font-bold text-gray-800 truncate">{u.name}{isSelf && <span className="text-gray-300 font-normal"> (you)</span>}</p>
-                          <p className="text-[11px] text-gray-400 truncate">{u.email}</p>
+                          <p className="text-xs font-bold text-gray-800 truncate">{u.name}{isSelf && <span className="text-gray-500 font-normal"> (you)</span>}</p>
+                          <p className="text-[11px] text-gray-500 truncate">{u.email}</p>
                         </div>
                       </div>
                     </td>
@@ -258,12 +258,12 @@ export default function UsersPage() {
                         {ROLE_LABELS[u.role]}
                       </span>
                     </td>
-                    <td className="px-4 py-3.5 text-xs text-gray-600">{u.department ?? <span className="text-gray-300">—</span>}</td>
+                    <td className="px-4 py-3.5 text-xs text-gray-600">{u.department ?? <span className="text-gray-400">—</span>}</td>
                     <td className="px-4 py-3.5">
                       {u.role === "superadmin" ? (
                         <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">All</span>
                       ) : u.modules.length === 0 ? (
-                        <span className="text-[10px] text-gray-300">None</span>
+                        <span className="text-[10px] text-gray-500">None</span>
                       ) : (
                         <div className="flex flex-wrap gap-1">
                           {u.modules.map((m) => (
@@ -283,10 +283,10 @@ export default function UsersPage() {
                       {u.must_change_password ? (
                         <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Pending Reset</span>
                       ) : (
-                        <span className="text-[10px] text-gray-300">—</span>
+                        <span className="text-[10px] text-gray-400">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3.5 text-xs text-gray-400">
+                    <td className="px-4 py-3.5 text-xs text-gray-500">
                       {u.created_at ? new Date(u.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—"}
                     </td>
                     <td className="px-4 py-3.5 pr-6 text-right">
@@ -295,7 +295,7 @@ export default function UsersPage() {
                           onClick={() => setAccessUser(u)}
                           disabled={u.role === "superadmin"}
                           title={u.role === "superadmin" ? "Superadmin already has full access" : "Manage module access"}
-                          className="w-8 h-8 rounded-xl border border-gray-200 text-gray-400 hover:text-orange-500 hover:border-orange-200 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="w-8 h-8 rounded-xl border border-gray-200 text-gray-500 hover:text-orange-500 hover:border-orange-200 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           <Settings size={14} />
                         </button>
@@ -315,7 +315,7 @@ export default function UsersPage() {
                           onClick={() => deleteUser(u)}
                           disabled={isSelf || pendingDelete === u.id}
                           title={isSelf ? "You can't delete your own account" : "Delete permanently"}
-                          className="w-8 h-8 rounded-xl border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="w-8 h-8 rounded-xl border border-gray-200 text-gray-500 hover:text-red-500 hover:border-red-200 hover:bg-red-50 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           {pendingDelete === u.id ? (
                             <span className="text-[11px] font-bold">…</span>
@@ -407,7 +407,7 @@ function AccessFields({
             className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all ${
               modules.includes(m)
                 ? "text-orange-600 bg-orange-50 border-orange-200"
-                : "text-gray-400 border-gray-200 hover:border-gray-300"
+                : "text-gray-500 border-gray-200 hover:border-gray-300"
             }`}
           >
             {MODULE_LABELS[m]}
@@ -417,11 +417,11 @@ function AccessFields({
 
       {modules.includes("finance") && (
         <div className="mt-1 flex flex-col gap-2 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Finance — Company Access</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Finance — Company Access</p>
           {companies === null ? (
-            <p className="text-xs text-gray-400">Loading companies…</p>
+            <p className="text-xs text-gray-500">Loading companies…</p>
           ) : companies.length === 0 ? (
-            <p className="text-xs text-gray-400">No Finance companies registered yet. Add one from the Finance page first.</p>
+            <p className="text-xs text-gray-500">No Finance companies registered yet. Add one from the Finance page first.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {companies.map((c) => (
@@ -432,7 +432,7 @@ function AccessFields({
                   className={`text-xs font-medium px-3 py-1.5 rounded-xl border transition-all ${
                     financeCompanyIds.includes(c.id)
                       ? "text-orange-600 bg-orange-50 border-orange-200"
-                      : "text-gray-400 border-gray-200 hover:border-gray-300"
+                      : "text-gray-500 border-gray-200 hover:border-gray-300"
                   }`}
                 >
                   {c.label}
@@ -511,13 +511,13 @@ function ManageAccessModal({
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-black text-gray-900">Manage Access</h2>
-            <p className="text-xs text-gray-400">{targetUser.name} · {targetUser.email}</p>
+            <p className="text-xs text-gray-500">{targetUser.name} · {targetUser.email}</p>
           </div>
-          <button onClick={onClose} className="text-gray-300 hover:text-gray-500"><X size={18} /></button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-500"><X size={18} /></button>
         </div>
 
         {loading ? (
-          <p className="text-xs text-gray-400">Loading current access…</p>
+          <p className="text-xs text-gray-500">Loading current access…</p>
         ) : (
           <AccessFields
             headers={headers}
@@ -665,7 +665,7 @@ function CreateUserModal({
       >
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-black text-gray-900">Add New User</h2>
-          <button onClick={onClose} className="text-gray-300 hover:text-gray-500"><X size={18} /></button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-500"><X size={18} /></button>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -698,7 +698,7 @@ function CreateUserModal({
                   className="h-11 w-full px-4 pr-10 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all"
                 />
                 <button type="button" onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500">
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-500">
                   {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
@@ -711,7 +711,7 @@ function CreateUserModal({
                 <Shuffle size={15} />
               </button>
             </div>
-            <p className="text-[10px] text-gray-400">User will be forced to set their own password on first login.</p>
+            <p className="text-[10px] text-gray-500">User will be forced to set their own password on first login.</p>
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -726,7 +726,7 @@ function CreateUserModal({
 
           <div className="flex flex-col gap-1.5">
             <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-              Department <span className="text-gray-300 normal-case font-normal">(optional)</span>
+              Department <span className="text-gray-500 normal-case font-normal">(optional)</span>
             </label>
             <input
               value={department} onChange={(e) => setDepartment(e.target.value)}
@@ -736,7 +736,7 @@ function CreateUserModal({
           </div>
 
           {role === "superadmin" ? (
-            <p className="text-[11px] text-gray-400 -mt-1">Superadmin automatically has access to every module.</p>
+            <p className="text-[11px] text-gray-500 -mt-1">Superadmin automatically has access to every module.</p>
           ) : (
             <AccessFields
               headers={headers}

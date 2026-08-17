@@ -55,7 +55,7 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
   const bucketLabels = useMemo(() => bucketLabelsOf(sources, "stock", view), [sources, view]);
   const effBucket = bucketLabels.includes(bucket) ? bucket : (bucketLabels[bucketLabels.length - 1] ?? "");
 
-  if (loading) return <div className="text-sm text-gray-400 py-10 text-center">Loading balance sheet…</div>;
+  if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading balance sheet…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;
   if (!data || data.periods.length === 0) return <EmptyState>No balance-sheet data yet. Click “Sync Now” to pull the latest from the sheet.</EmptyState>;
 
@@ -80,7 +80,7 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
     <div className="flex flex-col gap-6">
       <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
 
-      <p className="text-[11px] text-gray-400 -mb-2">
+      <p className="text-[11px] text-gray-500 -mb-2">
         Balance-sheet figures are point-in-time snapshots — a quarter or year shows the balance <b>as at</b> its period-end date, not a sum of months.
       </p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -88,19 +88,19 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
         <KpiCard label={`Application of Funds · ${asAtTxt}`} value={appCh.value != null ? formatKpi(appCh.value) : "—"} exact={appCh.value != null ? formatINR(appCh.value) : undefined} accent={APPLICATION_COLOR} share={appShare} shareOf="of the balance sheet" />
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? SUCCESS_COLOR : DANGER_COLOR }} />
-          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel}</div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{changeLabel}</div>
           <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: changePct == null ? "#8F8A83" : changePct >= 0 ? SUCCESS_COLOR : DANGER_COLOR }}>
             {changePct != null ? `${changePct > 0 ? "+" : ""}${changePct}%` : "—"}
           </div>
-          <div className="text-[11px] font-medium text-gray-400 mt-0.5">{srcCh.prevLabel ? `${srcCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
+          <div className="text-[11px] font-medium text-gray-500 mt-0.5">{srcCh.prevLabel ? `${srcCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
         </div>
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: balanced ? SUCCESS_COLOR : DANGER_COLOR }} />
-          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Balance Check</div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Balance Check</div>
           <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: balanced ? SUCCESS_COLOR : DANGER_COLOR }}>
             {balanced ? "Balanced" : gap != null ? formatKpi(Math.abs(gap)) : "—"}
           </div>
-          <div className="text-[11px] font-medium text-gray-400 mt-0.5">
+          <div className="text-[11px] font-medium text-gray-500 mt-0.5">
             {balanced ? "Sources = Application" : gap != null ? `Off by ${formatINR(Math.abs(gap))}` : "No data"}
           </div>
         </div>

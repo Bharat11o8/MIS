@@ -31,8 +31,8 @@ function heatmapTitle(d: DeltaCalc): string | undefined {
 function rowClasses(row: OrderedRow): { td: string; tr: string } {
   switch (row.kind) {
     case "headline": return { td: "font-bold text-gray-800", tr: "bg-orange-50/40" };
-    case "subtotal": return { td: "italic text-gray-400", tr: "" };
-    case "detail": return { td: "pl-10 text-gray-400", tr: "text-gray-400" };
+    case "subtotal": return { td: "italic text-gray-500", tr: "" };
+    case "detail": return { td: "pl-10 text-gray-500", tr: "text-gray-500" };
     default: return { td: "font-medium text-gray-700", tr: "" };
   }
 }
@@ -71,17 +71,17 @@ export default function PlLineItemTable({ title, section, headline, trendView }:
     <div className="card-premium overflow-hidden">
       <div className="p-6 pb-4">
         <h3 className="text-sm font-bold text-gray-800">{title}</h3>
-        <p className="text-[11px] text-gray-400">Rows in the sheet's own order — subtotals and totals are the sheet's verbatim figures, never recomputed</p>
+        <p className="text-[11px] text-gray-500">Rows in the sheet's own order — subtotals and totals are the sheet's verbatim figures, never recomputed</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50/50">
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2">Item</th>
+              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-6 py-2">Item</th>
               {periods.map((p) => (
-                <th key={p} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 whitespace-nowrap">{p}</th>
+                <th key={p} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2 whitespace-nowrap">{p}</th>
               ))}
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Trend</th>
+              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">Trend</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">

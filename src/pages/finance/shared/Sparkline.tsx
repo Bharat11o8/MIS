@@ -13,7 +13,7 @@ interface SparklineProps {
 export default function Sparkline({ values, width = 72, height = 24, color = "#4E6575" }: SparklineProps) {
   const clean = values.filter((v) => Number.isFinite(v));
   if (clean.length < 2) {
-    return <span className="text-[10px] text-gray-300">—</span>;
+    return <span className="text-[10px] text-gray-400">—</span>;
   }
   const min = Math.min(...clean);
   const max = Math.max(...clean);

@@ -225,7 +225,7 @@ export default function PlantOpsView({ sheetSourceId, refreshNonce = 0 }: { shee
 
   return (
     <div className="flex flex-col gap-6">
-      {loading && <div className="text-sm text-gray-400 py-10 text-center">Loading Plant Operations…</div>}
+      {loading && <div className="text-sm text-gray-500 py-10 text-center">Loading Plant Operations…</div>}
       {error && <EmptyState>{error}</EmptyState>}
 
       {!loading && !error && (hasUnits || hasUnitCost) && (
@@ -259,7 +259,7 @@ export default function PlantOpsView({ sheetSourceId, refreshNonce = 0 }: { shee
             <div key={it.title} className="bg-white border border-[#EAE3D6] rounded-2xl p-4 flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-gray-700">{it.title}</div>
-                <div className="text-[11px] text-gray-400 mt-0.5">{it.desc}</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">{it.desc}</div>
               </div>
               <span className="text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap bg-[#F5F0E8] text-[#8F8A83]">Empty in sheet</span>
             </div>

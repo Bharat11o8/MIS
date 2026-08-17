@@ -94,7 +94,7 @@ export default function HeroKpiRow({ kpis, sourcesSeries, applicationSeries }: H
           </div>
           <div className="mt-3 min-w-0">
             <p className={`font-black text-gray-900 tabular-nums ${kpi.big ? "text-2xl" : "text-xl"}`} title={kpi.exact}>{kpi.value}</p>
-            {kpi.sub && <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
+            {kpi.sub && <p className="text-[10px] text-gray-500 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
           </div>
         </div>
       ))}
@@ -112,7 +112,7 @@ export default function HeroKpiRow({ kpis, sourcesSeries, applicationSeries }: H
           {diffSeries.length >= 2 && (
             <div className="flex flex-col items-end gap-0.5 shrink-0">
               <BalanceGapSparkline values={diffSeries} width={56} height={24} />
-              <p className="text-[9px] text-gray-300 whitespace-nowrap">Sources − Application</p>
+              <p className="text-[9px] text-gray-500 whitespace-nowrap">Sources − Application</p>
             </div>
           )}
         </div>

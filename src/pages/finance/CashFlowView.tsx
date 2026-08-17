@@ -59,7 +59,7 @@ const ACTIVITY_ACCENT: Record<string, string> = {
 function OperatingCashBridge({ rows, period }: { rows: { label: string; value: number; anchor: boolean }[]; period: string }) {
   if (rows.length < 2) return (
     <Card title="How profit becomes cash" note={`Net Profit → Operating Cash · ${period}`}>
-      <div className="text-[11px] text-gray-400 py-6">Net Profit and Operating Cash aren't both available this period.</div>
+      <div className="text-[11px] text-gray-500 py-6">Net Profit and Operating Cash aren't both available this period.</div>
     </Card>
   );
   const maxAbs = Math.max(...rows.map((r) => Math.abs(r.value)), 1);
@@ -97,7 +97,7 @@ function shortWcLabel(label: string): string {
 function WorkingCapitalDrivers({ items, period }: { items: { label: string; value: number }[]; period: string }) {
   if (items.length === 0) return (
     <Card title="Working-capital drivers" note={`Where cash was released or trapped · ${period}`}>
-      <div className="text-[11px] text-gray-400 py-6">No working-capital movement this period.</div>
+      <div className="text-[11px] text-gray-500 py-6">No working-capital movement this period.</div>
     </Card>
   );
   const maxAbs = Math.max(...items.map((i) => Math.abs(i.value)), 1);
@@ -141,7 +141,7 @@ function CashGenerationCard({ data }: { data: GenRow[] }) {
   return (
     <Card title="Cash generation — over time"
       note="Free Cash Flow (bars, green = positive) with Net Profit and Operating Cash (lines). The gap between the lines is earnings quality; the gap to the bars is capex.">
-      {data.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
+      {data.length === 0 ? <div className="text-[11px] text-gray-500 py-6">No periods yet.</div> : (
         <ResponsiveContainer width="100%" height={280}>
           <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
@@ -325,7 +325,7 @@ export default function CashFlowView({ sheetSourceId, refreshNonce = 0 }: { shee
 
   return (
     <div className="flex flex-col gap-6">
-      {loading && <div className="text-sm text-gray-400 py-10 text-center">Loading Cash Flow…</div>}
+      {loading && <div className="text-sm text-gray-500 py-10 text-center">Loading Cash Flow…</div>}
       {error && <EmptyState>{error}</EmptyState>}
 
       {!loading && !error && hasData && (

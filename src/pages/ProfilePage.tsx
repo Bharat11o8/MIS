@@ -61,7 +61,7 @@ export default function ProfilePage() {
         <div className="flex items-center gap-2 mt-1 mb-8">
           <div className="w-8 h-0.5 bg-gray-800 rounded" />
           <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
             Account Settings
           </p>
         </div>
@@ -108,7 +108,7 @@ export default function ProfilePage() {
           {/* Email */}
           <div className="flex flex-col gap-1.5">
             <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-gray-500">
-              <Mail size={12} /> Email Address <span className="text-gray-300 normal-case font-normal">(also your login username)</span>
+              <Mail size={12} /> Email Address <span className="text-gray-400 normal-case font-normal">(also your login username)</span>
             </label>
             <input
               type="email"
@@ -127,7 +127,7 @@ export default function ProfilePage() {
             </label>
             <div className="h-11 px-4 rounded-xl border border-gray-100 bg-gray-50 flex items-center text-sm text-gray-500 font-medium">
               {ROLE_LABELS[user.role]}
-              <span className="ml-2 text-[10px] text-gray-400">(managed by admin)</span>
+              <span className="ml-2 text-[10px] text-gray-500">(managed by admin)</span>
             </div>
           </div>
 

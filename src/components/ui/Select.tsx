@@ -25,7 +25,7 @@ export default function Select({
         className={cn(
           "flex items-center justify-between gap-2 text-xs border border-gray-200 rounded-xl px-3 py-2 bg-white text-gray-700 font-medium min-w-[130px]",
           "focus:outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-400 transition",
-          "data-[placeholder]:text-gray-400",
+          "data-[placeholder]:text-gray-500",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           "hover:border-orange-300 cursor-pointer",
           className
@@ -33,7 +33,7 @@ export default function Select({
       >
         <RadixSelect.Value placeholder={placeholder} />
         <RadixSelect.Icon>
-          <ChevronDown size={13} className="text-gray-400" />
+          <ChevronDown size={13} className="text-gray-500" />
         </RadixSelect.Icon>
       </RadixSelect.Trigger>
 

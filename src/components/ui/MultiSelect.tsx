@@ -38,14 +38,14 @@ export default function MultiSelect({
           className={cn(
             "flex items-center justify-between gap-2 text-xs border border-gray-200 rounded-xl px-3 py-2 bg-white text-gray-700 font-medium min-w-[130px]",
             "focus:outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-400 transition",
-            values.length === 0 && "text-gray-400",
+            values.length === 0 && "text-gray-500",
             "disabled:opacity-50 disabled:cursor-not-allowed",
             "hover:border-orange-300 cursor-pointer",
             className
           )}
         >
           <span className="truncate">{triggerLabel}</span>
-          <ChevronDown size={13} className="text-gray-400 shrink-0" />
+          <ChevronDown size={13} className="text-gray-500 shrink-0" />
         </button>
       </DropdownMenu.Trigger>
 

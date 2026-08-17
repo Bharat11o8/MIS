@@ -55,7 +55,7 @@ function fmtAsAt(iso: string | null): string {
 
 function Th({ children, align = "right" }: { children: React.ReactNode; align?: "left" | "right" | "center" }) {
   return (
-    <th className={`px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-gray-400 text-${align} whitespace-nowrap`}>
+    <th className={`px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-gray-500 text-${align} whitespace-nowrap`}>
       {children}
     </th>
   );
@@ -126,7 +126,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
     return { id: c.id, label: c.label, sources, application, gap, asAt: c.as_at };
   }), [companies]);
 
-  if (loading) return <div className="text-sm text-gray-400 py-10 text-center">Loading all companies…</div>;
+  if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading all companies…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;
   if (companies.length === 0) return <EmptyState>No companies available yet. Register the master files from the Data Sources tab and sync.</EmptyState>;
 
@@ -137,7 +137,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
     <div className="flex flex-col gap-6">
       <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
 
-      <p className="text-[11px] text-gray-400 -mb-2">
+      <p className="text-[11px] text-gray-500 -mb-2">
         Each company is shown <b>as reported</b> — figures are never added across companies, so any roll-up tab in the
         master sheet appears as its own row rather than being counted twice.
       </p>
@@ -180,7 +180,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
       )}
 
       <SectionHeading accent={APPLICATION_COLOR}>Balance Sheet · last figures</SectionHeading>
-      <p className="text-[11px] text-gray-400 -mt-2">
+      <p className="text-[11px] text-gray-500 -mt-2">
         A balance sheet is a point-in-time snapshot, so each company shows its own latest reported position — the
         <b> as at</b> date can differ between companies, and does not follow the period picker above.
       </p>
@@ -210,7 +210,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
                       <MoneyTd value={r.application} />
                       <td className="px-4 py-3 text-center whitespace-nowrap">
                         {r.gap == null ? (
-                          <span className="text-[11px] font-medium text-gray-300">—</span>
+                          <span className="text-[11px] font-medium text-gray-400">—</span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full"
                             style={{

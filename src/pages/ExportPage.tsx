@@ -47,7 +47,7 @@ export default function ExportPage() {
         <div className="flex items-center gap-2 mt-1">
           <div className="w-8 h-0.5 bg-gray-800 rounded" />
           <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
             Download Filtered Reports
           </p>
         </div>
@@ -62,7 +62,7 @@ export default function ExportPage() {
       >
         {/* Module selector */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5 mb-3">
+          <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5 mb-3">
             <Filter size={12} /> Select Module
           </label>
           <div className="flex flex-wrap gap-2">
@@ -86,7 +86,7 @@ export default function ExportPage() {
 
         {/* Date range */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5 mb-3">
+          <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5 mb-3">
             <Calendar size={12} /> Date Range
           </label>
           <div className="flex flex-wrap gap-2">
@@ -110,7 +110,7 @@ export default function ExportPage() {
 
         {/* File format */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5 mb-3">
+          <label className="text-[11px] font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5 mb-3">
             <FileSpreadsheet size={12} /> File Format
           </label>
           <div className="flex gap-3">
@@ -138,7 +138,7 @@ export default function ExportPage() {
           className="rounded-2xl p-4 flex flex-col gap-1"
           style={{ background: "#fafafa", border: "1px solid #f3f4f6" }}
         >
-          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-2">Export Summary</p>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-2">Export Summary</p>
           <div className="flex justify-between text-xs">
             <span className="text-gray-500">Module</span>
             <span className="font-bold text-gray-800">{moduleLabels[module]}</span>

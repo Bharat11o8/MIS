@@ -107,13 +107,13 @@ export default function OverviewPage() {
             <div className="flex items-center gap-2 mt-1">
               <div className="w-8 h-0.5 bg-gray-800 rounded" />
               <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-              <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
                 {visibleTiles.length > 0 ? "Select a module to get started" : "Welcome"}
               </p>
             </div>
           </div>
           <div className="text-right">
-            <p className="text-xs text-gray-400">Today</p>
+            <p className="text-xs text-gray-500">Today</p>
             <p className="text-sm font-bold text-gray-700">
               {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
             </p>
@@ -124,12 +124,12 @@ export default function OverviewPage() {
       {/* Module tiles */}
       {visibleTiles.length === 0 ? (
         <div className="card-premium p-10 flex flex-col items-center text-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-400">
+          <div className="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-500">
             <LayoutDashboard size={22} />
           </div>
           <div>
             <p className="text-sm font-bold text-gray-700">No modules assigned yet</p>
-            <p className="text-xs text-gray-400 mt-1 max-w-sm">
+            <p className="text-xs text-gray-500 mt-1 max-w-sm">
               Your account doesn't have access to any modules. Ask a super admin to grant access from the Users page.
             </p>
           </div>
@@ -163,7 +163,7 @@ export default function OverviewPage() {
 
               <div className="relative">
                 <p className="text-lg font-black text-gray-900 tracking-tight">{tile.label}</p>
-                <p className="text-xs text-gray-400 mt-1 leading-relaxed">{tile.description}</p>
+                <p className="text-xs text-gray-500 mt-1 leading-relaxed">{tile.description}</p>
                 <div
                   className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider mt-4"
                   style={{ color: tile.color }}

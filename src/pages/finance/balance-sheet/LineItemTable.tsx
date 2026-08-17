@@ -122,25 +122,25 @@ export default function LineItemTable({ title, section, trendView }: LineItemTab
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50/50">
-              <th className="sticky left-0 z-10 text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2" style={{ background: STICKY_HEADER_BG, boxShadow: STICKY_EDGE_SHADOW }}>Item</th>
+              <th className="sticky left-0 z-10 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-6 py-2" style={{ background: STICKY_HEADER_BG, boxShadow: STICKY_EDGE_SHADOW }}>Item</th>
               {periods.map((p) => (
-                <th key={p} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 whitespace-nowrap">{p}</th>
+                <th key={p} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2 whitespace-nowrap">{p}</th>
               ))}
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Trend</th>
+              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">Trend</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
             {visibleRows.map((row) => (
-              <tr key={row.item.line_key} className={row.depth > 0 ? "text-gray-400" : ""}>
+              <tr key={row.item.line_key} className={row.depth > 0 ? "text-gray-500" : ""}>
                 <td
-                  className={`sticky left-0 z-[1] px-6 py-2.5 text-xs whitespace-nowrap ${row.depth > 0 ? "pl-10 text-gray-400" : "font-medium text-gray-700"}`}
+                  className={`sticky left-0 z-[1] px-6 py-2.5 text-xs whitespace-nowrap ${row.depth > 0 ? "pl-10 text-gray-500" : "font-medium text-gray-700"}`}
                   style={{ background: STICKY_BG, boxShadow: STICKY_EDGE_SHADOW }}
                 >
                   {row.childCount > 0 ? (
                     <button onClick={() => toggle(row.item.line_key)} className="flex items-center gap-1 hover:text-orange-500 transition-colors">
-                      {expanded.has(row.item.line_key) ? <ChevronDown size={12} className="shrink-0 text-gray-300" /> : <ChevronRight size={12} className="shrink-0 text-gray-300" />}
+                      {expanded.has(row.item.line_key) ? <ChevronDown size={12} className="shrink-0 text-gray-400" /> : <ChevronRight size={12} className="shrink-0 text-gray-400" />}
                       {row.item.line_label}
-                      <span className="text-[9px] font-bold text-gray-300">({row.childCount})</span>
+                      <span className="text-[9px] font-bold text-gray-500">({row.childCount})</span>
                     </button>
                   ) : (
                     row.item.line_label

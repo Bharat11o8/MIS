@@ -227,7 +227,7 @@ export function Card({ title, note, right, children }: { title?: string; note?: 
           {right}
         </div>
       )}
-      {note && <p className="text-[11px] text-gray-400 mb-3">{note}</p>}
+      {note && <p className="text-[11px] text-gray-500 mb-3">{note}</p>}
       {children}
     </section>
   );
@@ -246,7 +246,7 @@ export function KpiCard({ label, value, deltaPct, deltaPeriod, accent = SOURCES_
   return (
     <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
       <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: accent }} />
-      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</div>
+      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{label}</div>
       <div className="flex items-baseline gap-2 mt-1 flex-wrap">
         <span className="text-2xl font-bold text-gray-800 tracking-tight" title={exact}>{value}</span>
         {share != null && (
@@ -261,7 +261,7 @@ export function KpiCard({ label, value, deltaPct, deltaPeriod, accent = SOURCES_
       </div>
       {deltaPct !== undefined && (
         <div className="text-[11px] font-semibold mt-0.5" style={{ color: dc }}>
-          {formatPct(deltaPct)}{deltaPeriod ? <span className="text-gray-400 font-medium"> · {deltaPeriod}</span> : null}
+          {formatPct(deltaPct)}{deltaPeriod ? <span className="text-gray-500 font-medium"> · {deltaPeriod}</span> : null}
         </div>
       )}
     </div>
@@ -314,7 +314,7 @@ export function DashboardControls({ view, onView, labels, bucket, onBucket, lead
       className="no-print sticky z-20 flex items-center justify-between flex-wrap gap-2 bg-white/90 backdrop-blur border border-[#EAE3D6] rounded-xl px-3 py-2 shadow-sm"
       style={{ top }}
     >
-      {lead ?? <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">View</span>}
+      {lead ?? <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">View</span>}
       <div className="flex items-center gap-2">
         <BucketToggle view={view} onChange={onView} />
         <BucketSelect labels={labels} value={bucket} onChange={onBucket} />
@@ -337,7 +337,7 @@ export function SectionHeading({ children, accent = SOURCES_COLOR }: { children:
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <div className="text-sm text-gray-400 bg-[#FAF7F1] border border-dashed border-[#EAE3D6] rounded-2xl p-8 text-center">
+    <div className="text-sm text-gray-500 bg-[#FAF7F1] border border-dashed border-[#EAE3D6] rounded-2xl p-8 text-center">
       {children}
     </div>
   );
@@ -347,7 +347,7 @@ export function EmptyState({ children }: { children: ReactNode }) {
 // ResponsiveContainers inside a table).
 export function Sparkline({ values, color = SOURCES_COLOR, width = 68, height = 22 }:
   { values: number[]; color?: string; width?: number; height?: number }) {
-  if (values.length < 2) return <span className="text-gray-300 text-[10px]">—</span>;
+  if (values.length < 2) return <span className="text-gray-400 text-[10px]">—</span>;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
@@ -490,7 +490,7 @@ function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
   const total = bucketValue(sub.total?.series ?? [], kind, view, bucket) ?? rows.reduce((s, r) => s + r.value, 0);
 
   const title = sub.label ?? groupLabel;
-  if (rows.length === 0) return <Card title={title} note={`Composition · ${bucket}`}><div className="text-[11px] text-gray-400 py-6">No positive values this period.</div></Card>;
+  if (rows.length === 0) return <Card title={title} note={`Composition · ${bucket}`}><div className="text-[11px] text-gray-500 py-6">No positive values this period.</div></Card>;
 
   return (
     <Card title={title} note={`Slice size by ₹ · % as per sheet · ${bucket}`}>
@@ -505,7 +505,7 @@ function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
             </PieChart>
           </ResponsiveContainer>
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Total</span>
+            <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500">Total</span>
             <span className="text-sm font-bold text-gray-800" title={formatINR(total)}>{formatCompact(total)}</span>
           </div>
         </div>
@@ -515,7 +515,7 @@ function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
               <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: colorMap.get(r.key) }} />
               <span className="text-gray-600 truncate flex-1" title={r.label}>{r.label}</span>
               <span className="font-semibold text-gray-700" title={formatINR(r.value)}>{formatCompact(r.value)}</span>
-              <span className="text-gray-400 w-12 text-right tabular-nums" title="Percentage as entered in the sheet">
+              <span className="text-gray-500 w-12 text-right tabular-nums" title="Percentage as entered in the sheet">
                 {r.percent == null ? "—" : `${(r.percent * 100).toFixed(1)}%`}
               </span>
             </div>
@@ -553,7 +553,7 @@ function CompositionByPeriodCard({ sub, kind, groupLabel, colorMap, view }:
           ))}
         </div>
       }>
-      {data.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
+      {data.length === 0 ? <div className="text-[11px] text-gray-500 py-6">No periods yet.</div> : (
         <ResponsiveContainer width="100%" height={230}>
           <BarChart data={data} margin={{ top: 6, right: 8, left: 8, bottom: 0 }} stackOffset={mode === "pct" ? "expand" : "none"}>
             <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
@@ -675,7 +675,7 @@ function LineItemTable({ group, kind, view, mode = "amount" }:
           <thead>
             <tr className="border-b-2 border-gray-200">
               <th className="text-left py-2 pr-3 font-semibold text-gray-500 sticky left-0 bg-white">Particulars</th>
-              <th className="text-center py-2 px-2 font-semibold text-gray-400">Trend</th>
+              <th className="text-center py-2 px-2 font-semibold text-gray-500">Trend</th>
               {cols.map((c) => (
                 <th key={c} className="text-right py-2 px-3 font-semibold text-gray-500 whitespace-nowrap">{c}</th>
               ))}
@@ -689,7 +689,7 @@ function LineItemTable({ group, kind, view, mode = "amount" }:
               return (
                 <tr key={i} className="border-b border-gray-100">
                   <td className={`py-2 pr-3 sticky left-0 bg-white ${r.bold ? "font-bold text-gray-800" : "text-gray-600"} ${r.indent ? "pl-3" : ""}`}>{r.label}</td>
-                  <td className="py-1 px-2 text-center">{vals.length >= 2 ? <Sparkline values={vals} color={r.bold ? NETT_PROFIT_COLOR : SOURCES_COLOR} /> : <span className="text-gray-300">—</span>}</td>
+                  <td className="py-1 px-2 text-center">{vals.length >= 2 ? <Sparkline values={vals} color={r.bold ? NETT_PROFIT_COLOR : SOURCES_COLOR} /> : <span className="text-gray-400">—</span>}</td>
                   {cols.map((c) => {
                     const v = m ? m.get(c) ?? null : null;
                     const shade = v != null && !r.bold ? Math.min(0.14, (Math.abs(v) / rowMax) * 0.14) : 0;
@@ -762,7 +762,7 @@ export function ProfitBridgeCard({ group, view, bucket }: { group: FinGroup; vie
               </div>
               {i < anchors.length - 1 && (
                 <div className="flex items-center gap-3 pl-28">
-                  <div className="flex-1 text-[11px] text-gray-400 flex items-center gap-1.5">
+                  <div className="flex-1 text-[11px] text-gray-500 flex items-center gap-1.5">
                     <span style={{ color: DANGER_COLOR }}>↓</span> {stepLabels[i] ?? "Deductions"}
                   </div>
                   <div className="w-24 shrink-0 text-right text-[11px] font-semibold" style={{ color: DANGER_COLOR }} title={formatINR(anchors[i].value - anchors[i + 1].value)}>
@@ -796,7 +796,7 @@ export function MarginTrendCard({ salesSeries, grossSeries, patSeries, view }:
 
   return (
     <Card title="Margins" note="Gross Margin and PAT as a % of Sales.">
-      {data.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
+      {data.length === 0 ? <div className="text-[11px] text-gray-500 py-6">No periods yet.</div> : (
         <ResponsiveContainer width="100%" height={230}>
           <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
             <GradientDefs colors={[SUCCESS_COLOR, NETT_PROFIT_COLOR]} idPrefix="marginFill" />
@@ -881,7 +881,7 @@ function RatioCard({ it, view, bucket }: { it: RatioItem; view: TrendView; bucke
       </div>
       <div className="text-xl font-bold text-gray-800 mt-1">{latest != null ? formatRatio(it.line_label, latest) : "—"}</div>
       <div className="flex items-center justify-between mt-1.5">
-        <span className="text-[10px] text-gray-400">{verdict?.target ?? ""}</span>
+        <span className="text-[10px] text-gray-500">{verdict?.target ?? ""}</span>
         <Sparkline values={spark} width={52} height={16} color={verdict ? RAG[verdict.status].c : SOURCES_COLOR} />
       </div>
     </div>
@@ -897,7 +897,7 @@ export function RatiosPanel({ ratios, view, bucket, title = "Key Financial Ratio
       <div className="flex flex-col gap-4">
         {cats.map((cat) => (
           <div key={cat.key}>
-            <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-2">{cat.label}</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-2">{cat.label}</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {cat.items.map((it) => <RatioCard key={it.line_key} it={it} view={view} bucket={bucket} />)}
             </div>
@@ -922,27 +922,27 @@ export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; vi
   const cccColor = ccc <= 60 ? SUCCESS_COLOR : ccc <= 90 ? "#B08400" : DANGER_COLOR;
   const stat = (label: string, v: number, sign = "") => (
     <div className="flex flex-col items-center px-4 py-2">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</span>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{label}</span>
       <span className="text-lg font-bold text-gray-800 mt-0.5">{sign}{Math.round(v)}</span>
-      <span className="text-[9px] text-gray-400">days</span>
+      <span className="text-[9px] text-gray-500">days</span>
     </div>
   );
   return (
     <Card title="Cash Conversion Cycle" note="How many days cash is tied up in operations before it comes back — lower is better.">
       <div className="flex items-center flex-wrap gap-2">
         {stat("Inventory (DIO)", dio, "+")}
-        <span className="text-gray-300 font-bold">+</span>
+        <span className="text-gray-500 font-bold">+</span>
         {stat("Receivables (DSO)", dso, "+")}
-        <span className="text-gray-300 font-bold">−</span>
+        <span className="text-gray-500 font-bold">−</span>
         {stat("Payables (DPO)", dpo)}
-        <span className="text-gray-300 font-bold">=</span>
+        <span className="text-gray-500 font-bold">=</span>
         <div className="flex flex-col items-center px-5 py-2 rounded-xl" style={{ background: RAG[ccc <= 60 ? "good" : ccc <= 90 ? "warn" : "bad"].bg }}>
           <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: cccColor }}>Cash Cycle</span>
           <span className="text-2xl font-bold mt-0.5" style={{ color: cccColor }}>{Math.round(ccc)}</span>
           <span className="text-[9px]" style={{ color: cccColor }}>days</span>
         </div>
       </div>
-      <p className="text-[11px] text-gray-400 mt-2">CCC = DIO + DSO − DPO. {ccc > 0 ? `About ${Math.round(ccc)} days of working capital are locked in the operating cycle.` : "Suppliers are financing the full operating cycle."}</p>
+      <p className="text-[11px] text-gray-500 mt-2">CCC = DIO + DSO − DPO. {ccc > 0 ? `About ${Math.round(ccc)} days of working capital are locked in the operating cycle.` : "Suppliers are financing the full operating cycle."}</p>
     </Card>
   );
 }
@@ -1158,7 +1158,7 @@ export function AgingPanel({ group, view, bucket }: { group: FinGroup; view: Tre
       </Card>
 
       <Card title="Overdue Share Trend" note="Share of each pool sitting beyond 90 days, over time. Rising lines on Inventory or Debtors mean aging is worsening.">
-        {trend.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
+        {trend.length === 0 ? <div className="text-[11px] text-gray-500 py-6">No periods yet.</div> : (
           <ResponsiveContainer width="100%" height={230}>
             <ComposedChart data={trend} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <GradientDefs colors={trendCats.map((t) => t.color)} idPrefix="overdueFill" strong />
@@ -1248,7 +1248,7 @@ export function UnitCostPanel({ group, view, bucket }: { group: FinGroup; view: 
       </Card>
 
       <Card title="Unit Cost Trend" note="How each product's cost per unit moves over time — a rising line is cost inflation.">
-        {trend.length === 0 ? <div className="text-[11px] text-gray-400 py-6">No periods yet.</div> : (
+        {trend.length === 0 ? <div className="text-[11px] text-gray-500 py-6">No periods yet.</div> : (
           <ResponsiveContainer width="100%" height={230}>
             <ComposedChart data={trend} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <GradientDefs colors={legend.map((l) => l.color)} idPrefix="unitCostFill" strong />

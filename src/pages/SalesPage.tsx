@@ -132,7 +132,7 @@ function FilterSelect({
 }: { label: string; value: string; onChange: (v: string) => void; options: string[]; allLabel?: string; labels?: Record<string, string> }) {
   return (
     <div className="flex flex-col gap-1 min-w-[140px]">
-      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</label>
+      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{label}</label>
       <Select
         value={value}
         onChange={onChange}
@@ -506,7 +506,7 @@ export default function SalesPage() {
           <div className="flex items-center gap-2 mt-1">
             <div className="w-8 h-0.5 bg-gray-800 rounded" />
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
               {activeTab === "plant_to_depot" ? (
                 <>
                   {analytics ? `${formatCr(analytics.kpis.total_amount)} total` : "Loading…"}
@@ -550,7 +550,7 @@ export default function SalesPage() {
               </button>
               {ptdSelectedId && (
                 <button onClick={handlePtdDelete} disabled={ptdDeleting}
-                  className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
+                  className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
                   <Trash2 size={13} />
                 </button>
               )}
@@ -592,13 +592,13 @@ export default function SalesPage() {
                 <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm flex flex-col gap-3">
                   <div className="flex flex-wrap gap-3 items-end">
                     <div className="flex flex-col gap-1 flex-1 min-w-[220px]">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Sheet link or ID</label>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Sheet link or ID</label>
                       <input value={ptdNewLink} onChange={(e) => setPtdNewLink(e.target.value)}
                         placeholder="https://docs.google.com/spreadsheets/d/…"
                         className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
                     </div>
                     <div className="flex flex-col gap-1 min-w-[130px]">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Fiscal Year</label>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Fiscal Year</label>
                       <Select
                         value={ptdNewYear}
                         onChange={setPtdNewYear}
@@ -610,10 +610,10 @@ export default function SalesPage() {
                       className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
                       {ptdAdding ? "Adding…" : syncing ? "Syncing…" : "Add & Sync"}
                     </button>
-                    <button onClick={() => setPtdShowAdd(false)} className="h-10 px-3 text-xs font-medium text-gray-400 hover:text-gray-600">Cancel</button>
+                    <button onClick={() => setPtdShowAdd(false)} className="h-10 px-3 text-xs font-medium text-gray-500 hover:text-gray-600">Cancel</button>
                   </div>
                   {ptdAddError && <p className="text-xs text-red-600">{ptdAddError}</p>}
-                  <p className="text-[11px] text-gray-400">
+                  <p className="text-[11px] text-gray-500">
                     Share the sheet (Viewer) with the service account's email before syncing — Google Sheets access is per-document. Year is auto-detected from each month tab's title.
                   </p>
                 </div>
@@ -686,7 +686,7 @@ export default function SalesPage() {
         </div>
 
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Year{mode === "yearly" ? " (this is your selection)" : ""}</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Year{mode === "yearly" ? " (this is your selection)" : ""}</p>
           <div className="flex flex-wrap gap-1.5">
             {availableFYs.map((fy) => (
               <button key={fy} onClick={() => toggleYear(fy)} className={chipClass(selectedYears.has(fy))}>{fyRangeLabel(fy)}</button>
@@ -696,7 +696,7 @@ export default function SalesPage() {
 
         {mode === "monthly" && (
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Month{selectedMonthTokens.size !== 1 ? "s" : ""} (pick any, need not be consecutive)</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Month{selectedMonthTokens.size !== 1 ? "s" : ""} (pick any, need not be consecutive)</p>
             <div className="flex flex-wrap gap-1.5">
               {monthChipOptions.map((m) => {
                 const t = `${m.year}-${String(m.month).padStart(2, "0")}`;
@@ -712,7 +712,7 @@ export default function SalesPage() {
 
         {mode === "quarterly" && (
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Quarter{selectedQuarterTokens.size !== 1 ? "s" : ""}</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Quarter{selectedQuarterTokens.size !== 1 ? "s" : ""}</p>
             <div className="flex flex-wrap gap-1.5">
               {quarterChipOptions.map((q) => (
                 <button key={q.token} onClick={() => toggleQuarterToken(q.token)} className={chipClass(selectedQuarterTokens.has(q.token))}>
@@ -747,13 +747,13 @@ export default function SalesPage() {
       </AnimatePresence>
 
       {periodTokens.length === 0 && !loading && (
-        <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
+        <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-8 text-center">
           Select at least one {mode === "monthly" ? "month" : mode === "quarterly" ? "quarter" : "year"} above to view analytics.
         </div>
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-400">
+        <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
           <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />
           Updating charts…
         </div>
@@ -769,7 +769,7 @@ export default function SalesPage() {
               <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500"><BarChart3 size={16} /></div>
               <div>
                 <h3 className="text-sm font-bold text-gray-800">Period Comparison</h3>
-                <p className="text-[11px] text-gray-400">Sales for every period selected above</p>
+                <p className="text-[11px] text-gray-500">Sales for every period selected above</p>
               </div>
             </div>
             {analytics.periods.length > 1 && (
@@ -803,7 +803,7 @@ export default function SalesPage() {
                   </div>
                   <div>
                     <p className="text-xs font-bold text-gray-600">{kpi.label}</p>
-                    <p className="text-[11px] text-gray-400">{kpi.sub}</p>
+                    <p className="text-[11px] text-gray-500">{kpi.sub}</p>
                   </div>
                 </div>
                 <p className="text-2xl font-black mt-3" style={{ color: kpi.valueColor ?? "#111827" }}>{kpi.value}</p>
@@ -820,7 +820,7 @@ export default function SalesPage() {
                   <h3 className="text-sm font-bold text-gray-800">
                     {mode === "monthly" ? "Monthly" : mode === "quarterly" ? "Quarterly" : "Yearly"} Sales Trend
                   </h3>
-                  <p className="text-[11px] text-gray-400">
+                  <p className="text-[11px] text-gray-500">
                     {mode === "monthly" ? "By month" : mode === "quarterly" ? "By quarter (Indian FY)" : "By financial year"} — selected periods
                   </p>
                 </div>
@@ -843,7 +843,7 @@ export default function SalesPage() {
                 <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500"><Boxes size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Category Split</h3>
-                  <p className="text-[11px] text-gray-400">Sales by category</p>
+                  <p className="text-[11px] text-gray-500">Sales by category</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={200}>
@@ -869,7 +869,7 @@ export default function SalesPage() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><MapPin size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Depot Comparison</h3>
-                  <p className="text-[11px] text-gray-400">Total sales value per depot</p>
+                  <p className="text-[11px] text-gray-500">Total sales value per depot</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={200}>
@@ -891,7 +891,7 @@ export default function SalesPage() {
                 <div className="w-8 h-8 rounded-xl bg-purple-50 flex items-center justify-center text-purple-500"><Boxes size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Brand Split</h3>
-                  <p className="text-[11px] text-gray-400">By category coverage</p>
+                  <p className="text-[11px] text-gray-500">By category coverage</p>
                 </div>
               </div>
               <div className="space-y-3 mt-2">
@@ -902,7 +902,7 @@ export default function SalesPage() {
                     <div key={b.brand}>
                       <div className="flex justify-between text-xs mb-1">
                         <span className="font-medium text-gray-700">{BRAND_SPLIT_LABELS[b.brand] ?? b.brand}</span>
-                        <span className="text-gray-400">{formatCr(b.amount)} · {pct}%</span>
+                        <span className="text-gray-500">{formatCr(b.amount)} · {pct}%</span>
                       </div>
                       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div className="h-full rounded-full bg-gradient-to-r from-orange-400 to-orange-500" style={{ width: `${pct}%` }} />
@@ -921,7 +921,7 @@ export default function SalesPage() {
                 <div className="w-8 h-8 rounded-xl bg-green-50 flex items-center justify-center text-green-600"><Boxes size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">What Each Depot Bought</h3>
-                  <p className="text-[11px] text-gray-400">Category composition per depot</p>
+                  <p className="text-[11px] text-gray-500">Category composition per depot</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={Math.max(160, depotCategoryData.length * 90)}>
@@ -951,7 +951,7 @@ export default function SalesPage() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><Boxes size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Sales Records</h3>
-                  <p className="text-[11px] text-gray-400">Showing {rows.length} of {totalRows.toLocaleString()} rows{activeCount > 0 && " (filtered)"}</p>
+                  <p className="text-[11px] text-gray-500">Showing {rows.length} of {totalRows.toLocaleString()} rows{activeCount > 0 && " (filtered)"}</p>
                 </div>
               </div>
               {activeCount > 0 && (
@@ -965,13 +965,13 @@ export default function SalesPage() {
                 <thead>
                   <tr className="border-y border-gray-50 bg-gray-50/50">
                     {["Month", "Depot", "Brand", "Category", "Qty", "Rate", "Amount"].map((h) => (
-                      <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-3 first:pl-6 last:pr-6">{h}</th>
+                      <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-4 py-3 first:pl-6 last:pr-6">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {rows.length === 0 ? (
-                    <tr><td colSpan={7} className="text-center py-8 text-sm text-gray-400">No sales records match the selected filters.</td></tr>
+                    <tr><td colSpan={7} className="text-center py-8 text-sm text-gray-500">No sales records match the selected filters.</td></tr>
                   ) : rows.map((r) => (
                     <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-6 py-3 text-xs text-gray-500">{MONTH_NAMES[r.sale_month - 1]} {r.sale_year}</td>
@@ -995,11 +995,11 @@ export default function SalesPage() {
 
           {/* Sync history */}
           <div>
-            <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-400" /> Sync History</h2>
+            <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-500" /> Sync History</h2>
             {!historyLoaded ? (
-              <div className="text-sm text-gray-400">Loading…</div>
+              <div className="text-sm text-gray-500">Loading…</div>
             ) : history.length === 0 ? (
-              <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-6 text-center">No syncs yet. Click "Sync Now" above to pull data from the Google Sheet.</div>
+              <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-6 text-center">No syncs yet. Click "Sync Now" above to pull data from the Google Sheet.</div>
             ) : (
               <div className="bg-white border border-orange-100 rounded-2xl overflow-hidden">
                 <table className="w-full text-sm">

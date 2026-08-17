@@ -97,7 +97,7 @@ export default function PeriodComparisonPanel({ sourcesItems, applicationItems, 
       <div className="p-6 pb-4 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2"><GitCompareArrows size={15} className="text-orange-500" /> Period Comparison</h3>
-          <p className="text-[11px] text-gray-400">Pick any two periods to compare line-by-line</p>
+          <p className="text-[11px] text-gray-500">Pick any two periods to compare line-by-line</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <PeriodPicker periods={periods} value={compareA} onChange={setCompareA} label="From" />
@@ -124,11 +124,11 @@ export default function PeriodComparisonPanel({ sourcesItems, applicationItems, 
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50/50">
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2">Item</th>
-              <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">From</th>
-              <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">To</th>
-              <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Δ</th>
-              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 w-32">Trend</th>
+              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-6 py-2">Item</th>
+              <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">From</th>
+              <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">To</th>
+              <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">Δ</th>
+              <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2 w-32">Trend</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
@@ -136,7 +136,7 @@ export default function PeriodComparisonPanel({ sourcesItems, applicationItems, 
               <tr key={`${r.section}-${r.line_key}`}>
                 <td className="px-6 py-2.5 text-xs font-medium text-gray-700">
                   {r.line_label}
-                  <span className="ml-2 text-[9px] font-bold uppercase tracking-wider text-gray-300">{r.section === "Sources of Funds" ? "SoF" : "AoF"}</span>
+                  <span className="ml-2 text-[9px] font-bold uppercase tracking-wider text-gray-500">{r.section === "Sources of Funds" ? "SoF" : "AoF"}</span>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-gray-600 text-right whitespace-nowrap">{r.amountA !== null ? formatINR(r.amountA) : "—"}</td>
                 <td className="px-3 py-2.5 text-xs text-gray-600 text-right whitespace-nowrap">{r.amountB !== null ? formatINR(r.amountB) : "—"}</td>
@@ -153,7 +153,7 @@ export default function PeriodComparisonPanel({ sourcesItems, applicationItems, 
                       <div className="h-full rounded-full" style={{ width: `${(Math.abs(r.deltaPct) / maxAbsPct) * 100}%`, background: deltaColor(r.delta) }} />
                     </div>
                   ) : r.delta !== null ? (
-                    <span className="text-[10px] text-gray-300">n/a</span>
+                    <span className="text-[10px] text-gray-500">n/a</span>
                   ) : null}
                 </td>
               </tr>

@@ -37,7 +37,7 @@ export default function IndirectExpenseBreakdown({ data, pickedPeriod }: Indirec
     <div className="card-premium p-6">
       <div className="mb-4">
         <h4 className="text-sm font-bold text-gray-800">Indirect Expense Breakdown — {formatPeriodLabel(pickedPeriod)}</h4>
-        <p className="text-[11px] text-gray-400">The costs between Gross and Nett Profit, verified against the sheet's own subtotal</p>
+        <p className="text-[11px] text-gray-500">The costs between Gross and Nett Profit, verified against the sheet's own subtotal</p>
       </div>
       <div className="flex flex-col">
         {sorted.map((s) => (
@@ -50,13 +50,13 @@ export default function IndirectExpenseBreakdown({ data, pickedPeriod }: Indirec
               />
             </div>
             <span className="w-32 shrink-0 text-right text-xs tabular-nums font-semibold text-gray-700" title={formatINR(s.amount)}>
-              {formatCompact(s.amount)} <span className="text-gray-300 font-normal">· {((s.amount / total) * 100).toFixed(1)}%</span>
+              {formatCompact(s.amount)} <span className="text-gray-500 font-normal">· {((s.amount / total) * 100).toFixed(1)}%</span>
             </span>
           </div>
         ))}
       </div>
       {negatives.length > 0 && (
-        <p className="text-[10px] text-gray-400 mt-2">
+        <p className="text-[10px] text-gray-500 mt-2">
           {negatives.length} item{negatives.length > 1 ? "s" : ""} with a negative amount not shown here — see the table for exact figures.
         </p>
       )}

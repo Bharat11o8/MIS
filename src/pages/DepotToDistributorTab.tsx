@@ -131,7 +131,7 @@ function AttainmentLegend({ isPartial }: { isPartial: boolean }) {
   if (isPartial) items.push({ color: "#f46617", label: "partial period vs. full target — not graded" });
   return (
     <div className="flex items-center gap-4 flex-wrap px-1">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Attainment</span>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Attainment</span>
       {items.map((it) => (
         <div key={it.label} className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} />
@@ -600,7 +600,7 @@ export default function DepotToDistributorTab() {
           </button>
           {selectedManageSheetId && (
             <button onClick={handleDelete} disabled={deleting}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
               <Trash2 size={13} />
             </button>
           )}
@@ -635,12 +635,12 @@ export default function DepotToDistributorTab() {
             <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm flex flex-col gap-3">
               <div className="flex flex-wrap gap-3 items-end">
                 <div className="flex flex-col gap-1 flex-1 min-w-[220px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Sheet link or ID</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Sheet link or ID</label>
                   <input value={newLink} onChange={(e) => setNewLink(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…"
                     className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
                 </div>
                 <div className="flex flex-col gap-1 min-w-[110px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Quarter</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Quarter</label>
                   <Select
                     value={newQuarter}
                     onChange={setNewQuarter}
@@ -649,7 +649,7 @@ export default function DepotToDistributorTab() {
                   />
                 </div>
                 <div className="flex flex-col gap-1 min-w-[110px]">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Year</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Year</label>
                   <Select
                     value={newYear}
                     onChange={setNewYear}
@@ -661,10 +661,10 @@ export default function DepotToDistributorTab() {
                   className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
                   {adding ? "Adding…" : syncing ? "Syncing…" : "Add & Sync"}
                 </button>
-                <button onClick={() => setShowAddForm(false)} className="h-10 px-3 text-xs font-medium text-gray-400 hover:text-gray-600">Cancel</button>
+                <button onClick={() => setShowAddForm(false)} className="h-10 px-3 text-xs font-medium text-gray-500 hover:text-gray-600">Cancel</button>
               </div>
               {addError && <p className="text-xs text-red-600">{addError}</p>}
-              <p className="text-[11px] text-gray-400">
+              <p className="text-[11px] text-gray-500">
                 Make sure this sheet is shared (Viewer is enough) with the service account's email before syncing — Google Sheets access is per-document and isn't granted automatically.
               </p>
             </div>
@@ -725,18 +725,18 @@ export default function DepotToDistributorTab() {
         </div>
 
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Year{mode === "yearly" ? " (this is your selection)" : ""}</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Year{mode === "yearly" ? " (this is your selection)" : ""}</p>
           <div className="flex flex-wrap gap-1.5">
             {availablePeriods.years.map((y) => (
               <button key={y} onClick={() => toggleYear(y)} className={chipClass(selectedYears.has(y))}>{y}</button>
             ))}
-            {availablePeriods.years.length === 0 && <span className="text-xs text-gray-400">No data synced yet</span>}
+            {availablePeriods.years.length === 0 && <span className="text-xs text-gray-500">No data synced yet</span>}
           </div>
         </div>
 
         {mode === "monthly" && (
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Month{selectedMonthTokens.size !== 1 ? "s" : ""} (pick any, need not be consecutive)</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Month{selectedMonthTokens.size !== 1 ? "s" : ""} (pick any, need not be consecutive)</p>
             <div className="flex flex-wrap gap-1.5">
               {visibleMonthOptions.map((m) => {
                 const t = `${m.year}-${String(m.month).padStart(2, "0")}`;
@@ -746,14 +746,14 @@ export default function DepotToDistributorTab() {
                   </button>
                 );
               })}
-              {visibleMonthOptions.length === 0 && <span className="text-xs text-gray-400">No months available</span>}
+              {visibleMonthOptions.length === 0 && <span className="text-xs text-gray-500">No months available</span>}
             </div>
           </div>
         )}
 
         {mode === "quarterly" && (
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Quarter{selectedQuarterTokens.size !== 1 ? "s" : ""}</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Quarter{selectedQuarterTokens.size !== 1 ? "s" : ""}</p>
             <div className="flex flex-wrap gap-1.5">
               {visibleQuarterOptions.map((q) => {
                 const t = `${q.year}-${q.quarter}`;
@@ -763,26 +763,26 @@ export default function DepotToDistributorTab() {
                   </button>
                 );
               })}
-              {visibleQuarterOptions.length === 0 && <span className="text-xs text-gray-400">No quarters registered</span>}
+              {visibleQuarterOptions.length === 0 && <span className="text-xs text-gray-500">No quarters registered</span>}
             </div>
           </div>
         )}
       </div>
 
       {sheetSources.length === 0 && (
-        <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
+        <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-8 text-center">
           No quarter registered yet. Click "Add Sheet" above to register the team's quarterly Depot-to-Distributor sheet.
         </div>
       )}
 
       {sheetSources.length > 0 && periodTokens.length === 0 && !loading && (
-        <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
+        <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-8 text-center">
           Select at least one {mode === "monthly" ? "month" : mode === "quarterly" ? "quarter" : "year"} above to view analytics.
         </div>
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-400">
+        <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
           <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />
           Loading…
         </div>
@@ -798,7 +798,7 @@ export default function DepotToDistributorTab() {
               <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500"><BarChart3 size={16} /></div>
               <div>
                 <h3 className="text-sm font-bold text-gray-800">Period Comparison</h3>
-                <p className="text-[11px] text-gray-400">Target vs Achieved for every period selected above</p>
+                <p className="text-[11px] text-gray-500">Target vs Achieved for every period selected above</p>
               </div>
             </div>
             {analytics.periods.length > 1 && (
@@ -826,7 +826,7 @@ export default function DepotToDistributorTab() {
                   <p className="text-lg font-black mt-1" style={{ color: pctColorScoped(p.attainment_pct, p.is_partial) }}>
                     {p.attainment_pct !== null ? `${p.attainment_pct}%` : "—"}
                   </p>
-                  <p className="text-[11px] text-gray-400">{formatCr(p.achieved)} of {formatCr(p.target)}</p>
+                  <p className="text-[11px] text-gray-500">{formatCr(p.achieved)} of {formatCr(p.target)}</p>
                 </div>
               ))}
             </div>
@@ -841,7 +841,7 @@ export default function DepotToDistributorTab() {
 
           {/* KPI cards — Area Heads */}
           <div>
-            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 ml-1">Area Head Performance</p>
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 ml-1">Area Head Performance</p>
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
               {asmKpiCards.map((kpi) => <KpiCard key={kpi.id} kpi={kpi} />)}
             </div>
@@ -849,7 +849,7 @@ export default function DepotToDistributorTab() {
 
           {/* KPI cards — Distributors */}
           <div>
-            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 ml-1">Distributor Performance</p>
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 ml-1">Distributor Performance</p>
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
               {distKpiCards.map((kpi) => <KpiCard key={kpi.id} kpi={kpi} />)}
             </div>
@@ -862,7 +862,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><TrendingUp size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Monthly Trend</h3>
-                  <p className="text-[11px] text-gray-400">SAM and EV trajectory across the selection</p>
+                  <p className="text-[11px] text-gray-500">SAM and EV trajectory across the selection</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={180}>
@@ -908,7 +908,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500"><Users size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Area Head Attainment</h3>
-                  <p className="text-[11px] text-gray-400">% of target achieved per ASM, blended across the selection</p>
+                  <p className="text-[11px] text-gray-500">% of target achieved per ASM, blended across the selection</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={Math.max(200, chartData.length * 32)}>
@@ -932,7 +932,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-purple-50 flex items-center justify-center text-purple-500"><Users size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">SAM vs EV per Area Head</h3>
-                  <p className="text-[11px] text-gray-400">Category mix by ASM, blended across the selection</p>
+                  <p className="text-[11px] text-gray-500">Category mix by ASM, blended across the selection</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={Math.max(200, samEvByAreaHead.length * 36)}>
@@ -956,7 +956,7 @@ export default function DepotToDistributorTab() {
                 <div className="w-8 h-8 rounded-xl bg-orange-50 flex items-center justify-center text-orange-500"><TrendingUp size={16} /></div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Distributors by Attainment</h3>
-                  <p className="text-[11px] text-gray-400">Every distributor, ranked — best to worst</p>
+                  <p className="text-[11px] text-gray-500">Every distributor, ranked — best to worst</p>
                 </div>
               </div>
               <div className="overflow-y-auto" style={{ maxHeight: 480 }}>
@@ -972,7 +972,7 @@ export default function DepotToDistributorTab() {
                         return (
                           <div className="bg-white border border-gray-100 rounded-xl p-3 text-xs shadow-lg">
                             <p className="font-bold text-gray-800">{d.distributor}</p>
-                            <p className="text-gray-400 mb-1">{d.area_head}</p>
+                            <p className="text-gray-500 mb-1">{d.area_head}</p>
                             <p className="text-gray-600">Target: {formatINR(d.target ?? 0)}</p>
                             <p className="text-gray-600">Achieved: {formatINR(d.achieved)}</p>
                             <p className="font-bold mt-1" style={{ color: pctColorScoped(d.attainment_pct, isPartial) }}>
@@ -995,7 +995,7 @@ export default function DepotToDistributorTab() {
           <div className="card-premium overflow-hidden">
             <div className="p-6 pb-4">
               <h3 className="text-sm font-bold text-gray-800">Distributors by Area Head</h3>
-              <p className="text-[11px] text-gray-400">Click a row to expand its distributors</p>
+              <p className="text-[11px] text-gray-500">Click a row to expand its distributors</p>
             </div>
             <div className="divide-y divide-gray-50">
               {filteredAreaHeads.map((g) => (
@@ -1003,9 +1003,9 @@ export default function DepotToDistributorTab() {
                   <button onClick={() => toggleHead(g.area_head)}
                     className="w-full flex items-center justify-between px-6 py-3 hover:bg-gray-50/50 transition-colors text-left">
                     <div className="flex items-center gap-2">
-                      {expandedHeads.has(g.area_head) ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+                      {expandedHeads.has(g.area_head) ? <ChevronUp size={14} className="text-gray-500" /> : <ChevronDown size={14} className="text-gray-500" />}
                       <span className="text-sm font-semibold text-gray-800">{g.area_head}</span>
-                      <span className="text-[11px] text-gray-400">({g.distributors.length} distributor{g.distributors.length > 1 ? "s" : ""})</span>
+                      <span className="text-[11px] text-gray-500">({g.distributors.length} distributor{g.distributors.length > 1 ? "s" : ""})</span>
                     </div>
                     <div className="flex items-center gap-4 text-xs">
                       <span className="text-gray-500">Target {g.target !== null ? formatCr(g.target) : "—"}</span>
@@ -1028,16 +1028,16 @@ export default function DepotToDistributorTab() {
                           <table className="w-full text-sm">
                             <thead>
                               <tr className="bg-gray-50/50">
-                                <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-6 py-2">Distributor</th>
-                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Target</th>
+                                <th className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-6 py-2">Distributor</th>
+                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">Target</th>
                                 {months.map((ym) => visibleCategories.map((cat) => (
-                                  <th key={`${ym.year}-${ym.month}-${cat}`} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2 whitespace-nowrap">
+                                  <th key={`${ym.year}-${ym.month}-${cat}`} className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2 whitespace-nowrap">
                                     {MONTH_NAMES[ym.month]} {ym.year} {cat.toUpperCase()}
                                   </th>
                                 )))}
-                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Achieved</th>
-                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-3 py-2">Gap</th>
-                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-2">%</th>
+                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">Achieved</th>
+                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">Gap</th>
+                                <th className="text-right text-[10px] font-bold uppercase tracking-wider text-gray-500 px-4 py-2">%</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-50">
@@ -1089,11 +1089,11 @@ export default function DepotToDistributorTab() {
 
           {/* Sync history — scoped to whichever sheet is selected in the manage picker above */}
           <div>
-            <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-400" /> Sync History</h2>
+            <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-500" /> Sync History</h2>
             {!historyLoaded ? (
-              <div className="text-sm text-gray-400">Loading…</div>
+              <div className="text-sm text-gray-500">Loading…</div>
             ) : history.length === 0 ? (
-              <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-6 text-center">No syncs yet for this sheet. Click "Sync Now" above.</div>
+              <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-6 text-center">No syncs yet for this sheet. Click "Sync Now" above.</div>
             ) : (
               <div className="bg-white border border-orange-100 rounded-2xl overflow-hidden">
                 <table className="w-full text-sm">

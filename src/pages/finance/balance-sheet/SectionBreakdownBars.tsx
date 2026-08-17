@@ -24,7 +24,7 @@ function BreakdownCard({ title, lineItems, pickedPeriod, colorMap }: {
     <div className="card-premium p-6">
       <h4 className="text-sm font-bold text-gray-800 mb-4">{title}</h4>
       {positive.length === 0 ? (
-        <div className="h-[160px] flex items-center justify-center text-sm text-gray-400">No data at this period.</div>
+        <div className="h-[160px] flex items-center justify-center text-sm text-gray-500">No data at this period.</div>
       ) : (
         <div className="flex flex-col">
           {positive.map((s) => (
@@ -37,14 +37,14 @@ function BreakdownCard({ title, lineItems, pickedPeriod, colorMap }: {
                 />
               </div>
               <span className="w-32 shrink-0 text-right text-xs tabular-nums font-semibold text-gray-700" title={formatINR(s.amount)}>
-                {formatCompact(s.amount)} <span className="text-gray-300 font-normal">· {((s.amount / total) * 100).toFixed(1)}%</span>
+                {formatCompact(s.amount)} <span className="text-gray-500 font-normal">· {((s.amount / total) * 100).toFixed(1)}%</span>
               </span>
             </div>
           ))}
         </div>
       )}
       {negatives.length > 0 && (
-        <p className="text-[10px] text-gray-400 mt-2">
+        <p className="text-[10px] text-gray-500 mt-2">
           {negatives.length} item{negatives.length > 1 ? "s" : ""} with a negative balance ({formatCompact(negatives.reduce((s, i) => s + i.amount, 0))} total) not shown here — see the table for exact figures.
         </p>
       )}

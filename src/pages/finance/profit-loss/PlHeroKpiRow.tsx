@@ -66,7 +66,7 @@ export default function PlHeroKpiRow({ kpis }: { kpis: PlAnalytics["kpis"] }) {
           </div>
           <div className="mt-3 min-w-0">
             <p className={`font-black text-gray-900 tabular-nums ${kpi.big ? "text-2xl" : "text-xl"}`} title={kpi.exact}>{kpi.value}</p>
-            {kpi.sub && <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
+            {kpi.sub && <p className="text-[10px] text-gray-500 mt-0.5 truncate" title={kpi.sub}>{kpi.sub}</p>}
           </div>
         </div>
       ))}

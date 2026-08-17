@@ -166,7 +166,7 @@ export default function Sidebar() {
               {user ? roleLabel[user.role] : ""}
             </p>
           </div>
-          <UserCircle size={14} className="shrink-0 text-gray-300" />
+          <UserCircle size={14} className="shrink-0 text-gray-400" />
         </button>
 
         {/* Sign Out button */}

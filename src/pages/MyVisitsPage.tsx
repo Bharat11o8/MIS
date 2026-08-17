@@ -86,7 +86,7 @@ function shortDate(iso: string | null) {
 }
 
 function ModeBadge({ mode }: { mode: string | null }) {
-  if (!mode) return <span className="text-gray-300">—</span>;
+  if (!mode) return <span className="text-gray-400">—</span>;
   const isVisit = mode === "Visit";
   return (
     <span
@@ -175,7 +175,7 @@ function LoginStep({ onLoggedIn }: { onLoggedIn: (token: string, salesperson: st
         {step === "email" ? (
           <>
             <div className="relative">
-              <Mail size={15} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+              <Mail size={15} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
               <input
                 className={`${fieldBase} pl-11`}
                 type="email"
@@ -199,7 +199,7 @@ function LoginStep({ onLoggedIn }: { onLoggedIn: (token: string, salesperson: st
           </>
         ) : (
           <>
-            {notice && <p className="text-[11px] text-gray-400 -mt-2 text-center">{notice}</p>}
+            {notice && <p className="text-[11px] text-gray-500 -mt-2 text-center">{notice}</p>}
             <input
               className={`${fieldBase} text-center tracking-[0.4em] font-semibold`}
               inputMode="numeric"
@@ -223,7 +223,7 @@ function LoginStep({ onLoggedIn }: { onLoggedIn: (token: string, salesperson: st
             <button
               type="button"
               onClick={() => { setStep("email"); setOtp(""); setError(""); }}
-              className="text-xs text-gray-400 hover:text-gray-600 underline"
+              className="text-xs text-gray-500 hover:text-gray-600 underline"
             >
               Use a different email
             </button>
@@ -328,7 +328,7 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-lg font-bold text-gray-900">My Visits</h1>
-          <p className="text-xs text-gray-400">{salesperson} · {total.toLocaleString("en-IN")} log entries</p>
+          <p className="text-xs text-gray-500">{salesperson} · {total.toLocaleString("en-IN")} log entries</p>
         </div>
         <button
           type="button"
@@ -346,7 +346,7 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
             <Footprints size={18} />
           </div>
           <div className="min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 truncate">Visits</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 truncate">Visits</p>
             <p className="text-xl font-black text-gray-800 leading-tight">{summary.visits}</p>
           </div>
         </div>
@@ -355,7 +355,7 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
             <Phone size={18} />
           </div>
           <div className="min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 truncate">Calls</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 truncate">Calls</p>
             <p className="text-xl font-black text-gray-800 leading-tight">{summary.calls}</p>
           </div>
         </div>
@@ -364,7 +364,7 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
             <Building2 size={18} />
           </div>
           <div className="min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 truncate">Dealerships</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 truncate">Dealerships</p>
             <p className="text-xl font-black text-gray-800 leading-tight">{summary.dealerships}</p>
           </div>
         </div>
@@ -380,13 +380,13 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
           <Select value={oem} onChange={setOem} options={OEM_OPTS} placeholder="All OEMs" />
           <Select value={contactMode} onChange={setContactMode} options={MODE_OPTS} placeholder="Visits + Calls" />
           <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Dealership, city, state…"
               className={`${inputClass} pl-8 w-48`} />
           </div>
           {hasFilters && (
             <button onClick={clearFilters}
-              className="text-[11px] font-semibold text-gray-400 hover:text-red-500">
+              className="text-[11px] font-semibold text-gray-500 hover:text-red-500">
               Clear
             </button>
           )}
@@ -411,18 +411,18 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
         <div className="overflow-x-auto p-5 pt-3">
           <table className="w-full text-xs border-separate" style={{ borderSpacing: 0 }}>
             <thead>
-              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 whitespace-nowrap">
+              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">
                 <th className="py-2 pr-3 border-b border-gray-100">Visit Date / Calling Date</th>
                 <th className="py-2 pr-3 border-b border-gray-100">Dealership Name</th>
                 <th className="py-2 pr-3 border-b border-gray-100">Visit / Calling</th>
                 <th className="py-2 pr-3 border-b border-gray-100">OEM</th>
                 <th className="py-2 pr-3 border-b border-gray-100">Channel</th>
-                <th className="py-2 pr-3 border-b border-gray-100 text-gray-300">Contact Person</th>
-                <th className="py-2 pr-3 border-b border-gray-100 text-gray-300">Contact No.</th>
-                <th className="py-2 pr-3 border-b border-gray-100 text-gray-300">Designation</th>
+                <th className="py-2 pr-3 border-b border-gray-100 text-gray-500">Contact Person</th>
+                <th className="py-2 pr-3 border-b border-gray-100 text-gray-500">Contact No.</th>
+                <th className="py-2 pr-3 border-b border-gray-100 text-gray-500">Designation</th>
                 <th className="py-2 pr-3 border-b border-gray-100">City</th>
                 <th className="py-2 pr-3 border-b border-gray-100">State</th>
-                <th className="py-2 pr-3 border-b border-gray-100 text-gray-300">Dealership Address</th>
+                <th className="py-2 pr-3 border-b border-gray-100 text-gray-500">Dealership Address</th>
                 <th className="py-2 pr-3 border-b border-gray-100 text-right">Total Car Sales</th>
                 <th className="py-2 pr-3 border-b border-gray-100 text-right">Total Seat Covers Sales</th>
                 <th className="py-2 pr-3 border-b border-gray-100 text-right">Mats Sales</th>
@@ -431,8 +431,8 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
                 <th className="py-2 pr-3 border-b border-gray-100 min-w-[180px]">Replacement</th>
                 <th className="py-2 pr-3 border-b border-gray-100 min-w-[180px]">Sales</th>
                 <th className="py-2 pr-3 border-b border-gray-100 min-w-[180px]">Others</th>
-                <th className="py-2 pr-3 border-b border-gray-100 text-gray-300">Photo</th>
-                <th className="py-2 border-b border-gray-100 text-gray-300">Email address</th>
+                <th className="py-2 pr-3 border-b border-gray-100 text-gray-500">Photo</th>
+                <th className="py-2 border-b border-gray-100 text-gray-500">Email address</th>
               </tr>
             </thead>
             <tbody>
@@ -441,7 +441,7 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
                   <div className="w-5 h-5 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin inline-block" />
                 </td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={21} className="py-10 text-center text-gray-400">No visits match these filters.</td></tr>
+                <tr><td colSpan={21} className="py-10 text-center text-gray-500">No visits match these filters.</td></tr>
               ) : rows.map((r, i) => (
                 <tr key={i} className="hover:bg-orange-50/40 align-top">
                   <td className="py-2.5 pr-3 border-b border-gray-50 whitespace-nowrap text-gray-500">{shortDate(r.visit_date)}</td>
@@ -449,12 +449,12 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
                   <td className="py-2.5 pr-3 border-b border-gray-50 whitespace-nowrap"><ModeBadge mode={r.contact_mode} /></td>
                   <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-600 whitespace-nowrap">{r.oem || "—"}</td>
                   <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-600 whitespace-nowrap">{r.channel || "—"}</td>
-                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-400 whitespace-nowrap">{r.contact_person || "—"}</td>
-                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-400 whitespace-nowrap">{r.contact_number || "—"}</td>
-                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-400 whitespace-nowrap">{r.designation || "—"}</td>
+                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-500 whitespace-nowrap">{r.contact_person || "—"}</td>
+                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-500 whitespace-nowrap">{r.contact_number || "—"}</td>
+                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-500 whitespace-nowrap">{r.designation || "—"}</td>
                   <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-500 whitespace-nowrap">{r.city || "—"}</td>
                   <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-500 whitespace-nowrap">{r.state || "—"}</td>
-                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-400 max-w-[200px]">
+                  <td className="py-2.5 pr-3 border-b border-gray-50 text-gray-500 max-w-[200px]">
                     <span className="line-clamp-1">{r.address || "—"}</span>
                   </td>
                   <td className="py-2.5 pr-3 border-b border-gray-50 text-right text-gray-600">{r.car_sales ?? "—"}</td>
@@ -480,9 +480,9 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
                       <a href={r.photo_link} target="_blank" rel="noreferrer" className="text-orange-600 font-semibold hover:underline">
                         View
                       </a>
-                    ) : <span className="text-gray-300">—</span>}
+                    ) : <span className="text-gray-400">—</span>}
                   </td>
-                  <td className="py-2.5 border-b border-gray-50 text-gray-400 whitespace-nowrap">{r.email || "—"}</td>
+                  <td className="py-2.5 border-b border-gray-50 text-gray-500 whitespace-nowrap">{r.email || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -491,7 +491,7 @@ function VisitsView({ token, salesperson, onLogout }: { token: string; salespers
 
         {totalPages > 1 && (
           <div className="flex items-center justify-between px-5 pb-4">
-            <p className="text-[11px] text-gray-400">
+            <p className="text-[11px] text-gray-500">
               Page {page} of {totalPages} · {total.toLocaleString("en-IN")} rows
             </p>
             <div className="flex gap-2">

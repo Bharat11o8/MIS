@@ -57,7 +57,7 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
   const bucketLabels = useMemo(() => bucketLabelsOf(sales, "flow", view), [sales, view]);
   const effBucket = bucketLabels.includes(bucket) ? bucket : (bucketLabels[bucketLabels.length - 1] ?? "");
 
-  if (loading) return <div className="text-sm text-gray-400 py-10 text-center">Loading P&L…</div>;
+  if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading P&L…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;
   if (!data || data.periods.length === 0) return <EmptyState>No P&amp;L data yet. Click “Sync Now” to pull the latest from the sheet.</EmptyState>;
 
@@ -88,11 +88,11 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
         <KpiCard label={`PAT · ${effBucket}`} value={formatKpi(patCh.value ?? 0)} exact={formatINR(patCh.value ?? 0)} accent={NETT_PROFIT_COLOR} share={patShare} shareOf="of Sales" />
         <div className="relative bg-white border border-[#EAE3D6] rounded-2xl p-4 overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-[3px]" style={{ background: changePct == null ? "#8F8A83" : changePct >= 0 ? "#4E7D57" : "#B5483A" }} />
-          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{changeLabel} Change</div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{changeLabel} Change</div>
           <div className="text-2xl font-bold mt-1 tracking-tight" style={{ color: changePct == null ? "#8F8A83" : changePct >= 0 ? "#4E7D57" : "#B5483A" }}>
             {changePct != null ? `${changePct > 0 ? "+" : ""}${changePct}%` : "—"}
           </div>
-          <div className="text-[11px] font-medium text-gray-400 mt-0.5">{salesCh.prevLabel ? `${salesCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
+          <div className="text-[11px] font-medium text-gray-500 mt-0.5">{salesCh.prevLabel ? `${salesCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
         </div>
       </div>
 

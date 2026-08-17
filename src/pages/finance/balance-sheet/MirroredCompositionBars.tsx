@@ -17,7 +17,7 @@ function CompositionBar({ label, items, negative, colorMap }: { label: string; i
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold text-gray-600">{label}</span>
-        <span className="text-xs font-semibold text-gray-400">{formatINR(total)}</span>
+        <span className="text-xs font-semibold text-gray-500">{formatINR(total)}</span>
       </div>
       <div className="flex h-8 w-full rounded-lg overflow-hidden bg-gray-100">
         {items.map((item) => {
@@ -38,7 +38,7 @@ function CompositionBar({ label, items, negative, colorMap }: { label: string; i
         color: item.line_key === "__other__" ? OTHER_COLOR : colorMap.get(item.line_key) ?? FALLBACK_COLOR,
       }))} />
       {negative.count > 0 && (
-        <p className="text-[10px] text-gray-400">
+        <p className="text-[10px] text-gray-500">
           {negative.count} item{negative.count > 1 ? "s" : ""} with a negative balance ({formatINR(negative.total)} total) not shown here — see the table for exact figures.
         </p>
       )}
@@ -71,10 +71,10 @@ export default function MirroredCompositionBars({ sourcesItems, applicationItems
   return (
     <div className="card-premium p-6">
       <h3 className="text-sm font-bold text-gray-800 mb-1">Sources vs Application — Same Ledger, Two Sides</h3>
-      <p className="text-[11px] text-gray-400 mb-5">Every rupee sourced is applied somewhere — the two bars represent the same total, broken down differently</p>
+      <p className="text-[11px] text-gray-500 mb-5">Every rupee sourced is applied somewhere — the two bars represent the same total, broken down differently</p>
       <div className="flex flex-col gap-5">
         {sources.items.length === 0 && application.items.length === 0 ? (
-          <div className="h-[120px] flex items-center justify-center text-sm text-gray-400">No data at this period.</div>
+          <div className="h-[120px] flex items-center justify-center text-sm text-gray-500">No data at this period.</div>
         ) : (
           <>
             <CompositionBar label="Sources of Funds" items={sources.items} negative={sources.negative} colorMap={sourcesColorMap} />

@@ -197,14 +197,14 @@ export default function DateRangePicker({
           "h-9 flex items-center gap-2 text-xs font-medium border rounded-xl px-3 bg-white transition-all",
           "hover:border-orange-300 focus:outline-none focus:ring-2 focus:ring-orange-100 focus:border-orange-400",
           open ? "border-orange-400 ring-2 ring-orange-100" : "border-gray-200",
-          complete ? "text-gray-800" : "text-gray-400",
+          complete ? "text-gray-800" : "text-gray-500",
         )}>
-        <CalendarDays size={13} className={complete ? "text-orange-500" : "text-gray-400"} />
+        <CalendarDays size={13} className={complete ? "text-orange-500" : "text-gray-500"} />
         {label}
         {complete && (
           <span role="button" tabIndex={-1} aria-label="Clear period"
             onClick={(e) => { e.stopPropagation(); onChange({ from: "", to: "" }); }}
-            className="ml-0.5 text-gray-300 hover:text-red-500 transition-colors">
+            className="ml-0.5 text-gray-500 hover:text-red-500 transition-colors">
             <X size={12} />
           </span>
         )}
@@ -244,7 +244,7 @@ export default function DateRangePicker({
                 }}
               />
             )}
-            <p className="text-[10px] text-gray-400 pt-2.5 mt-2.5 border-t border-gray-100 text-center">
+            <p className="text-[10px] text-gray-500 pt-2.5 mt-2.5 border-t border-gray-100 text-center">
               {anchor
                 ? `Starts ${granularity === "month" ? formatMonth(anchor) : formatDay(anchor)} — now pick the other end`
                 : complete ? label : "Pick the start of the period"}
@@ -261,7 +261,7 @@ export default function DateRangePicker({
 function cellClass(inBand: boolean, isEnd: boolean, disabled: boolean) {
   return cn(
     "relative text-[11px] font-medium rounded-lg transition-colors",
-    disabled && "text-gray-300 cursor-not-allowed",
+    disabled && "text-gray-400 cursor-not-allowed",
     !disabled && !inBand && "text-gray-600 hover:bg-orange-50 hover:text-orange-600 cursor-pointer",
     !disabled && inBand && !isEnd && "bg-orange-50 text-orange-700 cursor-pointer",
     isEnd && "bg-orange-500 text-white font-bold cursor-pointer",
@@ -289,7 +289,7 @@ function MonthGrid({ fy, onFy, enabled, band, onPick, onHover, anchored }: {
       <div className="flex flex-col gap-1">
         {[0, 1, 2, 3].map((q) => (
           <div key={q} className="flex items-center gap-1">
-            <span className="w-5 text-[9px] font-bold text-gray-300 shrink-0">{QUARTER_LABELS[q]}</span>
+            <span className="w-5 text-[9px] font-bold text-gray-500 shrink-0">{QUARTER_LABELS[q]}</span>
             {FY_MONTHS.slice(q * 3, q * 3 + 3).map((m) => {
               const y = m >= 4 ? fy : fy + 1;
               const key = monthKey(y, m);
@@ -311,7 +311,7 @@ function MonthGrid({ fy, onFy, enabled, band, onPick, onHover, anchored }: {
         ))}
       </div>
       {enabled && (
-        <p className="text-[9px] text-gray-400 mt-2 text-center">Greyed months have no data loaded</p>
+        <p className="text-[9px] text-gray-500 mt-2 text-center">Greyed months have no data loaded</p>
       )}
     </div>
   );
@@ -341,7 +341,7 @@ function DayGrid({ y, m, band, onPick, onHover, onShift, anchored }: {
           </div>
           <div className="grid grid-cols-7 gap-y-0.5">
             {WEEKDAYS.map((d, j) => (
-              <span key={j} className="text-[9px] font-bold text-gray-300 text-center h-5 leading-5">{d}</span>
+              <span key={j} className="text-[9px] font-bold text-gray-500 text-center h-5 leading-5">{d}</span>
             ))}
             {Array.from({ length: leadingBlanks(mo.y, mo.m) }, (_, j) => <span key={`b${j}`} />)}
             {Array.from({ length: daysInMonth(mo.y, mo.m) }, (_, j) => {
@@ -368,7 +368,7 @@ function DayGrid({ y, m, band, onPick, onHover, onShift, anchored }: {
 function NavButton({ onClick, dir }: { onClick: () => void; dir: "prev" | "next" }) {
   return (
     <button type="button" onClick={onClick} aria-label={dir === "prev" ? "Previous" : "Next"}
-      className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:bg-orange-50 hover:text-orange-500 transition-colors">
+      className="w-5 h-5 flex items-center justify-center rounded-md text-gray-500 hover:bg-orange-50 hover:text-orange-500 transition-colors">
       {dir === "prev" ? <ChevronLeft size={13} /> : <ChevronRight size={13} />}
     </button>
   );

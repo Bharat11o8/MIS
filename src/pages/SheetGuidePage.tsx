@@ -74,7 +74,7 @@ export default function SheetGuidePage() {
         <div className="flex items-center gap-2 mt-1">
           <div className="w-8 h-0.5 bg-gray-800 rounded" />
           <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
             Share your sheet with the MIS, then paste the link into the module
           </p>
         </div>
@@ -89,7 +89,7 @@ export default function SheetGuidePage() {
             </div>
             <div>
               <h2 className="text-sm font-bold text-gray-800">Share your sheet with this address</h2>
-              <p className="text-[11px] text-gray-400">
+              <p className="text-[11px] text-gray-500">
                 This is the MIS service account — it reads your sheet, nothing else.
               </p>
             </div>
@@ -189,7 +189,7 @@ export default function SheetGuidePage() {
             </div>
             <div>
               <h2 className="text-sm font-bold text-gray-800">What it should look like</h2>
-              <p className="text-[11px] text-gray-400">Role set to Viewer, “Notify people” unticked.</p>
+              <p className="text-[11px] text-gray-500">Role set to Viewer, “Notify people” unticked.</p>
             </div>
           </div>
           <div className="rounded-2xl border border-gray-100 bg-gray-50/60 p-4 flex justify-center">
@@ -204,7 +204,7 @@ export default function SheetGuidePage() {
         {/* Where to paste */}
         <motion.div variants={item} className="card-premium p-6">
           <h2 className="text-sm font-bold text-gray-800 mb-1">Where to paste the link</h2>
-          <p className="text-[11px] text-gray-400 mb-4">Modules that read from Google Sheets.</p>
+          <p className="text-[11px] text-gray-500 mb-4">Modules that read from Google Sheets.</p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <a
@@ -216,9 +216,9 @@ export default function SheetGuidePage() {
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-bold text-gray-800 flex items-center gap-1">
-                  Sales <ExternalLink size={11} className="text-gray-300 group-hover:text-orange-400" />
+                  Sales <ExternalLink size={11} className="text-gray-400 group-hover:text-orange-400" />
                 </p>
-                <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">
+                <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
                   Plant to Depot and Depot to Distributor each take their own sheet, added from the tab's own panel.
                 </p>
               </div>
@@ -233,9 +233,9 @@ export default function SheetGuidePage() {
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-bold text-gray-800 flex items-center gap-1">
-                  Finance <ExternalLink size={11} className="text-gray-300 group-hover:text-orange-400" />
+                  Finance <ExternalLink size={11} className="text-gray-400 group-hover:text-orange-400" />
                 </p>
-                <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">
+                <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
                   Super admin only — register the Monthly and Yearly master files under “Data Sources”. Each holds
                   one tab per company.
                 </p>

@@ -26,7 +26,7 @@ export default function PeriodPicker({ periods, value, onChange, label }: Period
 
   return (
     <div className="flex items-center gap-2">
-      {label && <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1"><CalendarDays size={12} /> {label}</span>}
+      {label && <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1"><CalendarDays size={12} /> {label}</span>}
       <div className="flex items-center bg-gray-100 rounded-xl overflow-hidden">
         <button
           onClick={() => step(-1)}

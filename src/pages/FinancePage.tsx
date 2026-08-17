@@ -257,9 +257,9 @@ export default function FinancePage() {
     <div className="p-6 flex flex-col gap-6">
       {/* Print-only board-pack header */}
       <div className="print-only mb-2">
-        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-gray-400">AutoForm · Financial Dashboard</div>
+        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-gray-500">AutoForm · Financial Dashboard</div>
         <div className="text-xl font-bold text-gray-900 mt-0.5">{companyLabel} — {statementLabel}</div>
-        <div className="text-[11px] text-gray-400">Generated {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
+        <div className="text-[11px] text-gray-500">Generated {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
       </div>
 
       {/* Header — title and the tab switcher share one row so they line up, and the
@@ -273,7 +273,7 @@ export default function FinancePage() {
           <div className="flex items-center gap-2 mt-1">
             <div className="w-8 h-0.5 bg-gray-800 rounded" />
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
-            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
               {isConsolidated
                 ? "Profit & Loss and Balance Sheet, every company side by side"
                 : "Balance Sheet · Profit & Loss · Cash Flow · Plant Operations, per company"}
@@ -305,7 +305,7 @@ export default function FinancePage() {
             />
             {isAdmin && selectedId && !isConsolidated && (
               <button onClick={handleDeleteCompany}
-                className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all">
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all">
                 <Trash2 size={13} />
               </button>
             )}
@@ -330,7 +330,7 @@ export default function FinancePage() {
       {isAdmin && onSheetsTab && (
         <div className="no-print bg-white border border-[#EAE3D6] rounded-2xl p-5 flex flex-col gap-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Database size={15} className="text-gray-400" /> Data Sources — master files</h2>
+            <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Database size={15} className="text-gray-500" /> Data Sources — master files</h2>
             <button onClick={() => setShowAddForm(!showAddForm)}
               className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-orange-500 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
               <Plus size={13} /> Add master file
@@ -338,14 +338,14 @@ export default function FinancePage() {
           </div>
 
           {masters.length === 0 ? (
-            <p className="text-[13px] text-gray-400">No master files yet. Register the <b>Monthly</b> and <b>Yearly</b> master spreadsheets — each holds every company as a tab. Syncing ingests all companies.</p>
+            <p className="text-[13px] text-gray-500">No master files yet. Register the <b>Monthly</b> and <b>Yearly</b> master spreadsheets — each holds every company as a tab. Syncing ingests all companies.</p>
           ) : (
             <div className="flex flex-col gap-2">
               {masters.map((m) => (
                 <div key={m.id} className="flex items-center justify-between gap-3 border border-gray-100 rounded-xl px-3 py-2">
                   <div className="min-w-0">
                     <div className="text-[13px] font-semibold text-gray-800 truncate">{m.label}</div>
-                    <div className="text-[11px] text-gray-400 truncate">
+                    <div className="text-[11px] text-gray-500 truncate">
                       {m.last_synced_at ? `Last synced ${formatDate(m.last_synced_at)} · ${m.last_sync_status}` : "Never synced"}
                     </div>
                   </div>
@@ -355,7 +355,7 @@ export default function FinancePage() {
                       {syncingId === m.id ? (<><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Syncing…</>) : (<><RefreshCw size={12} /> Sync</>)}
                     </button>
                     <button onClick={() => handleDeleteMaster(m.id, m.label)} disabled={!!syncingId}
-                      className="text-gray-400 hover:text-red-500 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
+                      className="text-gray-500 hover:text-red-500 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:border-red-200 transition-all disabled:opacity-50">
                       <Trash2 size={13} />
                     </button>
                   </div>
@@ -370,12 +370,12 @@ export default function FinancePage() {
                 <div className="bg-[#FAF7F1] border border-gray-100 rounded-xl p-4 flex flex-col gap-3">
                   <div className="flex flex-wrap gap-3 items-end">
                     <div className="flex flex-col gap-1 flex-1 min-w-[240px]">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Master sheet link or ID</label>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Master sheet link or ID</label>
                       <input value={newLink} onChange={(e) => setNewLink(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…"
                         className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
                     </div>
                     <div className="flex flex-col gap-1 min-w-[160px]">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Label</label>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Label</label>
                       <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="e.g. Monthly master"
                         className="h-10 px-3 rounded-xl border border-gray-200 text-sm text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all" />
                     </div>
@@ -383,10 +383,10 @@ export default function FinancePage() {
                       className="h-10 flex items-center gap-1.5 text-xs font-semibold text-white px-4 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-60 transition-all">
                       {adding ? "Adding…" : "Add"}
                     </button>
-                    <button onClick={() => setShowAddForm(false)} className="h-10 px-3 text-xs font-medium text-gray-400 hover:text-gray-600">Cancel</button>
+                    <button onClick={() => setShowAddForm(false)} className="h-10 px-3 text-xs font-medium text-gray-500 hover:text-gray-600">Cancel</button>
                   </div>
                   {addError && <p className="text-xs text-red-600">{addError}</p>}
-                  <p className="text-[11px] text-gray-400">
+                  <p className="text-[11px] text-gray-500">
                     Share the sheet (Viewer is enough) with the service account before syncing. One tab per company; the same tab name links a company across the monthly and yearly files. After syncing, grant each user access to their companies from the Users page.
                   </p>
                 </div>
@@ -429,7 +429,7 @@ export default function FinancePage() {
       </AnimatePresence>
 
       {!onSheetsTab && !selectedId && (
-        <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-8 text-center">
+        <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-8 text-center">
           {isAdmin
             ? "No companies yet — register the master files from the Data Sources tab and click Sync to ingest every company tab."
             : "No companies available. Ask an admin to grant you access to a company's finance data."}
@@ -446,11 +446,11 @@ export default function FinancePage() {
 
       {isAdmin && onSheetsTab && (
         <div className="no-print">
-          <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-400" /> Sync History</h2>
+          <h2 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2"><History size={16} className="text-gray-500" /> Sync History</h2>
           {!historyLoaded ? (
-            <div className="text-sm text-gray-400">Loading…</div>
+            <div className="text-sm text-gray-500">Loading…</div>
           ) : history.length === 0 ? (
-            <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-6 text-center">No syncs yet. Register a master file above and click Sync.</div>
+            <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-6 text-center">No syncs yet. Register a master file above and click Sync.</div>
           ) : (
             <div className="bg-white border border-orange-100 rounded-2xl overflow-hidden">
               <table className="w-full text-sm">

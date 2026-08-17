@@ -96,7 +96,7 @@ function FilterSelect({
 }) {
   return (
     <div className="flex flex-col gap-1 min-w-[130px]">
-      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</label>
+      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{label}</label>
       <Select
         value={value}
         onChange={onChange}
@@ -253,7 +253,7 @@ export default function LeadsPage() {
             <span className="page-title-dark">LEADS</span>
             <span className="page-title-orange">{activeTab === "analytics" ? "ANALYTICS" : "UPLOAD DATA"}</span>
           </h1>
-          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-1">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500 mt-1">
             {activeTab === "analytics" ? (
               <>
                 {analytics ? `${analytics.kpis.total.toLocaleString()} leads` : "Loading…"}
@@ -321,7 +321,7 @@ export default function LeadsPage() {
               <div className="flex flex-wrap gap-4 items-end">
                 {/* Year + Month */}
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Year</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Year</label>
                   <Select
                     value={filters.year !== null ? String(filters.year) : ""}
                     onChange={handleYearChange}
@@ -334,7 +334,7 @@ export default function LeadsPage() {
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Month</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Month</label>
                   <MultiSelect
                     values={filters.months.map(String)}
                     onChange={handleMonthsChange}
@@ -387,7 +387,7 @@ export default function LeadsPage() {
 
       {/* Loading overlay */}
       {loading && (
-        <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-400">
+        <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
           <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />
           Updating charts…
         </div>
@@ -409,7 +409,7 @@ export default function LeadsPage() {
                 </div>
                 <div className="mt-3">
                   <p className="text-2xl font-black text-gray-900">{kpi.value}</p>
-                  <p className="text-[11px] text-gray-400">{kpi.sub}</p>
+                  <p className="text-[11px] text-gray-500">{kpi.sub}</p>
                 </div>
               </motion.div>
             ))}
@@ -426,7 +426,7 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Monthly Lead Volume</h3>
-                  <p className="text-[11px] text-gray-400">Leads per month — filtered result</p>
+                  <p className="text-[11px] text-gray-500">Leads per month — filtered result</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={220}>
@@ -454,7 +454,7 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Source Split</h3>
-                  <p className="text-[11px] text-gray-400">Lead distribution by channel</p>
+                  <p className="text-[11px] text-gray-500">Lead distribution by channel</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={200}>
@@ -494,7 +494,7 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Initial Call Status</h3>
-                  <p className="text-[11px] text-gray-400">First-contact outcome distribution</p>
+                  <p className="text-[11px] text-gray-500">First-contact outcome distribution</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={220}>
@@ -522,7 +522,7 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Review Outcome</h3>
-                  <p className="text-[11px] text-gray-400">Post-follow-up status distribution</p>
+                  <p className="text-[11px] text-gray-500">Post-follow-up status distribution</p>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={220}>
@@ -556,16 +556,16 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">ASM Performance</h3>
-                  <p className="text-[11px] text-gray-400">Leads shared & won</p>
+                  <p className="text-[11px] text-gray-500">Leads shared & won</p>
                 </div>
               </div>
               <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
                 {analytics.asm_performance.length === 0 && (
-                  <p className="text-xs text-gray-400 text-center py-4">No data for this filter</p>
+                  <p className="text-xs text-gray-500 text-center py-4">No data for this filter</p>
                 )}
                 {analytics.asm_performance.slice(0, 12).map((a: any, i: number) => (
                   <div key={a.asm} className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-gray-400 w-4">{i + 1}</span>
+                    <span className="text-[10px] font-bold text-gray-500 w-4">{i + 1}</span>
                     <div className="flex-1">
                       <div className="flex items-center justify-between mb-0.5">
                         <button
@@ -576,7 +576,7 @@ export default function LeadsPage() {
                         >
                           {a.asm}
                         </button>
-                        <span className="text-xs text-gray-400">{a.total}</span>
+                        <span className="text-xs text-gray-500">{a.total}</span>
                       </div>
                       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div className="h-full rounded-full bg-gradient-to-r from-orange-400 to-orange-500"
@@ -597,13 +597,13 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Top States</h3>
-                  <p className="text-[11px] text-gray-400">Click to filter by state</p>
+                  <p className="text-[11px] text-gray-500">Click to filter by state</p>
                 </div>
               </div>
               <div className="space-y-2.5">
                 {analytics.top_states.map((s: any, i: number) => (
                   <div key={s.state} className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-gray-400 w-4">{i + 1}</span>
+                    <span className="text-[10px] font-bold text-gray-500 w-4">{i + 1}</span>
                     <button
                       onClick={() => setFilter("state", filters.state === s.state ? "" : s.state)}
                       className={`text-xs flex-1 text-left font-medium transition-colors ${
@@ -630,7 +630,7 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Lead Distribution</h3>
-                  <p className="text-[11px] text-gray-400">Click to filter</p>
+                  <p className="text-[11px] text-gray-500">Click to filter</p>
                 </div>
               </div>
               <div className="space-y-3">
@@ -643,7 +643,7 @@ export default function LeadsPage() {
                       className={`w-full text-left transition-all rounded-xl p-1.5 -m-1.5 ${isActive ? "bg-orange-50" : "hover:bg-gray-50"}`}>
                       <div className="flex justify-between text-xs mb-1">
                         <span className={`font-medium ${isActive ? "text-orange-500" : "text-gray-700"}`}>{r.category}</span>
-                        <span className="text-gray-400">{r.count} · {pct}%</span>
+                        <span className="text-gray-500">{r.count} · {pct}%</span>
                       </div>
                       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div className="h-full rounded-full transition-all duration-500"
@@ -666,7 +666,7 @@ export default function LeadsPage() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-gray-800">Lead Records</h3>
-                  <p className="text-[11px] text-gray-400">
+                  <p className="text-[11px] text-gray-500">
                     Showing 20 of {totalLeads.toLocaleString()} leads
                     {activeCount > 0 && " (filtered)"}
                   </p>
@@ -685,7 +685,7 @@ export default function LeadsPage() {
                   <tr className="border-y border-gray-50 bg-gray-50/50">
                     {["Date", "Name", "Mobile", "State", "Source", "Product", "ASM", "Review Status", "Review Reason"].map((h) => (
                       <th key={h}
-                        className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-400 px-4 py-3 first:pl-6 last:pr-6">
+                        className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-4 py-3 first:pl-6 last:pr-6">
                         {h}
                       </th>
                     ))}
@@ -694,7 +694,7 @@ export default function LeadsPage() {
                 <tbody className="divide-y divide-gray-50">
                   {leads.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="text-center py-8 text-sm text-gray-400">
+                      <td colSpan={9} className="text-center py-8 text-sm text-gray-500">
                         No leads match the selected filters.
                       </td>
                     </tr>
@@ -702,7 +702,7 @@ export default function LeadsPage() {
                     <tr key={row.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-6 py-3 text-xs text-gray-500">{row.lead_date}</td>
                       <td className="px-4 py-3 text-xs font-semibold text-gray-800">
-                        {row.customer_name ?? <span className="text-gray-300">—</span>}
+                        {row.customer_name ?? <span className="text-gray-400">—</span>}
                       </td>
                       <td className="px-4 py-3 text-xs font-mono text-gray-500">{row.mobile_number ?? "—"}</td>
                       <td className="px-4 py-3 text-xs text-gray-600">
@@ -736,10 +736,10 @@ export default function LeadsPage() {
                             } ${filters.review_status === row.review_status ? "ring-2 ring-orange-400" : ""}`}>
                             {row.review_status}
                           </button>
-                        ) : <span className="text-gray-300 text-xs">—</span>}
+                        ) : <span className="text-gray-400 text-xs">—</span>}
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" title={row.review_reason ?? undefined}>
-                        {row.review_reason ?? <span className="text-gray-300">—</span>}
+                        {row.review_reason ?? <span className="text-gray-400">—</span>}
                       </td>
                     </tr>
                   ))}

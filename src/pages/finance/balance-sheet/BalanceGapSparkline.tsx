@@ -14,7 +14,7 @@ interface BalanceGapSparklineProps {
 export default function BalanceGapSparkline({ values, width = 64, height = 28 }: BalanceGapSparklineProps) {
   const clean = values.filter((v) => Number.isFinite(v));
   if (clean.length < 2) {
-    return <span className="text-[10px] text-gray-300">—</span>;
+    return <span className="text-[10px] text-gray-400">—</span>;
   }
   const maxAbs = Math.max(...clean.map((v) => Math.abs(v))) || 1;
   const zeroY = height / 2;

@@ -159,9 +159,9 @@ export default function LeadsUploadTab() {
               </div>
               <div>
                 <p className="font-semibold text-gray-700">Drop your file here</p>
-                <p className="text-sm text-gray-400 mt-0.5">or click to browse</p>
+                <p className="text-sm text-gray-500 mt-0.5">or click to browse</p>
               </div>
-              <p className="text-xs text-gray-400 bg-white/60 px-3 py-1 rounded-full border border-orange-100">
+              <p className="text-xs text-gray-500 bg-white/60 px-3 py-1 rounded-full border border-orange-100">
                 Supports: .xlsx · .xls · .csv
               </p>
             </motion.div>
@@ -269,9 +269,9 @@ export default function LeadsUploadTab() {
       <div>
         <h2 className="text-base font-bold text-gray-800 mb-3">Upload History</h2>
         {!historyLoaded ? (
-          <div className="text-sm text-gray-400">Loading…</div>
+          <div className="text-sm text-gray-500">Loading…</div>
         ) : history.length === 0 ? (
-          <div className="text-sm text-gray-400 bg-gray-50 rounded-2xl p-6 text-center">
+          <div className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-6 text-center">
             No uploads yet. Upload your first file above.
           </div>
         ) : (

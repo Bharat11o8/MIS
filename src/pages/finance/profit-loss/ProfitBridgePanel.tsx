@@ -35,10 +35,10 @@ export default function ProfitBridgePanel({ data, pickedPeriod }: ProfitBridgePa
     <div className="card-premium p-6">
       <div className="mb-4">
         <h3 className="text-sm font-bold text-gray-800">Profit Bridge — {formatPeriodLabel(pickedPeriod)}</h3>
-        <p className="text-[11px] text-gray-400">How Sales became Nett Profit this month. Every step is derived from the sheet's own subtotal and total rows — line items are never re-added.</p>
+        <p className="text-[11px] text-gray-500">How Sales became Nett Profit this month. Every step is derived from the sheet's own subtotal and total rows — line items are never re-added.</p>
       </div>
       {!bridge ? (
-        <div className="h-[200px] flex items-center justify-center text-sm text-gray-400">
+        <div className="h-[200px] flex items-center justify-center text-sm text-gray-500">
           Sales, Gross Profit and Nett Profit are not all available for this month.
         </div>
       ) : (
@@ -87,7 +87,7 @@ export default function ProfitBridgePanel({ data, pickedPeriod }: ProfitBridgePa
             { key: "down", label: "Reduces profit", color: DANGER_COLOR },
           ]} />
           {(bridge.degradedTrading || bridge.degradedIncome) && (
-            <p className="text-[10px] text-gray-400 mt-2">
+            <p className="text-[10px] text-gray-500 mt-2">
               {bridge.degradedTrading && "Trading-side income and costs are shown as one net step — the sheet's subtotal for this month doesn't reconcile into separate figures. "}
               {bridge.degradedIncome && "Indirect income and costs are shown as one net step — the sheet's subtotal for this month doesn't reconcile into separate figures."}
             </p>
