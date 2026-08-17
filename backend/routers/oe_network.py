@@ -236,40 +236,24 @@ def delete_sheet_source(
 
 # ── Sync ───────────────────────────────────────────────────────────────────────
 
-_PLAN_INSERT = text("""
-    INSERT INTO oe_visit_plans
-        (id, sheet_source_id, salesperson, visit_date, plan_year, plan_month,
-         oem, dealer_name, city, state, sync_log_id)
-    VALUES
-        (:id, :sheet_source_id, :salesperson, :visit_date, :plan_year, :plan_month,
-         :oem, :dealer_name, :city, :state, :sync_log_id)
-""")
+# Column lists, not whole statements: every module's rows go through
+# _bulk_insert, which builds one multi-row INSERT per chunk. Written one
+# statement per row, the log book's ~2,300 rows meant ~2,300 round trips to a
+# database reached over an SSH tunnel — minutes of wall clock with a write
+# transaction held open the whole time, which is what made it look hung.
+_PLAN_COLS = ("id", "sheet_source_id", "salesperson", "visit_date", "plan_year",
+              "plan_month", "oem", "dealer_name", "city", "state", "sync_log_id")
 
-_LOG_INSERT = text("""
-    INSERT INTO oe_visit_logs
-        (id, sheet_source_id, visit_date, log_year, log_month, salesperson,
-         contact_mode, oem, dealership, address, contact_person, contact_number, designation,
-         car_sales, seat_cover_sales, mats_sales, remarks,
-         remark_product_feedback, remark_replacement, remark_sales, remark_others,
-         channel, email, photo_link, city, state, sheet_row, sync_log_id, dealer_id)
-    VALUES
-        (:id, :sheet_source_id, :visit_date, :log_year, :log_month, :salesperson,
-         :contact_mode, :oem, :dealership, :address, :contact_person, :contact_number, :designation,
-         :car_sales, :seat_cover_sales, :mats_sales, :remarks,
-         :remark_product_feedback, :remark_replacement, :remark_sales, :remark_others,
-         :channel, :email, :photo_link, :city, :state, :sheet_row, :sync_log_id, :dealer_id)
-""")
+_LOG_COLS = ("id", "sheet_source_id", "visit_date", "log_year", "log_month", "salesperson",
+             "contact_mode", "oem", "dealership", "address", "contact_person",
+             "contact_number", "designation", "car_sales", "seat_cover_sales",
+             "mats_sales", "remarks", "remark_product_feedback", "remark_replacement",
+             "remark_sales", "remark_others", "channel", "email", "photo_link",
+             "city", "state", "sheet_row", "sync_log_id", "dealer_id")
 
-_TGT_INSERT = text("""
-    INSERT INTO oe_targets
-        (id, sheet_source_id, fy_year, quarter, period_year, period_month,
-         oem, category, salesperson, region,
-         tgt_nos, tgt_value, ach_nos, ach_value, value_scale, sync_log_id)
-    VALUES
-        (:id, :sheet_source_id, :fy_year, :quarter, :period_year, :period_month,
-         :oem, :category, :salesperson, :region,
-         :tgt_nos, :tgt_value, :ach_nos, :ach_value, :value_scale, :sync_log_id)
-""")
+_TGT_COLS = ("id", "sheet_source_id", "fy_year", "quarter", "period_year", "period_month",
+             "oem", "category", "salesperson", "region",
+             "tgt_nos", "tgt_value", "ach_nos", "ach_value", "value_scale", "sync_log_id")
 
 # A module can own more than one table: the dealer file writes the monthly
 # sales and the quarterly targets, and both are replaced together on sync.
@@ -279,37 +263,46 @@ _DATA_TABLES = {
     MODULE_TGT: ("oe_targets",),
     MODULE_DD: ("oe_dealer_monthly", "oe_dealer_targets"),
 }
-_INSERTS = {MODULE_PLAN: _PLAN_INSERT, MODULE_LOG: _LOG_INSERT, MODULE_TGT: _TGT_INSERT}
+_INSERT_COLS = {MODULE_PLAN: _PLAN_COLS, MODULE_LOG: _LOG_COLS, MODULE_TGT: _TGT_COLS}
 
 _DEALER_MONTHLY_COLS = ("id", "dealer_id", "sheet_source_id", "month",
                         "oem_total", "ysasc", "ys_sale")
 _DEALER_TARGET_COLS = ("id", "dealer_id", "sheet_source_id", "quarter", "fy_year",
                        "period_start", "period_end", "target", "achievement")
 
-# How many rows go in one INSERT. The dealer file is ~3,600 rows and this
+# How many rows go in one INSERT. These files run to thousands of rows and the
 # database is reached over an SSH tunnel, so the cost is dominated by round
 # trips, not by the inserts themselves: one statement per row took minutes and
 # held a write transaction open the whole time, which is what let a double-click
-# on Sync overlap two runs. 500 keeps each statement well inside Postgres's
-# 65535 bind-parameter ceiling (500 x 9 columns = 4,500) with room to spare.
+# on Sync overlap two runs.
+#
+# 500 keeps every statement inside Postgres's 65535 bind-parameter ceiling with
+# room to spare — the widest table here is oe_visit_logs at 29 columns, so
+# 500 x 29 = 14,500.
 _INSERT_CHUNK = 500
 
 
 def _bulk_insert(db: Session, table: str, cols: tuple, rows: list) -> int:
-    """Insert rows in multi-row statements. Returns the number written."""
+    """Insert rows in multi-row statements. Returns the number written.
+
+    Rows must carry every column in `cols`. Indexed, not `.get()`: a parser that
+    stops emitting a field should fail here rather than quietly write NULLs into
+    a column nobody notices for a month. This matches what the per-row named
+    statements did before — SQLAlchemy raised on a missing bind parameter.
+    """
     if not rows:
         return 0
     collist = ", ".join(cols)
     for i in range(0, len(rows), _INSERT_CHUNK):
         chunk = rows[i:i + _INSERT_CHUNK]
         # Parameters stay bound — the only thing interpolated is the column
-        # list and the placeholder names, both of which come from _DEALER_*_COLS
-        # above and never from the sheet.
+        # list and the placeholder names, both of which come from the _*_COLS
+        # tuples above and never from the sheet.
         values = ", ".join(
             "(" + ", ".join(f":{c}_{n}" for c in cols) + ")"
             for n in range(len(chunk))
         )
-        params = {f"{c}_{n}": row.get(c) for n, row in enumerate(chunk) for c in cols}
+        params = {f"{c}_{n}": row[c] for n, row in enumerate(chunk) for c in cols}
         db.execute(text(f"INSERT INTO {table} ({collist}) VALUES {values}"), params)
     return len(rows)
 
@@ -504,7 +497,7 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
             db.commit()
             return _sync_result(log, db, written, deleted, skipped_tabs, errors)
 
-        insert_sql = _INSERTS[source.module]
+        cols = _INSERT_COLS[source.module]
 
         # Log rows carry the outlet they belong to, so visits, remarks, dealer
         # sales and targets all hang off one key. Resolved here rather than at
@@ -513,19 +506,23 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
         # and is reported below — never guessed at.
         index = DealerIndex(db) if source.module == MODULE_LOG else None
         unresolved = 0
+        rows: list = []
         for rec in records:
             extra = {}
             if index is not None:
                 did = index.resolve(rec.get("oem"), rec.get("dealership"), rec.get("city"))
                 extra["dealer_id"] = did
                 unresolved += did is None
-            db.execute(insert_sql, {
+            rows.append({
                 **rec,
                 **extra,
                 "id": str(uuid.uuid4()),
                 "sheet_source_id": str(source.id),
                 "sync_log_id": str(log.id),
             })
+        # Batched, not one statement per row — see _bulk_insert. Each of these
+        # modules writes exactly one table.
+        _bulk_insert(db, _DATA_TABLES[source.module][0], cols, rows)
         db.commit()
         if unresolved:
             errors.append(
