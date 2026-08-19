@@ -1,5 +1,7 @@
 import { VISIT_COLOR, NEUTRAL_BAR, OVER_COLOR, ON_TRACK_PCT, firstName, coverageColor } from "../shared";
-import { type DealerSpRow, type DealerQuarter, type DealerPerf, n0, pct } from "./model";
+import {
+  type DealerSpRow, type DealerQuarter, type DealerPerf, n0, pct, categoryLabel,
+} from "./model";
 import Explain from "./Explain";
 
 /** Coverage per rep: how much of the patch they actually touched. */
@@ -44,10 +46,24 @@ export function CoveragePanel({ rows }: { rows: DealerSpRow[] }) {
   );
 }
 
-/** Quarter vs quarter: target, achievement, and what actually sold. */
-export function QuarterPanel({ rows }: { rows: DealerQuarter[] }) {
+/** Quarter vs quarter: target, achievement, and what actually sold.
+ *
+ *  Handles both file shapes without the caller having to care which it has.
+ *  Where the OEM publishes a quarter achievement column, that is the figure;
+ *  where it publishes only monthly results (TATA), `sold` — our units inside
+ *  the quarter's own months — stands in, and the panel says so. The two are the
+ *  same quantity counted the same way, but only one of them was stated by the
+ *  team, so they are never silently interchanged.
+ *
+ *  `by_product` splits the bars where an OEM sets a target per product. It is
+ *  drawn only when there is genuinely more than one — a single "Seat Covers"
+ *  sub-row under an identical total is noise. */
+export function QuarterPanel({ rows, funnel }: { rows: DealerQuarter[]; funnel: boolean }) {
   if (!rows.length) return null;
-  const max = Math.max(...rows.flatMap((r) => [r.target ?? 0, r.achievement ?? 0, r.ys_sale ?? 0]), 1);
+  const achOf = (r: DealerQuarter) => r.achievement ?? r.sold ?? 0;
+  const max = Math.max(...rows.flatMap((r) => [r.target ?? 0, achOf(r), r.ys_sale ?? 0]), 1);
+  const derived = rows.some((r) => r.achievement == null && r.sold != null);
+  const split = rows.some((r) => r.by_product.length > 1);
   return (
     <div className="bg-white border border-orange-100 rounded-2xl p-5 print-avoid-break">
       <h3 className="text-sm font-bold text-gray-800">Quarter vs quarter</h3>
@@ -56,21 +72,34 @@ export function QuarterPanel({ rows }: { rows: DealerQuarter[] }) {
         view. A quarter appears whenever the period touches it at all and its target
         is always shown <b className="text-gray-600">whole</b> — targets are agreed per
         quarter, so cutting one into part-months would invent a number nobody set.
-        A quarter still in progress shows its target with no achievement yet.
+        A quarter still in progress therefore reads under 100% by design; read the
+        share against how much of the quarter has actually gone.
+        {derived && (
+          <> This OEM's file publishes no quarter achievement column, so{" "}
+            <b className="text-gray-600">Achieved</b> is summed from the months inside
+            the quarter — our own sales, counted the same way, but derived here rather
+            than stated by the team.</>
+        )}
+        {split && <> Each quarter is split by product, since the targets are set that way.</>}
       </Explain>
       <div className="flex flex-col gap-4">
         {rows.map((r) => {
-          const ach = r.achievement ?? 0;
+          const ach = achOf(r);
           const tgt = r.target ?? 0;
-          const hitPct = tgt ? Math.round((ach / tgt) * 100) : null;
+          const hit = tgt ? Math.round((ach / tgt) * 100) : null;
           return (
             <div key={`${r.fy_year}${r.quarter}`}>
               <div className="flex items-baseline justify-between mb-1.5">
                 <span className="text-xs font-bold text-gray-700">{r.label}</span>
-                <span className="text-[11px] text-gray-500">
-                  {r.ysasc == null ? n0(r.oem_total) + " sold" : `${n0(r.ysasc)} YSASC`}
-                  {" · "}{pct(r.penetration)} penetration
-                </span>
+                {/* Only the funnel OEMs can say how big the quarter was; for the
+                    rest there is no total to report and the line stays off
+                    rather than printing a zero. */}
+                {funnel && (
+                  <span className="text-[11px] text-gray-500">
+                    {r.ysasc == null ? n0(r.oem_total) + " sold" : `${n0(r.ysasc)} YSASC`}
+                    {" · "}{pct(r.penetration)} penetration
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="w-16 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Target</span>
@@ -84,21 +113,48 @@ export function QuarterPanel({ rows }: { rows: DealerQuarter[] }) {
                 <div className="flex-1 h-4 rounded bg-gray-100">
                   <div className="h-full rounded transition-all" style={{
                     width: `${(ach / max) * 100}%`,
-                    background: hitPct !== null && hitPct >= ON_TRACK_PCT ? OVER_COLOR : VISIT_COLOR,
+                    background: hit !== null && hit >= ON_TRACK_PCT ? OVER_COLOR : VISIT_COLOR,
                   }} />
                 </div>
                 <span className="w-16 text-right text-[11px] font-bold tabular-nums text-gray-700">
                   {ach ? n0(ach) : "—"}
                 </span>
               </div>
-              {hitPct !== null && (
+              {hit !== null && (
                 // Same spacer as the bar rows above, so the footnote aligns with
                 // the tracks without a hand-tuned padding value.
                 <div className="flex gap-2 mt-1">
                   <span className="w-16 shrink-0" />
                   <p className="text-[10px] text-gray-500">
-                    {ach ? `${hitPct}% of target` : "quarter still open"}
+                    {ach ? `${hit}% of target` : "quarter still open"}
                   </p>
+                </div>
+              )}
+              {r.by_product.length > 1 && (
+                <div className="flex gap-2 mt-1.5">
+                  <span className="w-16 shrink-0" />
+                  <div className="flex-1 flex flex-col gap-1">
+                    {r.by_product.map((b) => {
+                      const bAch = b.achievement ?? b.sold ?? 0;
+                      const bHit = b.target ? Math.round((bAch / b.target) * 100) : null;
+                      return (
+                        <div key={b.product} className="flex items-center gap-2 text-[10px]">
+                          <span className="w-20 shrink-0 text-gray-500">{categoryLabel(b.product)}</span>
+                          <div className="flex-1 h-2 rounded bg-gray-100">
+                            <div className="h-full rounded" style={{
+                              width: `${Math.min(bHit ?? 0, 100)}%`,
+                              background: bHit !== null && bHit >= ON_TRACK_PCT ? OVER_COLOR : VISIT_COLOR,
+                              opacity: 0.75,
+                            }} />
+                          </div>
+                          <span className="w-28 text-right tabular-nums text-gray-500">
+                            {n0(bAch)} / {n0(b.target)}
+                            {bHit !== null && <b className="ml-1 text-gray-700">{bHit}%</b>}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

@@ -1,7 +1,7 @@
 /**
  * A plain-language note under a panel heading saying what the thing means.
  *
- * Not optional decoration: "Bottom 20 by Opportunity" reads like a list of bad
+ * Not optional decoration: "Bottom 20 by vs Average" reads like a list of bad
  * dealers when it is in fact a list of our best ones, and nobody should have to
  * reverse-engineer a sign convention from the numbers to find that out.
  */

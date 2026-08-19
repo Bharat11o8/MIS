@@ -1,6 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Select from "@/components/ui/Select";
-import { type PerfDealer, type RankMetric, RANK_META, rankValue, n0, pct } from "./model";
+import {
+  type PerfDealer, type RankMetric, RANK_META, RANK_METRICS, rankValue,
+  n0, nOr, pct, hitPct,
+} from "./model";
 import Explain from "./Explain";
 
 /** Top / bottom N by a chosen metric.
@@ -12,14 +15,40 @@ import Explain from "./Explain";
  *  client, so this is a slice — no refetch, no server round trip. */
 const COUNTS = [10, 20, 30, 50] as const;
 
-export default function DealerRankTable({ dealers, avgPene, onPick }: {
-  dealers: PerfDealer[]; avgPene: number; onPick: (d: PerfDealer) => void;
+export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
+  dealers: PerfDealer[]; avgPene: number;
+  /** Whether the OEMs in view publish the funnel. Without it the rankings that
+   *  divide by a total nobody supplies are not offered at all — a metric picker
+   *  that can only produce a column of dashes reads as broken. */
+  funnel: boolean;
+  onPick: (d: PerfDealer) => void;
 }) {
-  const [metric, setMetric] = useState<RankMetric>("gap");
-  const [end, setEnd] = useState<"top" | "bottom">("top");
+  const metrics = RANK_METRICS(funnel);
+  const [metric, setMetric] = useState<RankMetric>(metrics[0]);
+  // Which end is the useful one depends on the metric, so the default follows
+  // it. On a signed metric (+ = ahead) the dealers worth working are the most
+  // NEGATIVE, so the table opens on the bottom — the same rows it opened on
+  // when + still meant "behind". On a volume or share ranking the top is the
+  // interesting end as usual. Only the default moves; the toggle is untouched
+  // once the reader has used it.
+  const [end, setEnd] = useState<"top" | "bottom">(
+    RANK_META[metrics[0]].signed ? "bottom" : "top");
   const [count, setCount] = useState<number>(20);
+  // Switching OEM can take the selected ranking away with it; without this the
+  // table would keep sorting by a metric the new scope cannot compute.
+  useEffect(() => {
+    if (!metrics.includes(metric)) setMetric(metrics[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [funnel]);
+  // A signed metric's useful end is its bottom and a ranking's is its top, so
+  // carrying the old end across a metric switch lands the reader on the least
+  // interesting half of the new list — "top 20 vs Average" is the dealers who
+  // need nothing done about them.
+  useEffect(() => {
+    setEnd(RANK_META[metric].signed ? "bottom" : "top");
+  }, [metric]);
 
-  const withSales = dealers.filter((d) => d.has_sales);
+  const withSales = dealers.filter((d) => d.has_sales || d.target != null);
   // The floor is on ADDRESSABLE volume, matching what the ranked metrics divide
   // by — a dealer who sells a lot but of models we don't cover isn't a big
   // dealer for this purpose.
@@ -64,7 +93,7 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
             className="min-w-[92px]"
             options={COUNTS.map((n) => ({ value: String(n), label: `${n} rows` }))} />
           <Select value={metric} onChange={(v) => setMetric(v as RankMetric)}
-            options={(Object.keys(RANK_META) as RankMetric[]).map((k) => ({ value: k, label: RANK_META[k].label }))} />
+            options={metrics.map((k) => ({ value: k, label: RANK_META[k].label }))} />
         </div>
       </div>
 
@@ -83,12 +112,23 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
           <> Only dealers with <b>{n0(floor)}+</b> YSASC covers are included, otherwise
             the bottom of a share-based list is just the smallest dealerships.</>
         )}
-        {" "}The <b className="text-gray-600">Opp.</b> column is the same figure in
-        every view: <span className="text-brand-orange font-semibold">+n</span> means
-        we are n units <i>behind</i> the <b>{avgPene.toFixed(1)}%</b> OEM
-        average and could gain them;{" "}
-        <span className="text-green-600 font-semibold">−n</span> means we are n units{" "}
-        <i>ahead</i> of it.
+        {funnel ? (
+          <> The <b className="text-gray-600">vs Avg</b> column reads the same way
+            everywhere in this module —{" "}
+            <span className="text-green-600 font-semibold">+n</span> is good:
+            n units <i>more</i> than the <b>{avgPene.toFixed(1)}%</b> OEM average
+            predicts for this dealer.{" "}
+            <span className="text-red-500 font-semibold">−n</span> means we are n
+            units <i>short</i> of it — units that are there and we aren't getting.</>
+        ) : (
+          <> The <b className="text-gray-600">vs Tgt</b> column reads the same way
+            everywhere in this module —{" "}
+            <span className="text-green-600 font-semibold">+n</span> is good:
+            n units <i>past</i> the quarter target.{" "}
+            <span className="text-red-500 font-semibold">−n</span> means n units
+            still <i>to go</i>. The target is the whole quarter's and is never cut to
+            the period, so part-way through a quarter a negative figure is expected.</>
+        )}
       </Explain>
 
       <div className="overflow-x-auto">
@@ -98,25 +138,44 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
               <th className="text-left font-bold py-2 pl-1">#</th>
               <th className="text-left font-bold py-2">Dealership</th>
               <th className="text-left font-bold py-2">Rep</th>
-              <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">
-                Total
-              </th>
-              <th className="text-right font-bold py-2"
-                title="YSASC — of that total, the covers on a vehicle we hold a part number for">
-                YSASC
-              </th>
-              <th className="text-right font-bold py-2">YS Sale</th>
-              <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
-              <th className="text-right font-bold py-2"
-                title="Units vs what network-average penetration would predict: + = room to gain, − = already ahead">
-                Opp.
-              </th>
+              {funnel ? (
+                <>
+                  <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">
+                    Total
+                  </th>
+                  <th className="text-right font-bold py-2"
+                    title="YSASC — of that total, the covers on a vehicle we hold a part number for">
+                    YSASC
+                  </th>
+                  <th className="text-right font-bold py-2">YS Sale</th>
+                  <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
+                  <th className="text-right font-bold py-2"
+                    title="Units vs what network-average penetration would predict: + = ahead of the average, − = short of it">
+                    vs Avg
+                  </th>
+                </>
+              ) : (
+                <>
+                  <th className="text-right font-bold py-2" title="The whole quarter's target, never pro-rated">
+                    Target
+                  </th>
+                  <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">
+                    Achieved
+                  </th>
+                  <th className="text-right font-bold py-2">YS Sale</th>
+                  <th className="text-right font-bold py-2" title="Achieved ÷ target">Hit %</th>
+                  <th className="text-right font-bold py-2"
+                    title="Units vs the quarter target: + = already past it, − = still to go">
+                    vs Tgt
+                  </th>
+                </>
+              )}
               <th className="text-right font-bold py-2 pr-1">Contacts</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((d, i) => {
-              const gap = Math.round(rankValue(d, "gap", avgPene));
+              const gap = Math.round(rankValue(d, funnel ? "gap" : "tgt_gap", avgPene));
               return (
                 <tr key={d.id} onClick={() => onPick(d)}
                   tabIndex={0} role="button"
@@ -130,23 +189,38 @@ export default function DealerRankTable({ dealers, avgPene, onPick }: {
                     <span className="text-gray-500"> · {d.city}</span>
                   </td>
                   <td className="py-2 text-gray-500">{d.salesperson ?? "—"}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-500">{n0(d.oem_total)}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-600">
-                    {d.ysasc == null ? "—" : n0(d.ysasc)}
-                  </td>
-                  <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
-                  {/* No penetration is "no data", not "bad" — the dash must stay
-                      grey, never inherit the below-average red. */}
+                  {funnel ? (
+                    <>
+                      <td className="py-2 text-right tabular-nums text-gray-500">{nOr(d.oem_total)}</td>
+                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.ysasc)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
+                      {/* No penetration is "no data", not "bad" — the dash must stay
+                          grey, never inherit the below-average red. */}
+                      <td className={`py-2 text-right tabular-nums font-semibold ${
+                        d.penetration == null ? "text-gray-500"
+                          : d.penetration >= avgPene ? "text-green-600" : "text-red-500"}`}>
+                        {pct(d.penetration)}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.target)}</td>
+                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.sold)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
+                      <td className={`py-2 text-right tabular-nums font-semibold ${
+                        hitPct(d.sold, d.target) == null ? "text-gray-500"
+                          : hitPct(d.sold, d.target)! >= 100 ? "text-green-600" : "text-gray-700"}`}>
+                        {pct(hitPct(d.sold, d.target))}
+                      </td>
+                    </>
+                  )}
+                  {/* Signed, both ways, and + is ALWAYS the good direction: this
+                      dealer sold more than expected. A negative figure is not
+                      "no data" — it is a real shortfall, which is worth seeing.
+                      Zero is a dash rather than a green 0 because landing exactly
+                      on the prediction is neither. */}
                   <td className={`py-2 text-right tabular-nums font-semibold ${
-                    d.penetration == null ? "text-gray-500"
-                      : d.penetration >= avgPene ? "text-green-600" : "text-red-500"}`}>
-                    {pct(d.penetration)}
-                  </td>
-                  {/* Signed, both ways. A negative gap is not "no data" — it is
-                      a dealer already selling MORE than network average would
-                      predict, which is worth seeing. */}
-                  <td className={`py-2 text-right tabular-nums font-semibold ${
-                    gap > 0 ? "text-brand-orange" : gap < 0 ? "text-green-600" : "text-gray-500"}`}>
+                    gap > 0 ? "text-green-600" : gap < 0 ? "text-red-500" : "text-gray-500"}`}>
                     {gap > 0 ? `+${n0(gap)}` : gap < 0 ? `−${n0(-gap)}` : "—"}
                   </td>
                   <td className="py-2 pr-1 text-right tabular-nums">

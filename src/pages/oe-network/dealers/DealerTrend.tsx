@@ -43,6 +43,14 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
 }) {
   if (!rows.length) return null;
 
+  // Whether this OEM publishes the dealer's own total. Read off the rows rather
+  // than passed in, so both callers — the network chart and the drawer's single
+  // dealership — get the right shape with no extra wiring. Without a total there
+  // is no funnel to split a bar into and no penetration to plot, so the chart
+  // becomes what it honestly can be: our own monthly sales, with the activity
+  // strip underneath.
+  const funnel = rows.some((r) => r.oem_total != null);
+
   const data = rows.map((r) => {
     const total = r.oem_total ?? null;
     const avail = r.ysasc ?? null;
@@ -53,7 +61,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
     // bar and you have share.
     return {
       name: `${MONTH_SHORT[Number(r.month.slice(5, 7)) - 1]} '${r.month.slice(2, 4)}`,
-      ours: total === null ? undefined : ours,
+      ours: !funnel ? ours : total === null ? undefined : ours,
       missed: total === null ? undefined : Math.max(0, (avail ?? ours) - ours),
       unmade: total === null || avail === null ? undefined : Math.max(0, total - avail),
       pene: r.penetration ?? undefined,
@@ -72,6 +80,19 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
     <div className="bg-white border border-orange-100 rounded-2xl p-5 print-avoid-break">
       <h3 className="text-sm font-bold text-gray-800">{title}</h3>
       <Explain>
+        {!funnel ? (
+          <>
+            Each bar is one month of what we sold {subject}. This OEM's file reports a
+            target and what we achieved against it, and never how many covers the dealer
+            sold in total — so there is no funnel to split the bar into, and no
+            penetration to read off it.
+            {anyActivity && <>{" "}The strip underneath is how many{" "}
+              <span style={{ color: ACT_VISIT }} className="font-semibold">visits</span> and{" "}
+              <span style={{ color: CALL_COLOR }} className="font-semibold">calls</span>{" "}
+              were logged that month.</>}
+          </>
+        ) : (
+          <>
         Each bar is one month of every seat cover {subject} sold, split into the whole
         funnel. The{" "}
         <span style={{ color: VISIT_COLOR }} className="font-semibold">orange part</span>{" "}
@@ -90,6 +111,8 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
           <span style={{ color: ACT_VISIT }} className="font-semibold">visits</span> and{" "}
           <span style={{ color: CALL_COLOR }} className="font-semibold">calls</span>{" "}
           were logged that month.</>}
+          </>
+        )}
       </Explain>
 
       <ResponsiveContainer width="100%" height={230}>
@@ -98,8 +121,11 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
           <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
           <YAxis yAxisId="units" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
             width={44} tickFormatter={(v: number) => formatCompactNos(v)} />
-          <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 10, fill: VISIT_COLOR }}
-            axisLine={false} tickLine={false} width={38} unit="%" />
+          {/* The right-hand axis stays even with no percentage on it, so the
+              plot area keeps the same width as the activity strip below and the
+              month columns stay in line. */}
+          <YAxis yAxisId="pct" orientation="right" tick={funnel && { fontSize: 10, fill: VISIT_COLOR }}
+            axisLine={false} tickLine={false} width={38} unit={funnel ? "%" : ""} />
           <Tooltip
             contentStyle={{ borderRadius: 12, border: "1px solid #ffe4d3", fontSize: 12 }}
             itemStyle={{ color: CHART_LABEL }}
@@ -113,20 +139,24 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
           <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" iconSize={7}
             formatter={(value: string) => <span style={{ color: CHART_LABEL }}>{value}</span>} />
           <Bar yAxisId="units" dataKey="ours" stackId="funnel" name="YS Sale — ours"
-            fill={VISIT_COLOR} radius={[0, 0, 0, 0]} />
-          <Bar yAxisId="units" dataKey="missed" stackId="funnel" name="YSASC — not won"
-            fill={FUNNEL_MISSED} radius={anyUnmade ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
-          {anyUnmade ? (
+            fill={VISIT_COLOR} radius={funnel ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
+          {funnel ? (
+            <Bar yAxisId="units" dataKey="missed" stackId="funnel" name="YSASC — not won"
+              fill={FUNNEL_MISSED} radius={anyUnmade ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
+          ) : null}
+          {funnel && anyUnmade ? (
             <Bar yAxisId="units" dataKey="unmade" stackId="funnel" name="No part number"
               fill={TGT_TRACK} radius={[4, 4, 0, 0]} />
           ) : null}
-          {benchmark ? (
+          {funnel && benchmark ? (
             <ReferenceLine yAxisId="pct" y={benchmark} stroke={VISIT_COLOR} strokeDasharray="4 4"
               strokeOpacity={0.5} />
           ) : null}
-          <Line yAxisId="pct" type="monotone" dataKey="pene" name="Penetration"
-            stroke={VISIT_COLOR} strokeWidth={2}
-            dot={{ r: 3, fill: "#fff", stroke: VISIT_COLOR, strokeWidth: 2 }} connectNulls={false} />
+          {funnel ? (
+            <Line yAxisId="pct" type="monotone" dataKey="pene" name="Penetration"
+              stroke={VISIT_COLOR} strokeWidth={2}
+              dot={{ r: 3, fill: "#fff", stroke: VISIT_COLOR, strokeWidth: 2 }} connectNulls={false} />
+          ) : null}
         </ComposedChart>
       </ResponsiveContainer>
 

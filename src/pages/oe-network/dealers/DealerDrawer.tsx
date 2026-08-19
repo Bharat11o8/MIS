@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { X, CarFront, Package, Target, Footprints } from "lucide-react";
+import { X, CarFront, Package, Target, Footprints, Percent } from "lucide-react";
 import {
   API_URL, StatCard, ModeBadge, shortDate, MONTH_SHORT,
   ON_TRACK_PCT, OVER_COLOR, VISIT_COLOR,
 } from "../shared";
-import { type DealerDetail, KPI, n0, pct } from "./model";
+import { type DealerDetail, KPI, n0, nOr, pct, hitPct, categoryLabel } from "./model";
 import DealerTrend from "./DealerTrend";
 
 /** "Aug 2026" for a single month, "Apr – Jun 2026" for a range. Sales are
@@ -99,6 +99,24 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
     };
   }, [data, scope]);
 
+  // Whether this dealer's OEM publishes the funnel. Defaults true so the drawer
+  // opens in its familiar shape while the first response is in flight, matching
+  // the tab's default for the same reason.
+  const funnel = data?.capabilities?.funnel ?? true;
+
+  // Target and achievement rolled up across the quarters in scope, for the
+  // non-funnel tile set. Summed from the SAME rows the Target vs achievement
+  // panel lists further down, so the headline and the breakdown cannot
+  // disagree; `sold` falls back to the months' own sum because TATA publishes
+  // no quarter achievement column.
+  const tgtTotals = useMemo(() => {
+    const rows = view?.targets ?? [];
+    return {
+      target: rows.reduce((a, t) => a + (t.target ?? 0), 0),
+      sold: rows.reduce((a, t) => a + (t.achievement ?? t.sold ?? 0), 0),
+    };
+  }, [view]);
+
   // The featured remark comes from whatever is in scope — quoting a note from
   // outside the selected period under period figures is the same mismatch in
   // miniature. History arrives newest-first, so the first match is the latest.
@@ -106,6 +124,9 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
     () => view?.history.find((h) => h.contact_mode === "Visit" && h.notes.length > 0) ?? null,
     [view],
   );
+  // Only label the product lines where this dealer actually buys more than one;
+  // a lone "Seat Covers" column beside every quarter is noise.
+  const multiProduct = (data?.by_product.length ?? 0) > 1;
   return (
     <div className="no-print fixed inset-0 z-50 flex justify-end">
       <motion.div
@@ -153,8 +174,9 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                 Showing {view.whole ? "all time" : periodLabel(data.period)}
                 {!view.whole && (
                   <span className="ml-2 font-medium normal-case tracking-normal text-gray-500">
-                    · lifetime {n0(data.lifetime.ys_sale)} ours of {n0(data.lifetime.oem_total)} sold
-                    across {data.lifetime.months} month{data.lifetime.months === 1 ? "" : "s"}
+                    · lifetime {n0(data.lifetime.ys_sale)} ours
+                    {data.lifetime.oem_total != null && <> of {n0(data.lifetime.oem_total)} sold</>}
+                    {" "}across {data.lifetime.months} month{data.lifetime.months === 1 ? "" : "s"}
                   </span>
                 )}
               </p>
@@ -175,19 +197,52 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
 
             {/* Same colour identities as the tab's KPI row — see KPI in model.ts.
                 3 columns until the drawer is genuinely wide: five abreast in a
-                narrow drawer is what truncated every label to "TO…" / "PE…". */}
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-              <StatCard label="Total sold" value={n0(view.totals.oem_total)}
-                sub="all seat covers, ours or not"
-                icon={<CarFront size={16} />} {...KPI.neutral} />
-              <StatCard label="YSASC" value={view.totals.ysasc == null ? "—" : n0(view.totals.ysasc)}
-                sub={view.totals.ysasc == null ? "not supplied" : `${pct(view.totals.addressable_pct)} of total sold`}
-                icon={<Package size={16} />} {...KPI.neutral} />
-              <StatCard label="YS Sale" value={n0(view.totals.ys_sale)} icon={<Package size={16} />}
-                {...KPI.ours} />
-              <StatCard label="Penetration" value={pct(view.totals.penetration)}
-                sub={view.totals.penetration == null ? "needs YSASC" : "of YSASC"}
-                icon={<Target size={16} />} {...KPI.conversion} />
+                narrow drawer is what truncated every label to "TO…" / "PE…".
+
+                Two tile sets, chosen by what the OEM publishes — not one set
+                with dashes in it. TATA reports a target and what we sold
+                against it and never how much the dealer sold in total, so
+                Total sold, YSASC and Penetration have no answer for any TATA
+                dealer, in any month. Drawn anyway they were three permanently
+                empty tiles that read as a load failure. */}
+            <div className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${
+              funnel ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+              {funnel ? (
+                <>
+                  {/* Within a funnel OEM a single dash still means "not
+                      published for this month", which is a different statement
+                      from zero — see Funnel in model.ts. */}
+                  <StatCard label="Total sold" value={nOr(view.totals.oem_total)}
+                    sub={view.totals.oem_total == null
+                      ? "not reported for this period"
+                      : "all seat covers, ours or not"}
+                    icon={<CarFront size={16} />} {...KPI.neutral} />
+                  <StatCard label="YSASC" value={nOr(view.totals.ysasc)}
+                    sub={view.totals.ysasc == null ? "not supplied" : `${pct(view.totals.addressable_pct)} of total sold`}
+                    icon={<Package size={16} />} {...KPI.neutral} />
+                  <StatCard label="YS Sale" value={n0(view.totals.ys_sale)} icon={<Package size={16} />}
+                    {...KPI.ours} />
+                  <StatCard label="Penetration" value={pct(view.totals.penetration)}
+                    sub={view.totals.penetration == null ? "needs YSASC" : "of YSASC"}
+                    icon={<Target size={16} />} {...KPI.conversion} />
+                </>
+              ) : (
+                <>
+                  {/* Purple is `target` and never lands on a person — see KPI.
+                      Quarterly and never pro-rated, matching the tab and the
+                      Target vs achievement panel below, so the three cannot
+                      disagree. */}
+                  <StatCard label="Target" value={n0(tgtTotals.target)}
+                    sub={view.whole ? "every quarter on record" : "whole quarter, never pro-rated"}
+                    icon={<Target size={16} />} {...KPI.target} />
+                  <StatCard label="Achieved" value={n0(tgtTotals.sold)}
+                    sub="our units inside that quarter"
+                    icon={<Package size={16} />} {...KPI.ours} />
+                  <StatCard label="vs Target" value={pct(hitPct(tgtTotals.sold, tgtTotals.target))}
+                    sub={`${n0(tgtTotals.sold)} of ${n0(tgtTotals.target)} units`}
+                    icon={<Percent size={16} />} {...KPI.conversion} />
+                </>
+              )}
               <StatCard label="Contacts" value={view.totals.visits + view.totals.calls}
                 sub={`${view.totals.visits} visits · ${view.totals.calls} calls`}
                 icon={<Footprints size={16} />} {...KPI.activity} />
@@ -236,13 +291,24 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                   {view.whole
                     ? "Every quarter on record"
                     : `Quarters touching ${periodLabel(data.period)} — each target shown whole`}
+                  {view.targets.some((t) => t.achievement == null && t.sold != null)
+                    && " · achieved is summed from the quarter's months, this OEM publishes no quarter total"}
                 </p>
                 <div className="flex flex-col gap-2">
                   {view.targets.map((t) => {
-                    const hit = t.target ? Math.round(((t.achievement ?? 0) / t.target) * 100) : null;
+                    // `sold` stands in where the OEM publishes no quarter
+                    // achievement column — our units inside the quarter's own
+                    // months, the same quantity counted the same way.
+                    const ach = t.achievement ?? t.sold ?? 0;
+                    const hit = t.target ? Math.round((ach / t.target) * 100) : null;
                     return (
-                      <div key={t.label} className="flex items-center gap-3 text-xs">
+                      <div key={`${t.label}-${t.product}`} className="flex items-center gap-3 text-xs">
                         <span className="w-16 font-bold text-gray-700">{t.label}</span>
+                        {multiProduct && (
+                          <span className="w-20 shrink-0 text-[10px] text-gray-500">
+                            {categoryLabel(t.product)}
+                          </span>
+                        )}
                         <div className="flex-1 h-4 rounded bg-gray-100 relative">
                           <div className="h-full rounded" style={{
                             width: `${Math.min(hit ?? 0, 100)}%`,
@@ -250,7 +316,7 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                           }} />
                         </div>
                         <span className="w-32 text-right tabular-nums text-gray-500">
-                          {n0(t.achievement)} / {n0(t.target)}
+                          {n0(ach)} / {n0(t.target)}
                           {hit !== null && <b className="ml-1 text-gray-700">{hit}%</b>}
                         </span>
                       </div>

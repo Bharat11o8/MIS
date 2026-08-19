@@ -22,6 +22,7 @@ import {
   FilterBar, FilterActions, ClearFilters, FilterSpinner,
   RefreshButton, PdfButton, SyncButton, FILTER_LABELS, filterOpts,
   monthToken, tokenLabel, shortDate, firstName, coverageColor, ModeBadge, StatCard, KPI,
+  categoryLabel,
   type Period,
 } from "./oe-network/shared";
 import DealersTab from "./oe-network/dealers";
@@ -40,7 +41,12 @@ interface SyncResult {
 interface PvaRow {
   salesperson: string; log_name: string | null; planned: number; dealers_planned: number;
   visits: number; calls: number; total_logged: number; dealerships_contacted: number;
-  coverage_pct: number | null;
+  /** Visits done over visits PLANNED. A completion figure, not network reach —
+   *  it routinely exceeds 100%, and a rep can clear their plan while visiting
+   *  the same handful of dealerships over and over. The word "coverage" belongs
+   *  to the Dealers tab, where it means dealerships contacted out of
+   *  dealerships assigned. */
+  plan_pct: number | null;
 }
 interface GroupRow { key: string; total: number; visits: number; calls: number; dealerships: number; }
 interface LogAnalytics {
@@ -223,9 +229,9 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
   // Ranked best-to-worst — the point of the chart is who is off plan.
   // "No plan" people have no coverage to rank, so they sit at the bottom.
   const ranked = [...rows].sort((a, b) => {
-    if (a.coverage_pct == null) return b.coverage_pct == null ? 0 : 1;
-    if (b.coverage_pct == null) return -1;
-    return b.coverage_pct - a.coverage_pct;
+    if (a.plan_pct == null) return b.plan_pct == null ? 0 : 1;
+    if (b.plan_pct == null) return -1;
+    return b.plan_pct - a.plan_pct;
   });
   const max = Math.max(1, ...rows.flatMap((r) => [r.planned, r.visits, r.calls]));
   const w = (n: number) => barWidth(n, max);
@@ -279,10 +285,13 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
           </div>
 
           <div className="w-[72px] shrink-0 text-right">
-            <p className={`text-sm font-black leading-none ${coverageColor(r.coverage_pct)}`}>
-              {r.coverage_pct != null ? `${r.coverage_pct}%` : "—"}
+            <p className={`text-sm font-black leading-none ${coverageColor(r.plan_pct)}`}>
+              {r.plan_pct != null ? `${r.plan_pct}%` : "—"}
             </p>
-            <p className="text-[9px] text-gray-500 mt-0.5">{r.dealerships_contacted} dealers</p>
+            {/* The two numbers answer different questions and must be read
+                together: 114% of plan across 30 dealerships is a rep working
+                a narrow patch hard, not a rep who covered the network. */}
+            <p className="text-[9px] text-gray-500 mt-0.5">of plan · {r.dealerships_contacted} dealers</p>
           </div>
         </div>
       ))}
@@ -319,7 +328,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
   const [mode, setMode] = useState("");
   const [q, setQ] = useState("");
   const [qDebounced, setQDebounced] = useState("");
-  const [pva, setPva] = useState<{ rows: PvaRow[]; totals: { planned: number; visits: number; calls: number; coverage_pct: number | null } } | null>(null);
+  const [pva, setPva] = useState<{ rows: PvaRow[]; totals: { planned: number; visits: number; calls: number; dealerships: number; dealerships_matched: number; plan_pct: number | null } } | null>(null);
   const [analytics, setAnalytics] = useState<LogAnalytics | null>(null);
   const [trend, setTrend] = useState<LogAnalytics["monthly_trend"]>([]);
   const [loading, setLoading] = useState(true);
@@ -533,20 +542,37 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
           icon={<Footprints size={18} />} {...KPI.visits} />
         <StatCard label="Calls Made" value={pva?.totals.calls ?? 0}
           icon={<Phone size={18} />} {...KPI.calls} />
-        <StatCard label="Coverage" value={pva?.totals.coverage_pct != null ? `${pva.totals.coverage_pct}%` : "—"}
-          sub="visits done vs planned" icon={<CheckCircle2 size={18} />} {...KPI.conversion} />
-        <StatCard label="Dealerships" value={analytics?.kpis.dealerships ?? 0}
-          sub="contacted this period" icon={<Building2 size={18} />} {...KPI.reach} />
+        {/* NOT "Coverage". This is visits done over visits planned and goes
+            past 100% whenever the team out-works its plan; coverage means
+            dealerships reached out of dealerships assigned, and lives on the
+            Dealers tab. The two were both called Coverage and read as one. */}
+        <StatCard label="Plan Completion" value={pva?.totals.plan_pct != null ? `${pva.totals.plan_pct}%` : "—"}
+          sub={`${fmtNos(pva?.totals.visits ?? 0)} visits ÷ ${fmtNos(pva?.totals.planned ?? 0)} planned`}
+          icon={<CheckCircle2 size={18} />} {...KPI.conversion} />
+        {/* Every dealership the team NAMED this period, which is not the same
+            population as the Dealers tab's — that one counts only dealerships
+            the OE dealer file knows about, because coverage, penetration and
+            target all divide by figures out of that file. Both are right. The
+            matched count is printed underneath so the smaller number reads as a
+            subtotal of this one rather than as a contradiction found later. */}
+        <StatCard label="Dealerships" value={pva?.totals.dealerships ?? analytics?.kpis.dealerships ?? 0}
+          sub={pva?.totals.dealerships_matched != null
+            ? `${fmtNos(pva.totals.dealerships_matched)} in the OE dealer list`
+            : "contacted this period"}
+          icon={<Building2 size={18} />} {...KPI.reach} />
       </div>
 
       {/* Plan vs actual */}
       <div className="print-avoid-break bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
         <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Plan vs Actual — by Salesperson</h3>
-        <p className="text-[10px] text-gray-500 mb-1">Ranked by coverage — field visits against the advance plan</p>
+        <p className="text-[10px] text-gray-500 mb-1">Ranked by plan completion — field visits against the advance plan</p>
         <PlanVsActualChart rows={pva?.rows ?? []} />
         <p className="text-[10px] text-gray-500 mt-3">
-          Coverage compares field visits (not calls) against the advance plan. Names are matched across the two
-          sheets automatically.
+          Plan completion compares field visits (not calls) against the advance plan, so it passes 100% whenever
+          more visits were made than planned. It is <b className="text-gray-600">not</b> network reach — the same
+          dealership visited four times counts four visits and one dealership. For how much of the network was
+          actually touched, see Coverage on the <b className="text-gray-600">Dealers</b> tab. Names are matched
+          across the two sheets automatically.
           {/* This panel is the one thing on the tab the Mode filter does NOT
               reach — coverage is visits-vs-plan by definition. Silently not
               responding reads as a bug, so say it, but only when it applies. */}
@@ -1555,14 +1581,6 @@ function pick(r: TgtMetrics, m: Metric) {
 
 const fmtNos = (n: number) => Math.round(n).toLocaleString("en-IN");
 const fmtBy = (m: Metric) => (m === "value" ? formatCompact : fmtNos);
-
-/** Product codes as the target sheet titles them. Anything unrecognised shows
- *  as typed rather than being hidden behind a guess. */
-const CATEGORY_LABELS: Record<string, string> = {
-  SC: "Seat Covers", MAT: "Mats", ACC: "Accessories",
-};
-const categoryLabel = (c: string | null | undefined) =>
-  (c && (CATEGORY_LABELS[c] ?? c)) || "—";
 
 function achColor(pct: number | null) {
   if (pct == null) return "text-gray-500";

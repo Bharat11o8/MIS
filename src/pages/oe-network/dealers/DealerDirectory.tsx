@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { shortDate } from "../shared";
-import { type PerfDealer, n0, pct } from "./model";
+import { type PerfDealer, n0, nOr, pct, hitPct } from "./model";
 import Explain from "./Explain";
 
 const PAGE = 30;
@@ -12,8 +12,13 @@ const PAGE = 30;
  * "let me just scroll the whole network". Search matches name, city, state,
  * rep and dealer codes, so typing a code off an invoice finds the outlet.
  */
-export default function DealerDirectory({ dealers, avgPene, onPick }: {
-  dealers: PerfDealer[]; avgPene: number; onPick: (d: PerfDealer) => void;
+export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
+  dealers: PerfDealer[]; avgPene: number;
+  /** Whether the OEMs in view publish the funnel. When they don't, the volume
+   *  columns have nothing behind them and the list is read against targets
+   *  instead — the same rows, the numbers this OEM actually supplies. */
+  funnel: boolean;
+  onPick: (d: PerfDealer) => void;
 }) {
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(PAGE);
@@ -22,7 +27,8 @@ export default function DealerDirectory({ dealers, avgPene, onPick }: {
     // Biggest of OUR business first; dealers with no sales at all sink to the
     // bottom by their total volume so the list stays meaningful for them too.
     const base = [...dealers].sort((a, b) =>
-      b.ys_sale - a.ys_sale || b.oem_total - a.oem_total || a.name.localeCompare(b.name));
+      b.ys_sale - a.ys_sale || (b.oem_total ?? 0) - (a.oem_total ?? 0)
+      || (b.target ?? 0) - (a.target ?? 0) || a.name.localeCompare(b.name));
     const t = q.trim().toLowerCase();
     if (!t) return base;
     return base.filter((d) =>
@@ -54,9 +60,17 @@ export default function DealerDirectory({ dealers, avgPene, onPick }: {
         The complete list behind every chart on this tab, ranked by our own sales.
         {" "}<b className="text-gray-600">{n0(filtered.length)}</b>
         {q.trim() ? <> of {n0(dealers.length)} dealers match.</> : <> dealers in view.</>}
-        {" "}Pene is green from the <b>{avgPene.toFixed(1)}%</b> OEM average up; a grey
-        dash means the dealer file supplied no YSASC for this dealer, so penetration
-        cannot be computed — not that it is zero.
+        {funnel ? (
+          <> Pene is green from the <b>{avgPene.toFixed(1)}%</b> OEM average up; a grey
+            dash means the dealer file supplied no YSASC for this dealer, so penetration
+            cannot be computed — not that it is zero.</>
+        ) : (
+          <> This OEM's file reports a target and what we achieved against it, and never
+            how much the dealer sold in total — so there is no penetration to show here.
+            <b className="text-gray-600"> Achieved</b> is our units inside the quarter the
+            target covers, and the target is the <b className="text-gray-600">whole</b>
+            {" "}quarter's, so part-way through one, under 100% is expected.</>
+        )}
       </Explain>
 
       {filtered.length === 0 ? (
@@ -72,13 +86,24 @@ export default function DealerDirectory({ dealers, avgPene, onPick }: {
                 <th className="text-left font-bold py-2">Dealership</th>
                 <th className="text-left font-bold py-2">State</th>
                 <th className="text-left font-bold py-2">Rep</th>
-                <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">Total</th>
-                <th className="text-right font-bold py-2"
-                  title="YSASC — of that total, the covers on a vehicle we hold a part number for">
-                  YSASC
-                </th>
-                <th className="text-right font-bold py-2">YS Sale</th>
-                <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
+                {funnel ? (
+                  <>
+                    <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">Total</th>
+                    <th className="text-right font-bold py-2"
+                      title="YSASC — of that total, the covers on a vehicle we hold a part number for">
+                      YSASC
+                    </th>
+                    <th className="text-right font-bold py-2">YS Sale</th>
+                    <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="text-right font-bold py-2" title="The whole quarter's target, never pro-rated">Target</th>
+                    <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">Achieved</th>
+                    <th className="text-right font-bold py-2">YS Sale</th>
+                    <th className="text-right font-bold py-2" title="Achieved ÷ target">vs Tgt</th>
+                  </>
+                )}
                 <th className="text-right font-bold py-2">Contacts</th>
                 <th className="text-right font-bold py-2 pr-1">Last contact</th>
               </tr>
@@ -98,16 +123,29 @@ export default function DealerDirectory({ dealers, avgPene, onPick }: {
                   </td>
                   <td className="py-2 text-gray-500">{d.state}</td>
                   <td className="py-2 text-gray-500">{d.salesperson ?? "—"}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-500">{n0(d.oem_total)}</td>
-                  <td className="py-2 text-right tabular-nums text-gray-600">
-                    {d.ysasc == null ? "—" : n0(d.ysasc)}
-                  </td>
-                  <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
-                  <td className={`py-2 text-right tabular-nums font-semibold ${
-                    d.penetration == null ? "text-gray-500"
-                      : d.penetration >= avgPene ? "text-green-600" : "text-red-500"}`}>
-                    {pct(d.penetration)}
-                  </td>
+                  {funnel ? (
+                    <>
+                      <td className="py-2 text-right tabular-nums text-gray-500">{nOr(d.oem_total)}</td>
+                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.ysasc)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
+                      <td className={`py-2 text-right tabular-nums font-semibold ${
+                        d.penetration == null ? "text-gray-500"
+                          : d.penetration >= avgPene ? "text-green-600" : "text-red-500"}`}>
+                        {pct(d.penetration)}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.target)}</td>
+                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.sold)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
+                      <td className={`py-2 text-right tabular-nums font-semibold ${
+                        hitPct(d.sold, d.target) == null ? "text-gray-500"
+                          : hitPct(d.sold, d.target)! >= 100 ? "text-green-600" : "text-gray-700"}`}>
+                        {pct(hitPct(d.sold, d.target))}
+                      </td>
+                    </>
+                  )}
                   <td className="py-2 text-right tabular-nums">
                     {d.contacts === 0
                       ? <span className="text-red-400 font-semibold">none</span>

@@ -45,6 +45,17 @@ export const UNOWNED_COLOR = "#8b5cf6";
 // target bars turn green there rather than at a literal 100%.
 export const ON_TRACK_PCT = 90;
 
+/** Product lines, in the OE team's own codes. One label per concept, module-wide:
+ *  the Targets tab reads these off its block titles ("TATA MAT (AMJ'26)") and the
+ *  Dealers tab off its dealer file's columns ("TGT FOR JAS'26 MAT"), and they must
+ *  never end up saying "Mats" on one tab and "MAT" on the next.
+ *  An unknown code is shown AS TYPED rather than hidden behind a guess. */
+export const CATEGORY_LABELS: Record<string, string> = {
+  SC: "Seat Covers", MAT: "Mats", ACC: "Accessories",
+};
+export const categoryLabel = (c: string | null | undefined) =>
+  (c && (CATEGORY_LABELS[c] ?? c)) || "\u2014";
+
 export interface Period { year: number; month: number }
 export type PeriodMode = "monthly" | "quarterly" | "yearly";
 

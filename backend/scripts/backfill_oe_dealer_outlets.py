@@ -33,10 +33,19 @@ What this does, per (oem, normalised name):
     dealers through the form and those must keep working. They are reported, not
     touched.
 
+ROW GRAIN differs between the tabs, and it has to be stated rather than
+guessed. MSIL merges every dealer code a group holds in one city onto ONE row,
+so its outlet is name + city. TATA lists one row PER CODE and gives each its own
+quarter target, so there the code is part of identity and --per-code must be
+passed; without it 43 name+city pairs would be silently folded into one and 55
+outlets would vanish. Run it the same way the parser reads the tab
+(services/oe_dealer_data_sync.py) or the two will disagree about who exists.
+
 Run with --apply to write; without it, nothing is committed.
 
     python -m scripts.backfill_oe_dealer_outlets --file "<path.xlsx>" --oem MSIL
     python -m scripts.backfill_oe_dealer_outlets --file "<path.xlsx>" --oem MSIL --apply
+    python -m scripts.backfill_oe_dealer_outlets --file "<path.xlsx>" --oem TATA --per-code
 """
 import argparse
 import collections
@@ -71,8 +80,20 @@ def norm_city(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").upper()).strip()
 
 
-def read_outlets(path: str, tab: str) -> list[dict]:
+def _code(v) -> str:
+    """A dealer code as text. Sheets and openpyxl hand back whole-number codes
+    as numbers (3007720) and alphanumeric ones as strings (300B350); left alone
+    the first kind keys as '3007720.0' and never matches."""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return str(v or "").strip()
+
+
+def read_outlets(path: str, tab: str, per_code: bool = False) -> list[dict]:
     """One dict per outlet row, exact duplicates merged (their codes unioned).
+
+    With per_code, the dealer CODE joins the key, so two codes of one dealership
+    in one city stay two outlets instead of being merged into one.
 
     The file ends with grand-total rows carrying no dealer name; skipping rows
     with a blank name drops them without having to know how many there are.
@@ -86,20 +107,44 @@ def read_outlets(path: str, tab: str) -> list[dict]:
     ix = {c: hdr.index(c) for c in (COL_NAME, COL_CITY, COL_STATE, COL_SP, COL_CODE)
           if c in hdr}
 
+    # A per-code tab carries a few blank-CODE rows repeating a name+city that is
+    # already listed WITH a code, all figures zero — padding left behind by
+    # editing (KEY MOTOR / BANGALORE appears three extra times). The DATA parser
+    # drops them (services/oe_dealer_data_sync.py), so this script must too, or
+    # it creates outlets the sync never writes a sale to: phantoms that show up
+    # as "assigned, never contacted" and quietly lower every coverage figure.
+    # A blank-CODE row whose name+city appears nowhere else is a different
+    # thing — a real outlet not yet coded — and is kept.
+    coded_keys = set()
+    if per_code and COL_CODE in ix:
+        for r in rows[1:]:
+            nm = str(r[ix[COL_NAME]] or "").strip()
+            if nm and _code(r[ix[COL_CODE]]):
+                coded_keys.add((norm_name(nm), norm_city(str(r[ix[COL_CITY]] or "").strip())))
+
     merged: dict[tuple, dict] = {}
+    skipped_padding = 0
     for r in rows[1:]:
         name = str(r[ix[COL_NAME]] or "").strip()
         if not name:
             continue
         city = str(r[ix[COL_CITY]] or "").strip()
+        if per_code and COL_CODE in ix and not _code(r[ix[COL_CODE]]) \
+                and (norm_name(name), norm_city(city)) in coded_keys:
+            skipped_padding += 1
+            continue
+        code = _code(r[ix[COL_CODE]]) if COL_CODE in ix else ""
         out = {
             "name": name,
             "city": city,
             "state": normalize_state(str(r[ix[COL_STATE]] or "").strip()),
             "salesperson": str(r[ix[COL_SP]] or "").strip() if COL_SP in ix else "",
-            "codes": str(r[ix[COL_CODE]] or "").strip() if COL_CODE in ix else "",
+            "codes": code,
+            # Identity only where the tab is keyed that way; NULL elsewhere, so
+            # those outlets key exactly as they do today.
+            "code": code if per_code else "",
         }
-        key = (norm_name(name), norm_city(city))
+        key = (norm_name(name), norm_city(city), out["code"])
         if key in merged:
             # Same outlet listed twice (BHANDARI / KOLKATA). One dealer, so
             # keep one row and union the code lists rather than lose either.
@@ -108,6 +153,8 @@ def read_outlets(path: str, tab: str) -> list[dict]:
             prev["codes"] = ", ".join(dict.fromkeys(codes))
         else:
             merged[key] = out
+    if skipped_padding:
+        print(f"skipped {skipped_padding} blank-CODE padding row(s) that repeat a coded dealer")
     return list(merged.values())
 
 
@@ -116,10 +163,13 @@ def main() -> None:
     ap.add_argument("--file", required=True)
     ap.add_argument("--oem", required=True, help="OEM these outlets belong to, e.g. MSIL")
     ap.add_argument("--tab", help="worksheet name (defaults to --oem)")
+    ap.add_argument("--per-code", action="store_true",
+                    help="the tab lists one row per dealer CODE and each has its own "
+                         "target (TATA), so the code is part of outlet identity")
     ap.add_argument("--apply", action="store_true", help="commit; otherwise dry run")
     args = ap.parse_args()
 
-    outlets = read_outlets(args.file, args.tab or args.oem)
+    outlets = read_outlets(args.file, args.tab or args.oem, args.per_code)
     by_name = collections.defaultdict(list)
     for o in outlets:
         by_name[norm_name(o["name"])].append(o)
@@ -196,23 +246,31 @@ def main() -> None:
         db.close()
         return
 
+    # Which master row of a group gets which code is arbitrary, and that is fine:
+    # the siblings are one dealership, and contacts are read at the group level
+    # (see _DEALER_AGG_SQL). What matters is that every existing row keeps its id,
+    # so the visit history already pointing at it survives.
     for m, o in updates:
         db.execute(text("""
             UPDATE oe_dealerships
                SET city = :city, name = :name,
                    salesperson = NULLIF(:sp, ''), dealer_codes = NULLIF(:codes, ''),
+                   dealer_code = NULLIF(:code, ''),
                    updated_at = NOW()
              WHERE id = :id
-        """), {"id": m["id"], "city": o["city"],
-               "name": o["name"], "sp": o["salesperson"], "codes": o["codes"]})
+        """), {"id": m["id"], "city": o["city"], "name": o["name"],
+               "sp": o["salesperson"], "codes": o["codes"], "code": o["code"]})
     for o in inserts:
         db.execute(text("""
             INSERT INTO oe_dealerships (oem, state, city, name, salesperson,
-                                        dealer_codes, source)
-            VALUES (:oem, :state, :city, :name, NULLIF(:sp, ''), NULLIF(:codes, ''), 'oe_file')
-            ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, ''))) DO NOTHING
+                                        dealer_code, dealer_codes, source)
+            VALUES (:oem, :state, :city, :name, NULLIF(:sp, ''), NULLIF(:code, ''),
+                    NULLIF(:codes, ''), 'oe_file')
+            ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, '')),
+                         UPPER(COALESCE(dealer_code, ''))) DO NOTHING
         """), {"oem": args.oem, "state": o["state"], "city": o["city"],
-               "name": o["name"], "sp": o["salesperson"], "codes": o["codes"]})
+               "name": o["name"], "sp": o["salesperson"], "codes": o["codes"],
+               "code": o["code"]})
     db.commit()
 
     n = db.execute(text("""

@@ -30,13 +30,25 @@ The rule, in order:
      name containment (one side's words are all present in the other) and only
      when exactly ONE dealer qualifies, so "BHANDARI" can't swallow a longer
      unrelated name;
-  2. that dealer has exactly ONE outlet → that one, whatever city was typed. A
-     group with a single outlet cannot be ambiguous, so a city typo is
-     harmless;
-  3. several outlets → the best city, accepted only if it clears
+  2. that dealer is in exactly ONE city → that city, whatever was typed. A
+     group with a single city cannot be ambiguous, so a city typo is harmless;
+  3. several cities → the best one, accepted only if it clears
      MIN_CITY_SIMILARITY *and* is clearly ahead of the runner-up. Two outlets
      of one group in similar-sounding cities is exactly where a wrong guess
-     would be invisible, so we abstain instead.
+     would be invisible, so we abstain instead;
+  4. one city, several outlets — which happens only where the OEM's file is
+     keyed per dealer code (TATA: ANANYA AUTO AGENCY / PATNA is two codes with
+     two separate targets) → the ANCHOR, the lowest code of the group.
+
+Step 4 needs saying out loud, because it is the one step that does not resolve
+to the truth. A visit log names a dealership and a city and never a code, so a
+contact at a two-code dealer genuinely cannot be attributed to one of them.
+Spreading it, dropping it, or picking at random would each be worse: the anchor
+is deterministic, so the same contact lands in the same place every sync, and
+the Dealers tab reads contacts at the (oem, name, city) GROUP level so both
+siblings show the visit that was really made to the dealership. Callers that
+know the code — the dealer file's own sync — pass it and get an exact match
+instead.
 
 Anything unresolved stays unresolved. A NULL dealer_id is a reportable fact —
 never guess to make a number look complete.
@@ -78,6 +90,25 @@ _CITY_ALIASES = {
     "VISAKHAPATNAM": "VIZAG",
     "VISHAKHAPATNAM": "VIZAG",
     "KOZHIKODE": "CALICUT",
+
+    # ── Misspelt rather than renamed ──────────────────────────────────────────
+    # Same table, same rule, because the fix is the same: fold every spelling in
+    # play to one. These are not near-misses a similarity score would catch —
+    # SAFTARJUNG vs SAFDARJANG scores 0.80 against a 0.82 threshold, and
+    # lowering the threshold far enough to catch it would start accepting
+    # genuinely different places. They have to be named.
+    #
+    # The value side is INTERNAL — it is a matching key and is never displayed,
+    # so it only has to be the one spelling everything else collapses onto.
+    # SAFDARJANG is the canonical side (the OE dealer list's spelling, and the
+    # one the business confirmed), so it needs no entry of its own.
+    "SAFTARJUNG": "SAFDARJANG",     # the geo API's spelling
+    "SAFDARJUNG": "SAFDARJANG",
+    "SAFDARGUNJ": "SAFDARJANG",
+    "COACH BIHAR": "COOCHBEHAR",    # Cooch Behar, typed as heard
+    "COOCH BEHAR": "COOCHBEHAR",
+    "CUDDAPAH": "KADAPA",           # renamed 2005; both spellings still in use
+    "MAPUCA": "MAPUSA",             # Māpuçá, the Portuguese spelling, once folded
 }
 
 
@@ -99,6 +130,19 @@ def norm_name(s: Optional[str]) -> str:
 
 
 def norm_city(s: Optional[str]) -> str:
+    """Fold a city to one spelling, accents first.
+
+    Order matters and is the whole reason this is a function rather than a dict
+    lookup: the geo API returns Hyderābād, Karīmnagar, Māpuçá and Guntūr, so the
+    accents come off BEFORE the alias table is consulted. Written the other way
+    round the table would have to carry every macron variant of every entry, and
+    a missing one would fail silently — the city would simply not match and the
+    row would go unattributed with nothing to show why.
+
+    Applied to BOTH sides: the dealer master goes through it at load (see
+    DealerIndex) and the logged city goes through it at resolve, so a spelling
+    only has to be listed once to bring the two together.
+    """
     s = _strip_accents(s or "").upper()
     s = re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]", " ", s)).strip()
     return _CITY_ALIASES.get(s, s)
@@ -128,11 +172,15 @@ class DealerIndex:
 
     def __init__(self, db: Session):
         rows = db.execute(text("""
-            SELECT id, oem, name, COALESCE(city, '') AS city
+            SELECT id, oem, name, COALESCE(city, '') AS city,
+                   COALESCE(dealer_code, '') AS dealer_code
             FROM oe_dealerships
             WHERE is_active
         """)).fetchall()
-        self._by_name: dict[tuple, list[tuple[str, str]]] = collections.defaultdict(list)
+        # (normalised city, id, code) per dealer name. The code is '' for every
+        # OEM whose file merges codes onto one outlet row, which is all of them
+        # except the per-code tabs.
+        self._by_name: dict[tuple, list[tuple[str, str, str]]] = collections.defaultdict(list)
         self._names_by_oem: dict[str, list[tuple[str, frozenset]]] = collections.defaultdict(list)
         self._count = 0
         for r in rows:
@@ -143,7 +191,7 @@ class DealerIndex:
             key = (oem, nn)
             if key not in self._by_name:
                 self._names_by_oem[oem].append((nn, frozenset(nn.split())))
-            self._by_name[key].append((norm_city(r.city), r.id))
+            self._by_name[key].append((norm_city(r.city), r.id, (r.dealer_code or "").upper()))
             self._count += 1
         self._memo: dict[tuple, Optional[str]] = {}
 
@@ -168,13 +216,21 @@ class DealerIndex:
         return (oem, hits[0]) if len(hits) == 1 else None
 
     def resolve(self, oem: Optional[str], name: Optional[str],
-                city: Optional[str]) -> Optional[str]:
+                city: Optional[str], code: Optional[str] = None) -> Optional[str]:
+        """The outlet id for a named dealership, or None if it is ambiguous.
+
+        `code` is the OEM's dealer code, and it is exact: pass it when the
+        caller genuinely knows which code it means (the dealer file's own sync
+        does), and the city guessing below is skipped entirely. Visit logs never
+        know it, so they fall through to the anchor rule.
+        """
         oem = (oem or "").upper()
         nn, nc = norm_name(name), norm_city(city)
+        nk = (code or "").strip().upper()
         if not oem or not nn:
             return None
 
-        memo_key = (oem, nn, nc)
+        memo_key = (oem, nn, nc, nk)
         if memo_key in self._memo:
             return self._memo[memo_key]
 
@@ -182,14 +238,27 @@ class DealerIndex:
         key = self._find_name(oem, nn)
         if key:
             candidates = self._by_name[key]
-            if len(candidates) == 1:
-                result = candidates[0][1]
-            else:
-                scored = sorted(((_city_score(nc, c), did) for c, did in candidates),
-                                key=lambda x: -x[0])
-                best, runner_up = scored[0], scored[1]
-                if best[0] >= MIN_CITY_SIMILARITY and best[0] - runner_up[0] >= MIN_CITY_MARGIN:
-                    result = best[1]
+            if nk:
+                exact = [did for _c, did, ck in candidates if ck == nk]
+                result = exact[0] if len(exact) == 1 else None
+            if result is None:
+                # Score CITIES, not rows: a per-code group puts several outlets
+                # in one city, and scoring rows would make them tie and cancel
+                # each other out under the margin rule.
+                cities = sorted({c for c, _did, _ck in candidates})
+                if len(cities) == 1:
+                    winner = cities[0]
+                else:
+                    scored = sorted(((_city_score(nc, c), c) for c in cities),
+                                    key=lambda x: -x[0])
+                    best, runner_up = scored[0], scored[1]
+                    winner = (best[1] if best[0] >= MIN_CITY_SIMILARITY
+                              and best[0] - runner_up[0] >= MIN_CITY_MARGIN else None)
+                if winner is not None:
+                    # The anchor: lowest code in the city. Deterministic, so the
+                    # same contact lands on the same outlet every sync.
+                    here = sorted((ck, did) for c, did, ck in candidates if c == winner)
+                    result = here[0][1] if here else None
 
         self._memo[memo_key] = result
         return result

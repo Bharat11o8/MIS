@@ -265,10 +265,33 @@ _DATA_TABLES = {
 }
 _INSERT_COLS = {MODULE_PLAN: _PLAN_COLS, MODULE_LOG: _LOG_COLS, MODULE_TGT: _TGT_COLS}
 
-_DEALER_MONTHLY_COLS = ("id", "dealer_id", "sheet_source_id", "month",
+# How many DEALERSHIPS a set of log rows touched.
+#
+# Two rows are the same dealership when they resolved to the same outlet, and
+# otherwise when the typed name matches ignoring case and spacing. Both halves
+# matter and neither is enough alone:
+#
+#   COUNT(DISTINCT dealership)              971 for July 2026 — counts
+#                                           "Popular Vehicles" and "POPULAR
+#                                           VEHICLES" as two dealerships
+#   COUNT(DISTINCT UPPER(TRIM(dealership))) 905 — still counts every spelling
+#                                           variant the old free-text form left
+#                                           behind as its own dealership
+#   this                                    891 — 417 identified outlets plus
+#                                           474 names we could not place
+#
+# It is still a ceiling, because two unmatched spellings of one dealership stay
+# two. It cannot be anything else: if we could tell they were the same, they
+# would have matched. Never compare it to the Dealers tab's figure as though
+# they answer the same question — see the note on `dealerships_matched` below.
+_CONTACTED_DEALERSHIPS = (
+    "COUNT(DISTINCT COALESCE(CAST(dealer_id AS text), UPPER(TRIM(dealership))))"
+)
+
+_DEALER_MONTHLY_COLS = ("id", "dealer_id", "sheet_source_id", "month", "product",
                         "oem_total", "ysasc", "ys_sale")
 _DEALER_TARGET_COLS = ("id", "dealer_id", "sheet_source_id", "quarter", "fy_year",
-                       "period_start", "period_end", "target", "achievement")
+                       "period_start", "period_end", "product", "target", "achievement")
 
 # How many rows go in one INSERT. These files run to thousands of rows and the
 # database is reached over an SSH tunnel, so the cost is dominated by round
@@ -280,6 +303,20 @@ _DEALER_TARGET_COLS = ("id", "dealer_id", "sheet_source_id", "quarter", "fy_year
 # room to spare — the widest table here is oe_visit_logs at 29 columns, so
 # 500 x 29 = 14,500.
 _INSERT_CHUNK = 500
+
+
+def _db_message(e: Exception, limit: int = 600) -> str:
+    """A database failure as something a person can act on.
+
+    `str()` of a SQLAlchemy DBAPIError appends the entire bound parameter list —
+    for a batched insert that is thousands of values, and it went straight to
+    the browser as the sync's error text. The driver's own message (plus its
+    DETAIL line, which names the conflicting key) is the part that says what
+    actually went wrong, so that is what we keep.
+    """
+    msg = str(getattr(e, "orig", None) or e).strip()
+    msg = " ".join(msg.split())
+    return msg if len(msg) <= limit else msg[:limit] + " …"
 
 
 def _bulk_insert(db: Session, table: str, cols: tuple, rows: list) -> int:
@@ -322,6 +359,13 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
     """
     index = DealerIndex(db)
     created = []
+    # Which file rows landed on each outlet. Two rows resolving to ONE dealer is
+    # the failure mode of syncing a per-code tab before its outlets exist: the
+    # master row carries no dealer_code yet, so every code of a dealership
+    # matches it, and the insert then dies on (dealer_id, month, product) with a
+    # multi-thousand-parameter IntegrityError that says nothing about the cause.
+    # Caught here instead, named, and turned into the instruction that fixes it.
+    landed: dict = {}
     # Accumulated and flushed in batches at the end rather than written one row
     # at a time — see _bulk_insert.
     monthly_rows: list = []
@@ -329,19 +373,24 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
     refresh: list = []
 
     for rec in records:
-        dealer_id = index.resolve(rec["oem"], rec["name"], rec["city"])
+        # The code is passed through: on a per-code tab it identifies the outlet
+        # exactly, and passing it means a two-code dealership resolves to the
+        # right sibling instead of falling back to the group's anchor.
+        dealer_id = index.resolve(rec["oem"], rec["name"], rec["city"], rec.get("dealer_code"))
         if dealer_id is None:
             dealer_id = db.execute(text("""
                 INSERT INTO oe_dealerships
-                    (oem, state, city, name, salesperson, dealer_codes, source)
+                    (oem, state, city, name, salesperson, dealer_code, dealer_codes, source)
                 VALUES (:oem, :state, NULLIF(:city, ''), :name,
-                        NULLIF(:sp, ''), NULLIF(:codes, ''), 'oe_file')
-                ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, '')))
+                        NULLIF(:sp, ''), NULLIF(:code, ''), NULLIF(:codes, ''), 'oe_file')
+                ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, '')),
+                             UPPER(COALESCE(dealer_code, '')))
                 DO UPDATE SET updated_at = NOW()
                 RETURNING id
             """), {"oem": rec["oem"], "state": rec["state"] or "Unknown",
                    "city": rec["city"], "name": rec["name"],
-                   "sp": rec["salesperson"] or "", "codes": rec["dealer_codes"] or ""}).scalar()
+                   "sp": rec["salesperson"] or "", "code": rec.get("dealer_code") or "",
+                   "codes": rec["dealer_codes"] or ""}).scalar()
             created.append(f"{rec['name']} / {rec['city']}")
         else:
             # Refresh the fields the file owns. City, name and state are left
@@ -351,12 +400,17 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
             refresh.append({"id": dealer_id, "sp": rec["salesperson"] or "",
                             "codes": rec["dealer_codes"] or ""})
 
+        landed.setdefault(dealer_id, []).append(
+            f"{rec['name']} / {rec['city'] or '?'}"
+            + (f" (code {rec['dealer_code']})" if rec.get("dealer_code") else ""))
+
         for m in rec["monthly"]:
             if all(m.get(k) is None for k in DEALER_SERIES):
                 continue
             monthly_rows.append({
                 "id": str(uuid.uuid4()), "dealer_id": dealer_id,
                 "sheet_source_id": source_id, "month": m["month"],
+                "product": m["product"],
                 **{k: m.get(k) for k in DEALER_SERIES},
             })
         for t in rec["targets"]:
@@ -366,6 +420,18 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
                 "id": str(uuid.uuid4()), "dealer_id": dealer_id,
                 "sheet_source_id": source_id, **t,
             })
+
+    collisions = {d: rows for d, rows in landed.items() if len(rows) > 1}
+    if collisions:
+        shown = "; ".join(" + ".join(rows) for rows in list(collisions.values())[:4])
+        raise ValueError(
+            f"{len(collisions)} outlet(s) in the master list matched more than one row of "
+            f"the file, so the same dealer would be written twice for a month. Nothing was "
+            f"changed. This is what the outlet backfill exists to fix — run it for this OEM "
+            f"first, then sync again:  python -m scripts.backfill_oe_dealer_outlets "
+            f"--file \"<the .xlsx>\" --oem <OEM> --per-code   (add --apply once the dry run "
+            f"looks right). Colliding rows: {shown}"
+            + (f" … and {len(collisions) - 4} more" if len(collisions) > 4 else ""))
 
     # One UPDATE ... FROM (VALUES ...) for every matched dealer, in place of one
     # statement each. COALESCE/NULLIF semantics are unchanged.
@@ -454,9 +520,10 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
             records, skipped_tabs, errors = parse_log_book(source.sheet_id)
     except Exception as e:
         log.status = "Failed"
-        log.error_details = str(e)
+        log.error_details = _db_message(e, 4000)
         db.commit()
-        raise HTTPException(status_code=502, detail=f"Could not sync from Google Sheets: {e}")
+        raise HTTPException(status_code=502,
+                            detail=f"Could not sync from Google Sheets: {_db_message(e)}")
 
     tables = _DATA_TABLES[source.module]
 
@@ -532,9 +599,11 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
     except Exception as e:
         db.rollback()
         log.status = "Failed"
-        log.error_details = str(e)
+        # The log keeps a longer copy than the toast does; still not the params.
+        log.error_details = _db_message(e, 4000)
         db.commit()
-        raise HTTPException(status_code=500, detail=f"Could not store synced rows: {e}")
+        raise HTTPException(status_code=500,
+                            detail=f"Could not store synced rows: {_db_message(e)}")
 
     return _sync_result(log, db, len(records), deleted, skipped_tabs, errors)
 
@@ -779,7 +848,7 @@ def list_logs(
         SELECT COUNT(*) AS total,
                COUNT(*) FILTER (WHERE contact_mode = 'Visit') AS visits,
                COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls,
-               COUNT(DISTINCT dealership) AS dealerships
+               {_CONTACTED_DEALERSHIPS} AS dealerships
         FROM oe_visit_logs WHERE {where_sql}
     """), params).fetchone()
 
@@ -1099,6 +1168,12 @@ def filter_options(
         "states": distinct("state"),
         "cities": distinct("city"),
     }
+    if scope == "dealer_sales":
+        # From the sales rows, not from the current response: an OEM that sells
+        # only seat covers must not shrink the dropdown for the one that also
+        # reports mats.
+        out["products"] = [r[0] for r in db.execute(text(
+            "SELECT DISTINCT product FROM oe_dealer_monthly ORDER BY 1")).fetchall()]
     for key, col in extra.items():
         out[key] = distinct(col)
     return out
@@ -1108,6 +1183,8 @@ def filter_options(
 
 @router.get("/periods")
 def available_periods(
+    oem: Optional[str] = Query(None, description="Scopes dealer_months to one OEM"),
+    product: Optional[str] = Query(None, description="Scopes dealer_months to one product"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1121,11 +1198,27 @@ def available_periods(
     # The months the dealer sales file covers. The Dealers tab needs these
     # BEFORE its first request: its period picker defaults to a month, and it
     # cannot pick one out of a response it has not fetched yet.
-    dealer_months = db.execute(text("""
-        SELECT DISTINCT EXTRACT(YEAR FROM month)::int  AS year,
-                        EXTRACT(MONTH FROM month)::int AS month
-        FROM oe_dealer_monthly ORDER BY 1, 2
-    """)).fetchall()
+    #
+    # Scoped to the OEM, because the OEMs do not cover the same months and the
+    # union is wrong for every one of them: MSIL's file runs Jan-Jul 2026 while
+    # TATA's starts in July, so an unscoped list offered six empty months on the
+    # TATA view. A month in the picker is a promise that there is something
+    # behind it.
+    dm_where, dm_params = [], {}
+    if oem:
+        dm_where.append("UPPER(d.oem) = UPPER(:dm_oem)")
+        dm_params["dm_oem"] = oem
+    if product:
+        dm_where.append("m.product = :dm_product")
+        dm_params["dm_product"] = product
+    dm_sql = (" WHERE " + " AND ".join(dm_where)) if dm_where else ""
+    dealer_months = db.execute(text(f"""
+        SELECT DISTINCT EXTRACT(YEAR FROM m.month)::int  AS year,
+                        EXTRACT(MONTH FROM m.month)::int AS month
+        FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+        {dm_sql}
+        ORDER BY 1, 2
+    """), dm_params).fetchall()
     return {
         "plan_months": [{"year": r.year, "month": r.month} for r in plan_months],
         "log_months": [{"year": r.year, "month": r.month} for r in log_months],
@@ -1171,7 +1264,7 @@ def log_analytics(
         SELECT COUNT(*) AS total,
                COUNT(*) FILTER (WHERE contact_mode = 'Visit') AS visits,
                COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls,
-               COUNT(DISTINCT dealership) AS dealerships,
+               {_CONTACTED_DEALERSHIPS} AS dealerships,
                COUNT(DISTINCT salesperson) AS salespersons,
                AVG(car_sales) AS avg_car_sales,
                AVG(seat_cover_sales) AS avg_seat_cover_sales,
@@ -1185,7 +1278,7 @@ def log_analytics(
                    COUNT(*) AS total,
                    COUNT(*) FILTER (WHERE contact_mode = 'Visit') AS visits,
                    COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls,
-                   COUNT(DISTINCT dealership) AS dealerships
+                   {_CONTACTED_DEALERSHIPS} AS dealerships
             FROM oe_visit_logs WHERE {where_sql} AND {col} IS NOT NULL
             GROUP BY {col} ORDER BY total DESC
         """), params).fetchall()
@@ -1275,7 +1368,7 @@ def plan_vs_actual(
                COUNT(*) AS total,
                COUNT(*) FILTER (WHERE contact_mode = 'Visit') AS visits,
                COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls,
-               COUNT(DISTINCT dealership) AS dealerships
+               {_CONTACTED_DEALERSHIPS} AS dealerships
         FROM oe_visit_logs WHERE {log_where}
         GROUP BY salesperson
     """), log_params).fetchall()
@@ -1304,6 +1397,16 @@ def plan_vs_actual(
             "calls": calls,
             "total_logged": total,
             "dealerships_contacted": dealerships,
+            # plan_pct, not "coverage". It is visits DONE over visits PLANNED,
+            # which is a completion figure and routinely exceeds 100%. It says
+            # nothing about how much of the network was reached: a rep can visit
+            # the same 30 dealerships repeatedly and still clear their plan.
+            # "Coverage" means one thing in this app -- dealerships contacted
+            # out of dealerships assigned, on the Dealers tab -- and this is not
+            # that. coverage_pct is kept as a deprecated alias so a backend
+            # deploy cannot break a frontend that has not shipped yet; remove it
+            # once both sides are live.
+            "plan_pct": round(visits / p.planned * 100, 1) if p.planned else None,
             "coverage_pct": round(visits / p.planned * 100, 1) if p.planned else None,
         })
 
@@ -1313,17 +1416,43 @@ def plan_vs_actual(
             "salesperson": name, "log_name": name,
             "planned": 0, "dealers_planned": 0,
             "visits": r.visits, "calls": r.calls, "total_logged": r.total,
-            "dealerships_contacted": r.dealerships, "coverage_pct": None,
+            "dealerships_contacted": r.dealerships,
+            "plan_pct": None, "coverage_pct": None,
         })
 
     total_planned = sum(r["planned"] for r in rows)
     total_visits = sum(r["visits"] for r in rows)
     total_calls = sum(r["calls"] for r in rows)
+    # Counted once across the whole scope, NOT summed from the per-rep figures:
+    # a dealership two reps both contacted is one dealership, and adding the
+    # rows would report it twice.
+    total_dealerships = db.execute(text(f"""
+        SELECT {_CONTACTED_DEALERSHIPS} FROM oe_visit_logs
+        WHERE {log_where}
+    """), log_params).scalar() or 0
+    # ...and how many of those we could actually place in the OE dealer list.
+    #
+    # Returned so the Overview can print it BESIDE the total instead of leaving
+    # the reader to discover, on another tab, that "dealerships" is 891 here and
+    # 417 there. Both are right and they answer different questions: this tab
+    # counts every dealership the team named, the Dealers tab counts only those
+    # the OE dealer file knows about, because everything it goes on to divide by
+    # -- coverage, penetration, target -- comes out of that file. Printing the
+    # smaller number under the larger one turns a contradiction into a subtotal.
+    matched_dealerships = db.execute(text(f"""
+        SELECT COUNT(DISTINCT dealer_id) FROM oe_visit_logs
+        WHERE {log_where} AND dealer_id IS NOT NULL
+    """), log_params).scalar() or 0
     return {
         "year": year, "month": month, "from_ym": from_ym, "to_ym": to_ym,
         "rows": rows,
         "totals": {
             "planned": total_planned, "visits": total_visits, "calls": total_calls,
+            # Distinct dealerships actually named this period, so repetition is
+            # visible beside the completion figure instead of hiding inside it.
+            "dealerships": total_dealerships,
+            "dealerships_matched": matched_dealerships,
+            "plan_pct": round(total_visits / total_planned * 100, 1) if total_planned else None,
             "coverage_pct": round(total_visits / total_planned * 100, 1) if total_planned else None,
         },
     }
@@ -1791,14 +1920,30 @@ _SALES_WINDOW = """
     (CAST(:m_from AS date) IS NULL OR month >= CAST(:m_from AS date))
     AND (CAST(:m_to AS date) IS NULL OR month <= CAST(:m_to AS date))
 """
+# Sales and targets are now per PRODUCT (TATA sets separate seat-cover and mat
+# targets and reports each separately). Unfiltered, every product is summed,
+# which is right for the OEMs that publish only one.
+_PROD_WINDOW = """
+    (CAST(:f_prod AS varchar) IS NULL OR {a}.product = CAST(:f_prod AS varchar))
+"""
+
+
+def _prod(alias: str) -> str:
+    return _PROD_WINDOW.format(a=alias)
+
 
 _DEALER_AGG_SQL = """
 WITH sales AS (
     -- SUM(ysasc) is NULL only when no month in range supplied one, which is
-    -- what makes penetration honestly unavailable rather than wrong.
-    SELECT dealer_id, SUM(oem_total) AS oem_total,
-           SUM(ysasc) AS ysasc, SUM(ys_sale) AS ys_sale
-    FROM oe_dealer_monthly WHERE {sales_window} GROUP BY 1
+    -- what makes penetration honestly unavailable rather than wrong. Same for
+    -- oem_total, which an OEM like TATA never publishes at all: it has to reach
+    -- the screen as an em dash, not as a zero that reads like "sold nothing".
+    -- ys_sale is different and IS coalesced to 0 below -- it counts OUR sales,
+    -- and no row genuinely means none.
+    SELECT m.dealer_id, SUM(m.oem_total) AS oem_total,
+           SUM(m.ysasc) AS ysasc, SUM(m.ys_sale) AS ys_sale
+    FROM oe_dealer_monthly m
+    WHERE {sales_window} AND {prod_window} GROUP BY 1
 ),
 acts AS (
     SELECT dealer_id,
@@ -1808,31 +1953,84 @@ acts AS (
            MAX(visit_date) AS last_contact
     FROM oe_visit_logs WHERE {act_window} GROUP BY 1
 ),
+grp AS (
+    -- Contacts, rolled up to the DEALERSHIP. A visit log names a dealership and
+    -- a city and never a dealer code, so where an OEM's file splits one
+    -- dealership across codes every sibling shows the visits that were really
+    -- made to it, instead of one sibling holding them all and the others
+    -- reading as never contacted. The caller counts each group once.
+    SELECT d.oem AS g_oem, UPPER(d.name) AS g_name,
+           UPPER(COALESCE(d.city, '')) AS g_city,
+           SUM(a.contacts) AS contacts, SUM(a.visits) AS visits,
+           SUM(a.calls) AS calls, MAX(a.last_contact) AS last_contact
+    FROM oe_dealerships d JOIN acts a ON a.dealer_id = d.id
+    GROUP BY 1, 2, 3
+),
 tgts AS (
     -- A quarter counts if it OVERLAPS the period at all, and its target is NOT
     -- pro-rated: the target was agreed for the whole quarter, and slicing it
     -- would invent a number the OE team never signed up to.
-    SELECT dealer_id, SUM(target) AS target, SUM(achievement) AS achievement
-    FROM oe_dealer_targets
-    WHERE (CAST(:m_from AS date) IS NULL OR period_end   >= CAST(:m_from AS date))
-      AND (CAST(:m_to   AS date) IS NULL OR period_start <= CAST(:m_to   AS date))
+    --
+    -- `sold` is what we actually sold inside those quarters' own months, per
+    -- product. It exists because the two file shapes differ on achievement:
+    -- MSIL publishes a quarter ACH column, TATA publishes a quarter target and
+    -- only MONTHLY results. Summed at READ time and returned BESIDE the stored
+    -- figure rather than written into it -- a stored copy of a derivable number
+    -- can only drift from its inputs.
+    SELECT t.dealer_id,
+           CAST(SUM(t.target)      AS double precision) AS target,
+           CAST(SUM(t.achievement) AS double precision) AS achievement
+    FROM oe_dealer_targets t
+    WHERE (CAST(:m_from AS date) IS NULL OR t.period_end   >= CAST(:m_from AS date))
+      AND (CAST(:m_to   AS date) IS NULL OR t.period_start <= CAST(:m_to   AS date))
+      AND {tgt_prod_window}
+    GROUP BY 1
+),
+sold AS (
+    -- Our units inside the quarters the period touches, per dealer.
+    --
+    -- Deliberately NOT computed inside `tgts`: doing it there only counted
+    -- dealers that HAVE a target, so the 46 dealers with mat sales and no mat
+    -- target vanished from the figure and the "Achieved" tile read 3,457 while
+    -- the Quarter panel, which sums independently, read 3,791. Two numbers
+    -- disagreeing on one screen is a support call.
+    --
+    -- The month window is "inside ANY quarter that overlaps the period", so it
+    -- matches the quarters shown, whether or not this particular dealer was
+    -- given one.
+    SELECT m.dealer_id, SUM(m.ys_sale) AS sold
+    FROM oe_dealer_monthly m
+    WHERE {prod_window}
+      AND EXISTS (
+        SELECT 1 FROM oe_dealer_targets t
+         WHERE (CAST(:m_from AS date) IS NULL OR t.period_end   >= CAST(:m_from AS date))
+           AND (CAST(:m_to   AS date) IS NULL OR t.period_start <= CAST(:m_to   AS date))
+           AND {tgt_prod_window}
+           AND m.month >= t.period_start AND m.month <= t.period_end)
     GROUP BY 1
 )
 SELECT d.id, d.oem, d.name, d.city, d.state, d.salesperson, d.dealer_codes,
-       COALESCE(s.oem_total, 0) AS oem_total,
+       UPPER(d.name) || '~' || UPPER(COALESCE(d.city, '')) AS group_key,
+       s.oem_total              AS oem_total,
        s.ysasc                  AS ysasc,
        COALESCE(s.ys_sale, 0)   AS ys_sale,
-       COALESCE(a.contacts, 0)  AS contacts,
-       COALESCE(a.visits, 0)    AS visits,
-       COALESCE(a.calls, 0)     AS calls,
-       a.last_contact, t.target, t.achievement,
+       COALESCE(g.contacts, 0)  AS contacts,
+       COALESCE(g.visits, 0)    AS visits,
+       COALESCE(g.calls, 0)     AS calls,
+       g.last_contact,
+       CAST(t.target      AS double precision) AS target,
+       CAST(t.achievement AS double precision) AS achievement,
+       so.sold,
        (s.dealer_id IS NOT NULL) AS has_sales
 FROM oe_dealerships d
 LEFT JOIN sales s ON s.dealer_id = d.id
-LEFT JOIN acts  a ON a.dealer_id = d.id
 LEFT JOIN tgts  t ON t.dealer_id = d.id
+LEFT JOIN sold  so ON so.dealer_id = d.id
+LEFT JOIN grp   g ON g.g_oem = d.oem AND g.g_name = UPPER(d.name)
+                 AND g.g_city = UPPER(COALESCE(d.city, ''))
 WHERE d.is_active
-  AND (s.dealer_id IS NOT NULL OR a.dealer_id IS NOT NULL)
+  AND (s.dealer_id IS NOT NULL OR g.g_oem IS NOT NULL OR t.dealer_id IS NOT NULL
+       OR so.dealer_id IS NOT NULL)
   {extra}
 ORDER BY COALESCE(s.ys_sale, 0) DESC, d.name
 """
@@ -1864,8 +2062,13 @@ def _funnel(oem_total, ysasc, ys_sale) -> dict:
     penetration is NULL when ysasc is absent rather than falling back to
     oem_total: a silent fallback would report the old, much lower number
     (11.8% network-wide vs 20.1%) under the new name.
+
+    oem_total passes through as NULL for the same reason. TATA publishes no
+    total-sold figure at all, and a 0 there would render on every screen in the
+    tab as "this dealer sold nothing". ys_sale is the one figure that IS zeroed:
+    it counts our own sales, so no row genuinely means none.
     """
-    total, avail, ours = oem_total or 0, ysasc, ys_sale or 0
+    total, avail, ours = oem_total, ysasc, ys_sale or 0
     return {
         "oem_total": total,
         "ysasc": avail,
@@ -1886,7 +2089,7 @@ def _dealer_months(db: Session, extra: str, params: dict) -> list:
         SELECT m.month, SUM(m.oem_total) AS oem_total,
                SUM(m.ysasc) AS ysasc, SUM(m.ys_sale) AS ys_sale
         FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
-        WHERE {_SALES_WINDOW.replace('month', 'm.month')} {extra}
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')} AND {_prod('m')} {extra}
         GROUP BY 1 ORDER BY 1
     """), params).mappings().all()
     acts = db.execute(text(f"""
@@ -1917,38 +2120,71 @@ def _dealer_months(db: Session, extra: str, params: dict) -> list:
 def _dealer_quarters(db: Session, extra: str, params: dict) -> list:
     """Quarter vs quarter: target, achievement, and the sales that fell inside
     each quarter's own months. Quarters are returned whole even if the period
-    only clips them, for the same reason targets are not pro-rated."""
+    only clips them, for the same reason targets are not pro-rated.
+
+    `by_product` carries the split for the OEMs that set a target per product.
+    It is always present, with one entry for an OEM that sets only one, so the
+    panel never needs to know which kind it is looking at.
+
+    `sold` is the quarter's own YS Sale for the products in scope. It is what
+    the UI falls back to when `achievement` is NULL, which is how a quarter
+    target reports progress for an OEM that publishes no achievement column.
+    """
     rows = db.execute(text(f"""
-        SELECT t.quarter, t.fy_year, MIN(t.period_start) AS period_start,
+        SELECT t.quarter, t.fy_year, t.product, MIN(t.period_start) AS period_start,
                MAX(t.period_end) AS period_end,
-               SUM(t.target) AS target, SUM(t.achievement) AS achievement
+               CAST(SUM(t.target)      AS double precision) AS target,
+               CAST(SUM(t.achievement) AS double precision) AS achievement
         FROM oe_dealer_targets t JOIN oe_dealerships d ON d.id = t.dealer_id
         WHERE (CAST(:m_from AS date) IS NULL OR t.period_end   >= CAST(:m_from AS date))
           AND (CAST(:m_to   AS date) IS NULL OR t.period_start <= CAST(:m_to   AS date))
+          AND {_prod('t')}
           {extra}
-        GROUP BY 1, 2 ORDER BY 2, 1
+        GROUP BY 1, 2, 3 ORDER BY 2, 1, 3
     """), params).mappings().all()
 
-    out = []
+    out: dict = {}
     for r in rows:
-        sales = db.execute(text(f"""
-            SELECT SUM(m.oem_total) AS oem_total,
-                   SUM(m.ysasc) AS ysasc, SUM(m.ys_sale) AS ys_sale
-            FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
-            WHERE m.month >= :q_start AND m.month <= :q_end {extra}
-        """), {**params, "q_start": r["period_start"], "q_end": r["period_end"]}).mappings().first()
         tag = {1: "AMJ", 2: "JAS", 3: "OND", 4: "JFM"}[int(r["quarter"][1])]
-        out.append({
-            "quarter": r["quarter"],
-            "fy_year": r["fy_year"],
-            "label": f"{tag} '{str(r['period_start'].year)[2:]}",
-            "period_start": r["period_start"].isoformat(),
-            "period_end": r["period_end"].isoformat(),
-            "target": r["target"],
-            "achievement": r["achievement"],
-            **_funnel(sales["oem_total"], sales["ysasc"], sales["ys_sale"]),
+        key = (r["fy_year"], r["quarter"])
+        q = out.get(key)
+        if q is None:
+            sales = db.execute(text(f"""
+                SELECT SUM(m.oem_total) AS oem_total,
+                       SUM(m.ysasc) AS ysasc, SUM(m.ys_sale) AS ys_sale
+                FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+                WHERE m.month >= :q_start AND m.month <= :q_end
+                  AND {_prod('m')} {extra}
+            """), {**params, "q_start": r["period_start"],
+                   "q_end": r["period_end"]}).mappings().first()
+            q = out[key] = {
+                "quarter": r["quarter"],
+                "fy_year": r["fy_year"],
+                "label": f"{tag} '{str(r['period_start'].year)[2:]}",
+                "period_start": r["period_start"].isoformat(),
+                "period_end": r["period_end"].isoformat(),
+                "target": 0,
+                "achievement": None,
+                "by_product": [],
+                **_funnel(sales["oem_total"], sales["ysasc"], sales["ys_sale"]),
+            }
+        sold = db.execute(text(f"""
+            SELECT SUM(m.ys_sale) AS ys_sale
+            FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+            WHERE m.month >= :q_start AND m.month <= :q_end
+              AND m.product = :q_prod {extra}
+        """), {**params, "q_start": r["period_start"], "q_end": r["period_end"],
+               "q_prod": r["product"]}).scalar()
+        q["by_product"].append({
+            "product": r["product"], "target": r["target"],
+            "achievement": r["achievement"], "sold": sold,
         })
-    return out
+        q["target"] += r["target"] or 0
+        if r["achievement"] is not None:
+            q["achievement"] = (q["achievement"] or 0) + r["achievement"]
+    for q in out.values():
+        q["sold"] = sum(b["sold"] or 0 for b in q["by_product"])
+    return [out[k] for k in sorted(out)]
 
 
 def _contact_effect(db: Session, extra: str, params: dict) -> dict:
@@ -1973,7 +2209,7 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
                 SELECT dealer_id, date_trunc('month', visit_date)::date AS mth, COUNT(*) AS n
                 FROM oe_visit_logs WHERE dealer_id IS NOT NULL GROUP BY 1, 2
             ) c ON c.dealer_id = m.dealer_id AND c.mth = m.month
-            WHERE {_SALES_WINDOW.replace('month', 'm.month')}
+            WHERE {_SALES_WINDOW.replace('month', 'm.month')} AND {_prod('m')}
               AND m.month IN (SELECT DISTINCT date_trunc('month', visit_date)::date
                               FROM oe_visit_logs WHERE dealer_id IS NOT NULL)
               {extra}
@@ -1994,7 +2230,7 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
     months = db.execute(text(f"""
         SELECT COUNT(DISTINCT m.month) FROM oe_dealer_monthly m
         JOIN oe_dealerships d ON d.id = m.dealer_id
-        WHERE {_SALES_WINDOW.replace('month', 'm.month')}
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')} AND {_prod('m')}
           AND m.month IN (SELECT DISTINCT date_trunc('month', visit_date)::date
                           FROM oe_visit_logs WHERE dealer_id IS NOT NULL)
           {extra}
@@ -2013,6 +2249,7 @@ def _contact_effect(db: Session, extra: str, params: dict) -> dict:
 @router.get("/dealer-performance/{dealer_id}")
 def dealer_detail(
     dealer_id: str,
+    product: Optional[str] = Query(None, description="SC | MAT | ACC; all products if absent"),
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
     from_ym: Optional[str] = Query(None),
@@ -2043,16 +2280,32 @@ def dealer_detail(
     m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
                                                 from_date, to_date)
     d = db.execute(text("""
-        SELECT id, oem, name, city, state, salesperson, dealer_codes, source
+        SELECT id, oem, name, city, state, salesperson, dealer_code, dealer_codes, source
         FROM oe_dealerships WHERE id = :id
     """), {"id": dealer_id}).mappings().first()
     if not d:
         raise HTTPException(status_code=404, detail="Dealer not found")
 
-    sales = db.execute(text("""
-        SELECT month, oem_total, ysasc, ys_sale FROM oe_dealer_monthly
-        WHERE dealer_id = :id ORDER BY month
-    """), {"id": dealer_id}).mappings().all()
+    prod = {"id": dealer_id, "f_prod": product or None}
+    # Summed across the products in scope. A month with figures for seat covers
+    # and mats is one month on the chart, not two.
+    sales = db.execute(text(f"""
+        SELECT month, SUM(oem_total) AS oem_total, SUM(ysasc) AS ysasc,
+               SUM(ys_sale) AS ys_sale
+        FROM oe_dealer_monthly m
+        WHERE dealer_id = :id AND {_prod('m')}
+        GROUP BY 1 ORDER BY 1
+    """), prod).mappings().all()
+    # The split itself, for the drawer's per-product lines.
+    by_product = [{
+        "product": r["product"], "ys_sale": r["ys_sale"],
+        "oem_total": r["oem_total"], "ysasc": r["ysasc"],
+    } for r in db.execute(text("""
+        SELECT product, SUM(ys_sale) AS ys_sale, SUM(oem_total) AS oem_total,
+               SUM(ysasc) AS ysasc
+        FROM oe_dealer_monthly WHERE dealer_id = :id
+        GROUP BY 1 ORDER BY 1
+    """), {"id": dealer_id}).mappings().all()]
     acts = db.execute(text("""
         SELECT date_trunc('month', visit_date)::date AS month,
                COUNT(*) FILTER (WHERE contact_mode = 'Visit')   AS visits,
@@ -2077,17 +2330,29 @@ def dealer_detail(
     # period_start/period_end travel with each quarter so the drawer can scope
     # these to the selected period the same way the tab's Quarter panel does —
     # a quarter counts if it OVERLAPS the period, and is never pro-rated.
+    # One row per quarter per product, with `sold` — what we actually sold in
+    # that quarter's own months — beside the stored achievement. The OEMs that
+    # publish no quarter ACH column report their progress through `sold`, and
+    # it is derived at read time so the two can never disagree.
     targets = [{
         "quarter": t["quarter"], "fy_year": t["fy_year"],
         "label": f"{ {1: 'AMJ', 2: 'JAS', 3: 'OND', 4: 'JFM'}[int(t['quarter'][1])] } "
                  f"'{str(t['period_start'].year)[2:]}",
         "period_start": t["period_start"].isoformat(),
         "period_end": t["period_end"].isoformat(),
-        "target": t["target"], "achievement": t["achievement"],
-    } for t in db.execute(text("""
-        SELECT quarter, fy_year, period_start, period_end, target, achievement
-        FROM oe_dealer_targets WHERE dealer_id = :id ORDER BY period_start
-    """), {"id": dealer_id}).mappings().all()]
+        "product": t["product"],
+        "target": t["target"], "achievement": t["achievement"], "sold": t["sold"],
+    } for t in db.execute(text(f"""
+        SELECT t.quarter, t.fy_year, t.period_start, t.period_end, t.product,
+               CAST(t.target      AS double precision) AS target,
+               CAST(t.achievement AS double precision) AS achievement,
+               (SELECT SUM(m.ys_sale) FROM oe_dealer_monthly m
+                 WHERE m.dealer_id = t.dealer_id AND m.product = t.product
+                   AND m.month >= t.period_start AND m.month <= t.period_end) AS sold
+        FROM oe_dealer_targets t
+        WHERE t.dealer_id = :id AND {_prod('t')}
+        ORDER BY t.period_start, t.product
+    """), prod).mappings().all()]
 
     # Contact history, newest first, with each remark category kept separate —
     # same rule as the Field Activity tab: the legacy blob and the four
@@ -2127,8 +2392,9 @@ def dealer_detail(
         penetration instead of a made-up one."""
         rows = [months[k] for k in keys]
         avail = [m["ysasc"] for m in rows if m["ysasc"] is not None]
+        totals = [m["oem_total"] for m in rows if m["oem_total"] is not None]
         return {
-            **_funnel(sum(m["oem_total"] or 0 for m in rows),
+            **_funnel(sum(totals) if totals else None,
                       sum(avail) if avail else None,
                       sum(m["ys_sale"] or 0 for m in rows)),
             "visits": sum(h["contact_mode"] == "Visit" for h in contacts),
@@ -2142,13 +2408,32 @@ def dealer_detail(
                    if h["visit_date"] and (d_from is None or h["visit_date"] >= d_from.isoformat())
                    and (d_to is None or h["visit_date"] <= d_to.isoformat())]
 
+    # What this dealer's OEM publishes, judged over ALL its months rather than
+    # the selected window: an empty period says nothing about the source, and a
+    # dealer whose one month happens to be missing must not lose the tiles its
+    # OEM does fill. Same rule as the tab's `capabilities` -- see the Dealers
+    # tab, which has no other way to know TATA cannot answer a penetration
+    # question. Without this the drawer drew Total sold / YSASC / Penetration
+    # for every TATA dealer, three permanently empty tiles reading as a load
+    # failure rather than as "this OEM does not publish it".
+    has_funnel = db.execute(text("""
+        SELECT EXISTS (
+            SELECT 1 FROM oe_dealer_monthly m JOIN oe_dealerships d2 ON d2.id = m.dealer_id
+            WHERE UPPER(d2.oem) = UPPER(:oem) AND m.oem_total IS NOT NULL
+        )
+    """), {"oem": d["oem"]}).scalar()
+
     return {
+        "capabilities": {"funnel": bool(has_funnel)},
         "dealer": {
             "id": str(d["id"]), "oem": d["oem"], "name": d["name"],
             "city": d["city"] or "", "state": d["state"],
             "salesperson": d["salesperson"], "codes": d["dealer_codes"],
-            "source": d["source"],
+            "dealer_code": d["dealer_code"], "source": d["source"],
         },
+        # Every product on record, unfiltered — the drawer says what this dealer
+        # buys from us, and a product filter on the tab must not hide the rest.
+        "by_product": by_product,
         # The tab's period — reconciles with the row that was clicked.
         "totals": totals_for(sorted(in_months), in_contacts),
         # Every month on record, shown alongside as context.
@@ -2174,6 +2459,7 @@ def dealer_performance(
     oem: Optional[str] = Query(None),
     salesperson: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
+    product: Optional[str] = Query(None, description="SC | MAT | ACC; all products if absent"),
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
     from_ym: Optional[str] = Query(None),
@@ -2193,31 +2479,58 @@ def dealer_performance(
     _require_access(db, current_user)
     m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
                                                 from_date, to_date)
-    params = {"m_from": m_from, "m_to": m_to, "d_from": d_from, "d_to": d_to}
+    params = {"m_from": m_from, "m_to": m_to, "d_from": d_from, "d_to": d_to,
+              "f_prod": product or None}
     where: list = []
     _dealer_scope(where, params, oem, salesperson, state)
     extra = (" AND " + " AND ".join(where)) if where else ""
 
     rows = db.execute(text(_DEALER_AGG_SQL.format(
-        sales_window=_SALES_WINDOW, act_window=_ACT_WINDOW, extra=extra)),
+        sales_window=_SALES_WINDOW, prod_window=_prod("m"),
+        tgt_prod_window=_prod("t"), act_window=_ACT_WINDOW, extra=extra)),
         params).mappings().all()
 
     dealers = [{
         "id": str(r["id"]), "oem": r["oem"], "name": r["name"],
         "city": r["city"] or "", "state": r["state"],
         "salesperson": r["salesperson"], "codes": r["dealer_codes"],
+        # Which dealership this outlet belongs to. Several outlets share one on
+        # the OEMs whose file is keyed per dealer code, and contacts belong to
+        # the dealership, so anything counting activity counts groups, not rows.
+        "group_key": f"{r['oem']}|{r['group_key']}",
         **_funnel(r["oem_total"], r["ysasc"], r["ys_sale"]),
         "contacts": r["contacts"], "visits": r["visits"], "calls": r["calls"],
         "last_contact": r["last_contact"].isoformat() if r["last_contact"] else None,
-        "target": r["target"], "achievement": r["achievement"],
+        "target": r["target"], "achievement": r["achievement"], "sold": r["sold"],
         "has_sales": r["has_sales"],
     } for r in rows]
 
-    tot_total = sum(d["oem_total"] for d in dealers)
+    # Sums that must not double-count a dealership listed under several codes.
+    groups: dict = {}
+    for d in dealers:
+        g = groups.setdefault(d["group_key"],
+                              {"visits": 0, "calls": 0, "contacts": 0, "sp": d["salesperson"]})
+        g["visits"], g["calls"] = d["visits"], d["calls"]     # identical on every sibling
+        g["contacts"] = d["contacts"]
+
+    totals = [d["oem_total"] for d in dealers if d["oem_total"] is not None]
+    tot_total = sum(totals) if totals else None
     tot_ours = sum(d["ys_sale"] for d in dealers)
     avail = [d["ysasc"] for d in dealers if d["ysasc"] is not None]
     tot_avail = sum(avail) if avail else None
-    contacted = sum(1 for d in dealers if d["contacts"])
+    contacted = sum(1 for g in groups.values() if g["contacts"])
+
+    # What the OEMs in scope actually publish, so the tab shows the panels their
+    # data can support instead of a screen of blanks. `funnel` is an AND across
+    # the scope on purpose: with MSIL and TATA both in view there is no honest
+    # network penetration to show, because half the denominator does not exist.
+    caps = db.execute(text(f"""
+        SELECT COUNT(DISTINCT d.oem) AS oems,
+               COUNT(DISTINCT d.oem) FILTER (WHERE m.oem_total IS NOT NULL) AS funnel_oems,
+               ARRAY_AGG(DISTINCT m.product) AS products
+        FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')} {extra}
+    """), params).mappings().first()
 
     # The yardstick "opportunity" is measured against, and it must NOT move when
     # the view is sliced. Scoped to the OEM (penetration is not comparable
@@ -2232,41 +2545,76 @@ def dealer_performance(
         SELECT SUM(m.oem_total) AS oem_total, SUM(m.ysasc) AS ysasc,
                SUM(m.ys_sale) AS ys_sale
         FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
-        WHERE {_SALES_WINDOW.replace('month', 'm.month')} {bench_extra}
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')} AND {_prod('m')} {bench_extra}
     """), params).mappings().first()
     bench_f = _funnel(bench["oem_total"], bench["ysasc"], bench["ys_sale"])
 
+    funnel_ok = caps["oems"] == caps["funnel_oems"]
+
     kpis = {
-        "dealers": len(dealers),
+        # Dealerships, not rows: coverage is "did we contact this dealership",
+        # and a dealership listed under two codes was contacted once.
+        "dealers": len(groups),
+        "outlets": len(dealers),
         "contacted": contacted,
-        "coverage": round(100.0 * contacted / len(dealers), 1) if dealers else None,
+        "coverage": round(100.0 * contacted / len(groups), 1) if groups else None,
         **_funnel(tot_total, tot_avail, tot_ours),
         # Whole-OEM figures for this period, unaffected by the other filters.
         # Opportunity is measured against `benchmark`, so it has to be the same
         # KIND of ratio as each dealer's own penetration — ys_sale ÷ ysasc.
-        "benchmark": bench_f["penetration"],
-        "benchmark_share": bench_f["share"],
-        "visits": sum(d["visits"] for d in dealers),
-        "calls": sum(d["calls"] for d in dealers),
+        "benchmark": bench_f["penetration"] if funnel_ok else None,
+        "benchmark_share": bench_f["share"] if funnel_ok else None,
+        "visits": sum(g["visits"] for g in groups.values()),
+        "calls": sum(g["calls"] for g in groups.values()),
+        # Targets are per outlet, so these sum over rows — two codes of one
+        # dealership carry two targets the team set separately.
+        #
+        # Summed UNROUNDED and rounded once at display. The sheet's target is an
+        # OEM total split across dealers by share, so each dealer's share is
+        # fractional; rounding per dealer first put this total 27 units under the
+        # sheet's own figure for MSIL JAS'26 and 17 over it for AMJ'26.
         "target": sum(d["target"] or 0 for d in dealers),
-        "achievement": sum(d["achievement"] or 0 for d in dealers),
+        "achievement": (sum(d["achievement"] for d in dealers if d["achievement"] is not None)
+                        if any(d["achievement"] is not None for d in dealers) else None),
+        "sold": sum(d["sold"] or 0 for d in dealers),
     }
 
+    # With a funnel OEM and a non-funnel one both in scope, ys_sale counts every
+    # dealer but ysasc and oem_total count only the OEMs that publish them, so
+    # every ratio read off them divides one pool by another. MSIL + TATA in July
+    # returned 49.96% "penetration" that way -- TATA's sales over MSIL's YSASC.
+    # The tab hides those tiles when funnel is false, but a wrong number must
+    # not sit in the payload waiting for the next reader to trust it.
+    if not funnel_ok:
+        for key in ("penetration", "share", "addressable_pct"):
+            kpis[key] = None
+
     by_sp: dict = {}
+    seen_groups: set = set()
     for d in dealers:
         sp = d["salesperson"] or "Unassigned"
         b = by_sp.setdefault(sp, {"salesperson": sp, "assigned": 0, "contacted": 0,
-                                  "oem_total": 0, "ysasc": None, "ys_sale": 0,
-                                  "visits": 0, "calls": 0, "target": 0, "achievement": 0})
-        b["assigned"] += 1
-        b["contacted"] += 1 if d["contacts"] else 0
-        for k in ("oem_total", "ys_sale", "visits", "calls"):
-            b[k] += d[k]
-        # Stays None until some dealer in the group actually has one.
-        if d["ysasc"] is not None:
-            b["ysasc"] = (b["ysasc"] or 0) + d["ysasc"]
+                                  "oem_total": None, "ysasc": None, "ys_sale": 0,
+                                  "visits": 0, "calls": 0, "target": 0,
+                                  "achievement": 0, "sold": 0})
+        # Assigned dealerships and their activity are counted once per group;
+        # volumes and targets are per outlet, because each code has its own.
+        first_of_group = d["group_key"] not in seen_groups
+        seen_groups.add(d["group_key"])
+        if first_of_group:
+            b["assigned"] += 1
+            b["contacted"] += 1 if d["contacts"] else 0
+            b["visits"] += d["visits"]
+            b["calls"] += d["calls"]
+        b["ys_sale"] += d["ys_sale"]
+        # Both stay None until some dealer of theirs actually has one — an OEM
+        # that publishes no total must not report a rep as having sold into 0.
+        for k in ("oem_total", "ysasc"):
+            if d[k] is not None:
+                b[k] = (b[k] or 0) + d[k]
         b["target"] += d["target"] or 0
         b["achievement"] += d["achievement"] or 0
+        b["sold"] += d["sold"] or 0
     for b in by_sp.values():
         b["coverage"] = round(100.0 * b["contacted"] / b["assigned"], 1) if b["assigned"] else None
         b.update(_funnel(b["oem_total"], b["ysasc"], b["ys_sale"]))
@@ -2277,6 +2625,17 @@ def dealer_performance(
             "month_to": m_to.isoformat() if m_to else None,
             "date_from": d_from.isoformat() if d_from else None,
             "date_to": d_to.isoformat() if d_to else None,
+        },
+        # What this scope's OEMs publish. The tab renders the panels these
+        # allow; see the Dealers tab, which has no other way to know that TATA
+        # cannot answer a penetration question.
+        "capabilities": {
+            # An empty period tells us nothing about what the OEM publishes, so
+            # it must not flip the tab into its other shape — with no rows the
+            # answer is "as before", not "no funnel".
+            "funnel": funnel_ok,
+            "products": sorted(caps["products"] or []),
+            "oems": caps["oems"] or 0,
         },
         "kpis": kpis,
         "dealers": dealers,
