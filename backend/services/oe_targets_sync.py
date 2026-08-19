@@ -136,6 +136,15 @@ def _split_oem_category(title: str):
         return None, None, tag, yy
     oem = words[0]
     rest = " ".join(words[1:]).strip()
+    # The workbook brackets the product on some tabs and not others -- Q1 wrote
+    # "KIA SEAT COVER (AMJ'26)" but Q2 writes "KIA JAS (SEAT COVER)", moving the
+    # brackets off the quarter and onto the product. Strip the wrapper before
+    # the alias lookup: left on, "(SEAT COVER)" misses CATEGORY_ALIASES and
+    # passes through as its own category, so Hyundai and Kia seat covers filed
+    # under '(SEAT COVER)' for JAS'26 while every other block used 'SC'. That
+    # splits one product into two everywhere it is filtered or compared, and it
+    # does it silently -- the numbers are all present, just under a second name.
+    rest = rest.strip("()[]{}‘’“”'\" -")
     if not rest:
         return oem, DEFAULT_CATEGORY, tag, yy
     return oem, CATEGORY_ALIASES.get(rest, rest), tag, yy
