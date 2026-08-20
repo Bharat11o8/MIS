@@ -357,10 +357,17 @@ def add_dealership(
                 return {"status": "ok", "name": name, "city": city, "oem": oem,
                         "state": state, "already_exists": True}
 
+        # Matches idx_oe_dealerships_unique_v2 exactly (see
+        # migrate_phase21_oe_dealer_products.sql) — that index's key is 5
+        # expressions including dealer_code, so the ON CONFLICT target must name
+        # all 5 or Postgres has no arbiter to match against. Reps never supply a
+        # dealer_code (that's populated only by the OEM dealer-file sync), so it
+        # is always NULL here, i.e. '' under the index's COALESCE.
         db.execute(text("""
             INSERT INTO oe_dealerships (oem, state, city, name, source, added_by)
             VALUES (:oem, :state, NULLIF(:city, ''), :name, 'form', NULLIF(:added_by, ''))
-            ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, ''))) DO NOTHING
+            ON CONFLICT (oem, state, UPPER(name), UPPER(COALESCE(city, '')), UPPER(COALESCE(dealer_code, '')))
+            DO NOTHING
         """), {"oem": oem, "state": state, "city": city,
                "name": name, "added_by": _clean(added_by)})
         db.commit()
