@@ -10,11 +10,17 @@ dealer directory, dealer-level plan adherence). Target analytics live in
 routers/oe_targets.py; this file owns the registry and sync for all three.
 """
 import calendar
+import csv
+import io as _io
+import os
 import re
 import uuid
 from datetime import date
 from typing import Optional
+
+import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -28,6 +34,7 @@ from services.oe_dealer_data_sync import parse_dealer_data, SERIES as DEALER_SER
 from services.oe_network_sync import parse_visit_plan, parse_log_book
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.period_filters import parse_date as _parse_date, snap_to_months
+from services.oe_scope import OEScope, names_match as _names_match, name_tokens as _name_tokens
 from services.permissions import require_module
 from services.sync_logs import SYNC_LOG_RETENTION, prune_sync_logs
 from services.remark_themes import classify as classify_remark, THEMES, is_theme
@@ -56,25 +63,54 @@ _SHEET_TYPES = {MODULE_PLAN: "visit_plan", MODULE_LOG: "log_book",
                 MODULE_TGT: "targets", MODULE_DD: "dealer_data"}
 
 
-def _require_access(db: Session, current_user: User):
+def _scope(db: Session, current_user: User,
+           salesperson: Optional[str] = None) -> tuple[OEScope, Optional[str]]:
+    """Gate the module and resolve the caller's row-level scope.
+
+    Every data endpoint in this module and in oe_targets.py starts here — there
+    is deliberately no bare "just check the module" helper left, so an endpoint
+    added later cannot forget to scope and quietly leak every rep's numbers. The
+    test suite pins that: no router may call require_module for this module
+    directly.
+
+    Returns the scope plus the salesperson value the caller should pass to
+    _add_filters. For an unscoped user that is the query parameter unchanged.
+    For a scoped user it is None — deliberately, and this is the subtle part:
+    their constraint is applied by scope.apply(), which token-matches their
+    canonical name against the spellings that table actually uses. Passing the
+    canonical name to _add_filters as well would add a literal
+    `salesperson = 'PANKAJ'`, which excludes the "PANKAJ VIG" rows it is meant
+    to include — the scope would silently show a rep almost nothing.
+
+    Either way a client-supplied ?salesperson= is dropped for a scoped user, so
+    a rep cannot widen their view by editing the query string.
+    """
     require_module(db, current_user, MODULE_KEY)
+    # Superadmin is never scoped, matching services/permissions.py where it
+    # bypasses every other check. Without this an admin who was once given a
+    # scope, or who is pointed at a salesperson row by mistake, would lock
+    # themselves out of the module they administer.
+    name = None if current_user.role == "superadmin" else current_user.oe_salesperson
+    scope = OEScope(db, name)
+    return scope, (None if scope.limited else salesperson)
+
+
+def _require_admin(db: Session, current_user: User) -> None:
+    """The sheet registry — adding, deleting and re-syncing one named sheet — is
+    for the people who own the sheets, not for a rep who merely reads them.
+    Note this is NOT the same as the Overview's Sync button (/sync-latest),
+    which every OE user may press: pulling the latest rows is routine, while
+    registering or dropping a source rewrites what the module is made of.
+    """
+    scope, _ = _scope(db, current_user)
+    if scope.limited:
+        raise HTTPException(
+            status_code=403,
+            detail="Managing OE sheet sources is not available on a salesperson account.")
 
 
 def _sheet_type(module: str) -> str:
     return _SHEET_TYPES.get(module, module)
-
-
-# ── Salesperson matching (plan tabs say "PANKAJ", the form says "PANKAJ VIG") ──
-# Two names refer to the same person when they share any token of 3+ letters,
-# so initials ("D" in "D PRASHANTH KUMAR") never cause a false match.
-def _name_tokens(name: Optional[str]) -> set:
-    if not name:
-        return set()
-    return {t for t in re.split(r"[^A-Za-z]+", name.upper()) if len(t) >= 3}
-
-
-def _names_match(a: Optional[str], b: Optional[str]) -> bool:
-    return bool(_name_tokens(a) & _name_tokens(b))
 
 
 # ── Dealer-name matching (plan says "Pratham", the form says "Pratham Motors") ──
@@ -116,7 +152,7 @@ def add_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    _require_admin(db, current_user)
 
     quarter = None
     if body.sheet_type == "visit_plan":
@@ -200,7 +236,7 @@ def list_sheet_sources(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    _scope(db, current_user)
     sources = (
         db.query(SheetSource)
         .filter(SheetSource.module.in_(OE_MODULES))
@@ -217,7 +253,7 @@ def delete_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    _require_admin(db, current_user)
     source = db.query(SheetSource).filter(
         SheetSource.id == source_id, SheetSource.module.in_(OE_MODULES)
     ).first()
@@ -492,6 +528,38 @@ def _sync_result(log: SyncLog, db: Session, written: int, deleted: int,
     }
 
 
+# How long after a successful pull the shared Sync button stops re-pulling the
+# same sheet. Short on purpose: it exists to collapse a rush — six reps tapping
+# Sync within a minute of each other used to mean six full downloads of every
+# sheet, which the row lock does not prevent because none of them overlap — not
+# to stop anyone refreshing. A rep who has just filed a visit waits out the rest
+# of the minute rather than being locked out of their own data, and the response
+# says exactly when the last pull happened so they can judge that for themselves
+# instead of being told a flat "up to date" that might not be true for them.
+SYNC_COOLDOWN_SECONDS = int(os.getenv("OE_SYNC_COOLDOWN_SECONDS") or 60)
+
+
+def _synced_within_cooldown(db: Session, source: SheetSource):
+    """The timestamp of a successful sync inside the cooldown window, else None.
+
+    Only 'Done' counts. A run that failed, or one still Processing, leaves the
+    sheet exactly as stale as it was, so it must not suppress the next attempt —
+    that would turn one bad pull into a minute of silently refusing to retry.
+    """
+    if SYNC_COOLDOWN_SECONDS <= 0:
+        return None
+    return db.execute(text("""
+        SELECT synced_at FROM sync_logs
+        WHERE module = :module
+          AND source_label IS NOT DISTINCT FROM :label
+          AND status = 'Done'
+          AND synced_at > NOW() - (CAST(:window AS int) * INTERVAL '1 second')
+        ORDER BY synced_at DESC
+        LIMIT 1
+    """), {"module": source.module, "label": source.sheet_id,
+           "window": SYNC_COOLDOWN_SECONDS}).scalar()
+
+
 def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
     log = SyncLog(
         id=uuid.uuid4(),
@@ -504,6 +572,32 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
     db.commit()
     db.refresh(log)
     prune_sync_logs(db, source.module, source.sheet_id)
+
+    # Claim this source BEFORE reading a single cell from Google. The lock has
+    # to be here, not after the parse: reps can press Sync now, and six people
+    # tapping it at once used to mean six full downloads of every sheet — the
+    # log book is thousands of rows — after which five of them discovered they
+    # could not have the lock and threw all of it away. Claiming first turns
+    # that into one download and five instant 409s.
+    #
+    # Taken after the log bookkeeping has committed, because that commit would
+    # otherwise release it. Held across the fetch and the write, to the final
+    # commit. Holding it over a slow network call costs nothing here: NOWAIT
+    # means the others fail immediately rather than queue behind it.
+    try:
+        db.execute(
+            text("SELECT 1 FROM sheet_sources WHERE id = :id FOR UPDATE NOWAIT"),
+            {"id": str(source.id)},
+        )
+    except OperationalError:
+        db.rollback()
+        log.status = "Failed"
+        log.error_details = "A sync for this sheet was already running."
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="This sheet is already syncing — wait for that run to finish.",
+        )
 
     try:
         if source.module == MODULE_PLAN:
@@ -527,28 +621,12 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
 
     tables = _DATA_TABLES[source.module]
 
-    # Claim this source before touching any data, and hold it to the commit.
-    # Every sync is delete-then-insert, so two overlapping runs are not merely
-    # wasteful: the second one's DELETE can land while the first one's INSERTs
-    # are still uncommitted, so it deletes nothing, and both sets of rows end up
-    # in the table — every figure on the tab doubles. NOWAIT makes the second
-    # caller fail at once rather than queue behind the lock for minutes and then
-    # do exactly that. Taken here, after the log bookkeeping has committed, so
-    # that commit cannot release it.
-    try:
-        db.execute(
-            text("SELECT 1 FROM sheet_sources WHERE id = :id FOR UPDATE NOWAIT"),
-            {"id": str(source.id)},
-        )
-    except OperationalError:
-        db.rollback()
-        log.status = "Failed"
-        log.error_details = "A sync for this sheet was already running."
-        db.commit()
-        raise HTTPException(
-            status_code=409,
-            detail="This sheet is already syncing — wait for that run to finish.",
-        )
+    # The source row is already locked (claimed above, before the fetch) and
+    # stays locked to the commit below. That is what stops two overlapping runs
+    # doubling the data: every sync is delete-then-insert, so without it the
+    # second run's DELETE lands while the first run's INSERTs are still
+    # uncommitted, deletes nothing, and both sets of rows survive — every figure
+    # on the tab doubles.
 
     # Full-replace in ONE transaction: rows removed from the sheet disappear
     # here too, and a mid-sync failure can never leave the table half-wiped.
@@ -614,7 +692,7 @@ def sync_sheet_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    _require_admin(db, current_user)
     source = db.query(SheetSource).filter(
         SheetSource.id == source_id, SheetSource.module.in_(OE_MODULES)
     ).first()
@@ -632,7 +710,7 @@ def sync_latest(
     keep growing, and only the newest visit-plan month and target quarter still
     change, so those are the sheets worth re-pulling — earlier periods are
     frozen history."""
-    _require_access(db, current_user)
+    _scope(db, current_user)
     sources = db.query(SheetSource).filter(
         SheetSource.module.in_((MODULE_LOG, MODULE_DD))).all()
     newest_plan = (
@@ -656,13 +734,34 @@ def sync_latest(
 
     results = []
     for source in sources:
+        # Checked per source, not once for the whole run: the four sheets are
+        # synced on their own schedules by the per-source button too, so one of
+        # them being fresh says nothing about the others.
+        fresh = _synced_within_cooldown(db, source)
+        if fresh is not None:
+            results.append({
+                "label": source.label, "status": "Up to date",
+                "rows_inserted": 0, "error": None,
+                "last_synced_at": fresh.isoformat(),
+            })
+            continue
         try:
             out = _do_sync(db, source, current_user)
             results.append({"label": source.label, "status": out["status"],
                             "rows_inserted": out["rows_inserted"]})
         except HTTPException as e:
-            results.append({"label": source.label, "status": "Failed",
-                            "rows_inserted": 0, "error": str(e.detail)})
+            # 409 is somebody else's sync already running, which is not this
+            # caller's problem and not an error: the run in flight is pulling
+            # the same sheet and their screen will have it. Reporting it as
+            # "Failed" invited exactly the retry that makes a rush worse, which
+            # matters now that every rep can press Sync.
+            already = e.status_code == 409
+            results.append({
+                "label": source.label,
+                "status": "Already syncing" if already else "Failed",
+                "rows_inserted": 0,
+                "error": None if already else str(e.detail),
+            })
     return {"results": results}
 
 
@@ -755,10 +854,11 @@ def list_plans(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
 
     where = ["1=1"]
     params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_plans")
     if year is not None:
         where.append("plan_year = :year")
         params["year"] = year
@@ -824,10 +924,11 @@ def list_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
 
     where = ["1=1"]
     params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
     if year is not None:
         where.append("log_year = :year")
         params["year"] = year
@@ -959,7 +1060,7 @@ def remarks_activity(
     paginates. That keeps the chips stable when one is clicked to filter the feed
     beneath them.
     """
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
     if theme and not is_theme(theme):
         raise HTTPException(status_code=400, detail=f"Unknown theme: {theme!r}")
     if category and category not in _CATEGORY_KEYS:
@@ -970,6 +1071,7 @@ def remarks_activity(
     any_remark = " OR ".join(f"COALESCE({c}, '') <> ''" for c in _CATEGORY_COLUMNS)
     where = [f"({any_remark})"]
     params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
     _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym,
                 date_col="visit_date", from_date=from_date, to_date=to_date)
     _add_filters(where, params, {
@@ -1133,12 +1235,14 @@ def filter_options(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    user_scope, _ = _scope(db, current_user)
     if scope == "plans":
         table = "oe_visit_plans"
+        scope_table = "oe_visit_plans"
         extra = {}
     elif scope == "logs":
         table = "oe_visit_logs"
+        scope_table = "oe_visit_logs"
         extra = {"contact_modes": "contact_mode"}
     elif scope == "dealer_sales":
         # Only the OEMs we actually hold dealer sales for. The Dealers tab is
@@ -1147,6 +1251,7 @@ def filter_options(
         # ever return an empty tab. Derived, not listed: the day a TATA dealer
         # file is synced, TATA appears here on its own.
         table = ("oe_dealerships d JOIN oe_dealer_monthly m ON m.dealer_id = d.id")
+        scope_table = "oe_dealerships"
         extra = {}
     else:
         raise HTTPException(
@@ -1155,11 +1260,15 @@ def filter_options(
     # dealer_sales reads from a join, so its columns need qualifying.
     p = "d." if scope == "dealer_sales" else ""
 
+    scope_where, scope_params = [], {}
+    user_scope.apply(scope_where, scope_params, f"{p}salesperson", scope_table)
+    scope_sql = ("".join(f" AND {c}" for c in scope_where))
+
     def distinct(col: str):
         rows = db.execute(text(
             f"SELECT DISTINCT {p}{col} FROM {table} "
-            f"WHERE {p}{col} IS NOT NULL ORDER BY {p}{col}"
-        )).fetchall()
+            f"WHERE {p}{col} IS NOT NULL{scope_sql} ORDER BY {p}{col}"
+        ), scope_params).fetchall()
         return [r[0] for r in rows]
 
     out = {
@@ -1173,9 +1282,16 @@ def filter_options(
         # only seat covers must not shrink the dropdown for the one that also
         # reports mats.
         out["products"] = [r[0] for r in db.execute(text(
-            "SELECT DISTINCT product FROM oe_dealer_monthly ORDER BY 1")).fetchall()]
+            f"""SELECT DISTINCT m.product
+                  FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+                 WHERE 1=1{scope_sql} ORDER BY 1"""), scope_params).fetchall()]
     for key, col in extra.items():
         out[key] = distinct(col)
+    # Whose data these options (and every row alongside them) describe. None for
+    # an unscoped user. The tabs read this to drop the salesperson picker and to
+    # print whose numbers are on screen, rather than inferring either from the
+    # locally cached user record.
+    out["scope"] = user_scope.as_dict()
     return out
 
 
@@ -1188,13 +1304,21 @@ def available_periods(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
-    plan_months = db.execute(text("""
-        SELECT DISTINCT plan_year AS year, plan_month AS month FROM oe_visit_plans ORDER BY 1, 2
-    """)).fetchall()
-    log_months = db.execute(text("""
-        SELECT DISTINCT log_year AS year, log_month AS month FROM oe_visit_logs ORDER BY 1, 2
-    """)).fetchall()
+    scope, _ = _scope(db, current_user)
+
+    plan_where, plan_params = ["1=1"], {}
+    scope.apply(plan_where, plan_params, "salesperson", "oe_visit_plans")
+    plan_months = db.execute(text(f"""
+        SELECT DISTINCT plan_year AS year, plan_month AS month FROM oe_visit_plans
+        WHERE {" AND ".join(plan_where)} ORDER BY 1, 2
+    """), plan_params).fetchall()
+
+    log_where, log_params = ["1=1"], {}
+    scope.apply(log_where, log_params, "salesperson", "oe_visit_logs")
+    log_months = db.execute(text(f"""
+        SELECT DISTINCT log_year AS year, log_month AS month FROM oe_visit_logs
+        WHERE {" AND ".join(log_where)} ORDER BY 1, 2
+    """), log_params).fetchall()
     # The months the dealer sales file covers. The Dealers tab needs these
     # BEFORE its first request: its period picker defaults to a month, and it
     # cannot pick one out of a response it has not fetched yet.
@@ -1205,6 +1329,7 @@ def available_periods(
     # TATA view. A month in the picker is a promise that there is something
     # behind it.
     dm_where, dm_params = [], {}
+    scope.apply(dm_where, dm_params, "d.salesperson", "oe_dealerships")
     if oem:
         dm_where.append("UPPER(d.oem) = UPPER(:dm_oem)")
         dm_params["dm_oem"] = oem
@@ -1245,10 +1370,11 @@ def log_analytics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
 
     where = ["1=1"]
     params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
     _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym,
                 date_col="visit_date", from_date=from_date, to_date=to_date)
     _add_filters(where, params, {
@@ -1334,7 +1460,12 @@ def plan_vs_actual(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
+    # This endpoint pairs names in Python, so a scoped user's own name is what
+    # the pairing filter below needs — the SQL-safe None that _scope returns
+    # would drop the filter entirely.
+    if scope.limited:
+        salesperson = scope.canonical
     # Plans carry no day, so a day range widens to whole months on BOTH sides
     # rather than cutting the logs finer than the plan they are measured against.
     if from_date and to_date:
@@ -1343,11 +1474,16 @@ def plan_vs_actual(
         raise HTTPException(status_code=400, detail="Provide year+month or from_ym+to_ym")
 
     # oem/state/city/dealer-search exist on both tables and filter both sides in
-    # SQL. Salesperson can't — the two sheets spell names differently — so it's
-    # applied after grouping, via the same token matching used to pair rows.
-    def side_where(year_col: str, month_col: str, dealer_col: str) -> tuple:
+    # SQL. A salesperson FILTER can't — the two sheets spell names differently —
+    # so it is applied after grouping, via the same token matching used to pair
+    # rows. A salesperson SCOPE is different and does go into the SQL: the
+    # totals below are recomputed straight from the database rather than summed
+    # from the paired rows, so a Python-only scope would leave them counting the
+    # whole team under a rep's own row breakdown.
+    def side_where(year_col: str, month_col: str, dealer_col: str, table: str) -> tuple:
         where = ["1=1"]
         params: dict = {}
+        scope.apply(where, params, "salesperson", table)
         _add_period(where, params, year_col, month_col, year, month, from_ym, to_ym)
         _add_filters(where, params, {"oem": oem, "state": state, "city": city})
         if q:
@@ -1355,14 +1491,14 @@ def plan_vs_actual(
             params["q"] = f"%{q}%"
         return " AND ".join(where), params
 
-    plan_where, plan_params = side_where("plan_year", "plan_month", "dealer_name")
+    plan_where, plan_params = side_where("plan_year", "plan_month", "dealer_name", "oe_visit_plans")
     planned = db.execute(text(f"""
         SELECT salesperson, COUNT(*) AS planned, COUNT(DISTINCT dealer_name) AS dealers_planned
         FROM oe_visit_plans WHERE {plan_where}
         GROUP BY salesperson ORDER BY salesperson
     """), plan_params).fetchall()
 
-    log_where, log_params = side_where("log_year", "log_month", "dealership")
+    log_where, log_params = side_where("log_year", "log_month", "dealership", "oe_visit_logs")
     logged = db.execute(text(f"""
         SELECT salesperson,
                COUNT(*) AS total,
@@ -1482,11 +1618,12 @@ def dealer_directory(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
     order = _DEALER_SORTS.get(sort, _DEALER_SORTS["recent"])
 
     where = ["1=1"]
     params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
     _add_filters(where, params, {"salesperson": salesperson, "oem": oem, "state": state})
     if q:
         where.append("dealership ILIKE :q")
@@ -1561,15 +1698,18 @@ def dealer_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
-    rows = db.execute(text("""
+    scope, _ = _scope(db, current_user)
+    where = ["LOWER(dealership) = LOWER(:name)"]
+    params: dict = {"name": name}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
+    rows = db.execute(text(f"""
         SELECT visit_date, salesperson, contact_mode, oem, designation,
                car_sales, seat_cover_sales, mats_sales, remarks, city, state
         FROM oe_visit_logs
-        WHERE LOWER(dealership) = LOWER(:name)
+        WHERE {" AND ".join(where)}
         ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
         LIMIT 100
-    """), {"name": name}).fetchall()
+    """), params).fetchall()
     return {
         "dealer_name": name,
         "contacts": [
@@ -1606,7 +1746,10 @@ def plan_adherence(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
+    # Pairs names in Python, like plan-vs-actual — see the note there.
+    if scope.limited:
+        salesperson = scope.canonical
     # Plans carry no day, so a day range widens to whole months on BOTH sides
     # rather than cutting the logs finer than the plan they are measured against.
     if from_date and to_date:
@@ -1614,14 +1757,15 @@ def plan_adherence(
     if not ((from_ym and to_ym) or (year is not None and month is not None)):
         raise HTTPException(status_code=400, detail="Provide year+month or from_ym+to_ym")
 
-    def side_where(year_col: str, month_col: str) -> tuple:
+    def side_where(year_col: str, month_col: str, table: str) -> tuple:
         where = ["1=1"]
         params: dict = {}
+        scope.apply(where, params, "salesperson", table)
         _add_period(where, params, year_col, month_col, year, month, from_ym, to_ym)
         _add_filters(where, params, {"oem": oem, "state": state})
         return " AND ".join(where), params
 
-    plan_where, plan_params = side_where("plan_year", "plan_month")
+    plan_where, plan_params = side_where("plan_year", "plan_month", "oe_visit_plans")
     plans = db.execute(text(f"""
         SELECT salesperson, dealer_name,
                MIN(oem) AS oem, MIN(city) AS city, COUNT(*) AS planned_visits
@@ -1630,7 +1774,7 @@ def plan_adherence(
         ORDER BY salesperson, dealer_name
     """), plan_params).fetchall()
 
-    log_where, log_params = side_where("log_year", "log_month")
+    log_where, log_params = side_where("log_year", "log_month", "oe_visit_logs")
     logs = db.execute(text(f"""
         SELECT salesperson, dealership, MIN(oem) AS oem,
                COUNT(*) FILTER (WHERE contact_mode = 'Visit') AS visits,
@@ -1760,9 +1904,10 @@ def attach_rates(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
     where = ["car_sales > 0", "seat_cover_sales IS NOT NULL"]
     params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
     _add_period(where, params, "log_year", "log_month", year, month, from_ym, to_ym,
                 date_col="visit_date", from_date=from_date, to_date=to_date)
     _add_filters(where, params, {"salesperson": salesperson, "state": state})
@@ -1807,14 +1952,226 @@ def attach_rates(
     }
 
 
-# ── Sync history ──────────────────────────────────────────────────────────────
+# -- My Visits ----------------------------------------------------------------
+# A rep's own submissions, in full, exportable. This is what the OTP-only ASM
+# portal existed to provide; it lives here now that reps have real accounts, so
+# there is one login and one place to look.
+#
+# Deliberately NOT built on /logs: that endpoint serves the analytics tabs and
+# returns only the subset they draw. This returns every field the rep actually
+# typed -- contact number, channel, photo link, each remark category separately
+# -- so the table and the export read like the log book itself rather than a
+# summary of it.
+
+
+def _my_visits_where(scope: OEScope, oem, contact_mode, from_date, to_date, q):
+    where = ["1=1"]
+    params: dict = {}
+    scope.apply(where, params, "salesperson", "oe_visit_logs")
+    if oem:
+        where.append("UPPER(oem) = UPPER(:mv_oem)")
+        params["mv_oem"] = oem.strip()
+    if contact_mode:
+        where.append("contact_mode = :mv_mode")
+        params["mv_mode"] = contact_mode.strip().title()
+    if from_date:
+        where.append("visit_date >= CAST(:mv_from AS date)")
+        params["mv_from"] = _parse_date(from_date, "from_date")
+    if to_date:
+        where.append("visit_date <= CAST(:mv_to AS date)")
+        params["mv_to"] = _parse_date(to_date, "to_date")
+    if q:
+        where.append("(dealership ILIKE :mv_q OR city ILIKE :mv_q OR state ILIKE :mv_q)")
+        params["mv_q"] = f"%{q.strip()}%"
+    return " AND ".join(where), params
+
+
+def _my_visits_scope(db: Session, current_user: User) -> OEScope:
+    """This view is only meaningful for somebody it can say "my" about."""
+    scope, _ = _scope(db, current_user)
+    if not scope.limited:
+        raise HTTPException(
+            status_code=403,
+            detail="My Visits shows the rows filed under your own name, and this "
+                   "account is not linked to a salesperson. Use the Field Activity "
+                   "tab to see the whole team.")
+    return scope
+
+
+_MV_FIELDS = """
+    visit_date, dealership, contact_mode, oem, channel, contact_person,
+    contact_number, designation, city, state, address,
+    car_sales, seat_cover_sales, mats_sales,
+    remarks, remark_product_feedback, remark_replacement, remark_sales,
+    remark_others, photo_link, email
+"""
+
+
+@router.get("/my-visits")
+def my_visits(
+    oem: Optional[str] = None,
+    contact_mode: Optional[str] = Query(None, description="Visit or Calling"),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    q: Optional[str] = Query(None, description="Dealership / city / state search"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(30, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    scope = _my_visits_scope(db, current_user)
+    where_sql, params = _my_visits_where(scope, oem, contact_mode, from_date, to_date, q)
+
+    # The tiles ignore the Visit/Calling filter on purpose: narrowing the table
+    # to Visits would zero the Calls tile, which tells the reader nothing. Every
+    # other active filter still applies, so the tiles stay honest about the
+    # window being looked at.
+    kpi_sql, kpi_params = _my_visits_where(scope, oem, None, from_date, to_date, q)
+    summary = db.execute(text(f"""
+        SELECT COUNT(*) FILTER (WHERE contact_mode = 'Visit')   AS visits,
+               COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls,
+               COUNT(DISTINCT dealership) AS dealerships
+        FROM oe_visit_logs WHERE {kpi_sql}
+    """), kpi_params).fetchone()
+
+    total = db.execute(text(
+        f"SELECT COUNT(*) FROM oe_visit_logs WHERE {where_sql}"), params).scalar()
+
+    params["mv_limit"] = per_page
+    params["mv_offset"] = (page - 1) * per_page
+    rows = db.execute(text(f"""
+        SELECT {_MV_FIELDS} FROM oe_visit_logs WHERE {where_sql}
+        ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
+        LIMIT :mv_limit OFFSET :mv_offset
+    """), params).mappings().all()
+
+    def num(v):
+        return float(v) if v is not None else None
+
+    numeric = ("car_sales", "seat_cover_sales", "mats_sales")
+    return {
+        "salesperson": scope.canonical,
+        "total": total, "page": page, "per_page": per_page,
+        "summary": {"visits": summary.visits, "calls": summary.calls,
+                    "dealerships": summary.dealerships},
+        "data": [
+            {
+                **{k: r[k] for k in r.keys() if k not in numeric and k != "visit_date"},
+                "visit_date": r["visit_date"].isoformat() if r["visit_date"] else None,
+                **{k: num(r[k]) for k in numeric},
+            }
+            for r in rows
+        ],
+    }
+
+
+# Matches the live log-book sheet's own header wording AND column order, so the
+# export reads like the source of truth rather than a paraphrase of it.
+# Timestamp and the month-abbreviation column are omitted: both restate the
+# visit date.
+_MV_HEADERS = [
+    "Visit Date / Calling Date", "Dealership Name", "Visit / Calling", "OEM", "Channel",
+    "Contact Person", "Contact No.", "Designation", "City", "State", "Dealership Address",
+    "Total Car Sales", "Total Seat Covers Sales", "Mats Sales",
+    "Remarks", "Product Feedback", "Replacement", "Sales", "Others",
+    "Upload Photo", "Email address",
+]
+
+# Same order as _MV_HEADERS. Kept as one list so a column cannot be added to the
+# header row without also being added to the data row.
+_MV_EXPORT_KEYS = [
+    "visit_date", "dealership", "contact_mode", "oem", "channel",
+    "contact_person", "contact_number", "designation", "city", "state", "address",
+    "car_sales", "seat_cover_sales", "mats_sales",
+    "remarks", "remark_product_feedback", "remark_replacement", "remark_sales",
+    "remark_others", "photo_link", "email",
+]
+
+
+def _mv_export_rows(db: Session, where_sql: str, params: dict) -> list:
+    assert len(_MV_HEADERS) == len(_MV_EXPORT_KEYS)
+    rows = db.execute(text(f"""
+        SELECT {_MV_FIELDS} FROM oe_visit_logs WHERE {where_sql}
+        ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
+    """), params).mappings().all()
+    out = []
+    for r in rows:
+        line = []
+        for k in _MV_EXPORT_KEYS:
+            v = r[k]
+            if k == "visit_date":
+                line.append(v.strftime("%d/%m/%Y") if v else "")
+            elif v is None:
+                line.append("")
+            else:
+                line.append(v)
+        out.append(line)
+    return out
+
+
+def _mv_disposition(scope: OEScope, ext: str) -> dict:
+    name = f"visit-log_{(scope.canonical or 'me').replace(' ', '_')}.{ext}"
+    return {"Content-Disposition": f'attachment; filename="{name}"'}
+
+
+@router.get("/my-visits/export.csv")
+def my_visits_csv(
+    oem: Optional[str] = None,
+    contact_mode: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    q: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    scope = _my_visits_scope(db, current_user)
+    where_sql, params = _my_visits_where(scope, oem, contact_mode, from_date, to_date, q)
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(_MV_HEADERS)
+    w.writerows(_mv_export_rows(db, where_sql, params))
+    buf.seek(0)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                             headers=_mv_disposition(scope, "csv"))
+
+
+@router.get("/my-visits/export.xlsx")
+def my_visits_xlsx(
+    oem: Optional[str] = None,
+    contact_mode: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    q: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    scope = _my_visits_scope(db, current_user)
+    where_sql, params = _my_visits_where(scope, oem, contact_mode, from_date, to_date, q)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Visit Log"
+    ws.append(_MV_HEADERS)
+    for row in _mv_export_rows(db, where_sql, params):
+        ws.append(row)
+    for i, h in enumerate(_MV_HEADERS, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = max(12, len(h) + 2)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=_mv_disposition(scope, "xlsx"))
+
+
+# -- Sync history --------------------------------------------------------------─
 
 @router.get("/sync-history")
 def sync_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_access(db, current_user)
+    _require_admin(db, current_user)
     # Map sheet_id → label so history rows say "Visit Plan — July 2026", not an opaque ID.
     sources = db.query(SheetSource).filter(SheetSource.module.in_(OE_MODULES)).all()
     labels = {s.sheet_id: s.label for s in sources}
@@ -2276,13 +2633,16 @@ def dealer_detail(
     chart clipped to one month is not a trend, and the contact log is a dated
     list where the reader can see the dates for themselves.
     """
-    _require_access(db, current_user)
+    scope, _ = _scope(db, current_user)
     m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
                                                 from_date, to_date)
-    d = db.execute(text("""
+    d_where = ["id = :id"]
+    d_params: dict = {"id": dealer_id}
+    scope.apply(d_where, d_params, "salesperson", "oe_dealerships")
+    d = db.execute(text(f"""
         SELECT id, oem, name, city, state, salesperson, dealer_code, dealer_codes, source
-        FROM oe_dealerships WHERE id = :id
-    """), {"id": dealer_id}).mappings().first()
+        FROM oe_dealerships WHERE {" AND ".join(d_where)}
+    """), d_params).mappings().first()
     if not d:
         raise HTTPException(status_code=404, detail="Dealer not found")
 
@@ -2306,12 +2666,15 @@ def dealer_detail(
         FROM oe_dealer_monthly WHERE dealer_id = :id
         GROUP BY 1 ORDER BY 1
     """), {"id": dealer_id}).mappings().all()]
-    acts = db.execute(text("""
+    act_where = ["dealer_id = :id"]
+    act_params: dict = {"id": dealer_id}
+    scope.apply(act_where, act_params, "salesperson", "oe_visit_logs")
+    acts = db.execute(text(f"""
         SELECT date_trunc('month', visit_date)::date AS month,
                COUNT(*) FILTER (WHERE contact_mode = 'Visit')   AS visits,
                COUNT(*) FILTER (WHERE contact_mode = 'Calling') AS calls
-        FROM oe_visit_logs WHERE dealer_id = :id GROUP BY 1 ORDER BY 1
-    """), {"id": dealer_id}).mappings().all()
+        FROM oe_visit_logs WHERE {" AND ".join(act_where)} GROUP BY 1 ORDER BY 1
+    """), act_params).mappings().all()
 
     empty = {"oem_total": None, "ysasc": None, "ys_sale": None,
              "penetration": None, "share": None, "addressable_pct": None}
@@ -2361,9 +2724,9 @@ def dealer_detail(
         SELECT id, visit_date, salesperson, contact_mode, channel, contact_person,
                designation, car_sales, seat_cover_sales, mats_sales,
                {", ".join(_CATEGORY_COLUMNS)}
-        FROM oe_visit_logs WHERE dealer_id = :id
+        FROM oe_visit_logs WHERE {" AND ".join(act_where)}
         ORDER BY visit_date DESC, sheet_row DESC NULLS LAST
-    """), {"id": dealer_id}).mappings().all()
+    """), act_params).mappings().all()
 
     history = []
     for r in log_rows:
@@ -2476,12 +2839,16 @@ def dealer_performance(
     bottom 20 and the volume-vs-penetration map are the same list read three
     ways, and they must agree with each other.
     """
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
     m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
                                                 from_date, to_date)
     params = {"m_from": m_from, "m_to": m_to, "d_from": d_from, "d_to": d_to,
               "f_prod": product or None}
     where: list = []
+    # Scoped on the dealer's assigned rep, straight from the OE dealer file's
+    # SALES PERSON column — so a rep's patch includes the dealers they have
+    # never contacted, which is exactly the gap this tab exists to show.
+    scope.apply(where, params, "d.salesperson", "oe_dealerships")
     _dealer_scope(where, params, oem, salesperson, state)
     extra = (" AND " + " AND ".join(where)) if where else ""
 

@@ -6,7 +6,7 @@ import {
   API_URL, MONTH_SHORT, FilterBar, FilterActions, ClearFilters, FilterSpinner,
   RefreshButton, PdfButton, PeriodControls, StatCard,
   periodParams, usePeriod, useFilterOptions, filterOpts, FILTER_LABELS,
-  shortDate, type Period,
+  shortDate, useOEScope, ScopeNote, type Period,
 } from "../shared";
 import { type DealerPerf, KPI, n0, nOr, pct, hitPct, categoryLabel } from "./model";
 import DealerMap from "./DealerMap";
@@ -17,6 +17,7 @@ import DealerDrawer from "./DealerDrawer";
 import { CoveragePanel, QuarterPanel, ContactEffectPanel } from "./panels";
 
 export default function DealersTab({ headers }: { headers: Record<string, string> }) {
+  const { scoped, salesperson: scopeName } = useOEScope();
   // dealer_sales, not logs: this tab can only show OEMs we hold a dealer
   // sales file for, so the filter offers exactly those and grows by itself.
   const options = useFilterOptions<{
@@ -134,9 +135,11 @@ export default function DealersTab({ headers }: { headers: Record<string, string
         {/* Canonical order and vocabulary — person, then OEM, then geography.
             This dropdown said "Rep" while every other tab called the same field
             "Salesperson". */}
-        <Select value={salesperson} onChange={setSalesperson}
-          options={filterOpts(reps, "salesperson")}
-          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        {!scoped && (
+          <Select value={salesperson} onChange={setSalesperson}
+            options={filterOpts(reps, "salesperson")}
+            placeholder={FILTER_LABELS.salesperson.placeholder} />
+        )}
         <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
           placeholder={FILTER_LABELS.oem.placeholder} />
         <Select value={state} onChange={setState} options={filterOpts(options?.states, "state")}
@@ -161,6 +164,14 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           <PdfButton />
         </FilterActions>
       </FilterBar>
+
+      {scoped && scopeName && (
+        <ScopeNote salesperson={scopeName}>
+          These are the dealers assigned to you in the OE dealer file, including
+          any you have not contacted yet — that gap is the point of this tab. A
+          dealer the file leaves unassigned is not shown to anyone.
+        </ScopeNote>
+      )}
 
       {/* Sales are monthly figures, so a day range can only cut them to whole
           months. Saying so beats letting the numbers imply otherwise. */}

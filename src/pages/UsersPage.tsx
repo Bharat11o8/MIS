@@ -21,6 +21,7 @@ interface AppUser {
   must_change_password: boolean;
   created_at: string | null;
   modules: string[];
+  oe_salesperson?: string | null;
 }
 
 interface FinanceCompany {
@@ -269,6 +270,9 @@ export default function UsersPage() {
                           {u.modules.map((m) => (
                             <span key={m} className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">
                               {MODULE_LABELS[m as ModuleKey] ?? m}
+                              {m === "oe_network" && u.oe_salesperson
+                                ? ` · ${u.oe_salesperson}`
+                                : ""}
                             </span>
                           ))}
                         </div>
@@ -367,14 +371,30 @@ export default function UsersPage() {
 // ── Shared module/company access checkboxes ───────────────────────────────────
 function AccessFields({
   headers, modules, setModules, financeCompanyIds, setFinanceCompanyIds,
+  oeSalesperson, setOeSalesperson,
 }: {
   headers: Record<string, string>;
   modules: ModuleKey[];
   setModules: (m: ModuleKey[]) => void;
   financeCompanyIds: string[];
   setFinanceCompanyIds: (ids: string[]) => void;
+  oeSalesperson: string;
+  setOeSalesperson: (name: string) => void;
 }) {
   const [companies, setCompanies] = useState<FinanceCompany[] | null>(null);
+  const [oeReps, setOeReps] = useState<string[] | null>(null);
+
+  // The names the OE data actually contains. A dropdown rather than a text box
+  // on purpose: an unmatched scope fails closed, so one typo would hand the rep
+  // an empty module with no error shown anywhere.
+  useEffect(() => {
+    if (!modules.includes("oe_network") || oeReps !== null) return;
+    fetch(`${API_URL}/users/oe-salespersons`, { headers })
+      .then((r) => (r.ok ? r.json() : { salespersons: [] }))
+      .then((d) => setOeReps(d.salespersons ?? []))
+      .catch(() => setOeReps([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modules]);
 
   useEffect(() => {
     if (!modules.includes("finance") || companies !== null) return;
@@ -386,8 +406,13 @@ function AccessFields({
   }, [modules]);
 
   const toggleModule = (m: ModuleKey) => {
-    if (modules.includes(m)) setModules(modules.filter((x) => x !== m));
-    else setModules([...modules, m]);
+    if (modules.includes(m)) {
+      setModules(modules.filter((x) => x !== m));
+      // Drop the scope with the access, so re-granting OE later cannot silently
+      // reinstate a restriction nobody remembers setting. The backend does the
+      // same on save; this keeps the form honest about what it will send.
+      if (m === "oe_network") setOeSalesperson("");
+    } else setModules([...modules, m]);
   };
 
   const toggleCompany = (id: string) => {
@@ -414,6 +439,43 @@ function AccessFields({
           </button>
         ))}
       </div>
+
+      {modules.includes("oe_network") && (
+        <div className="mt-1 flex flex-col gap-2 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+            OE Network — Whose Data
+          </p>
+          {oeReps === null ? (
+            <p className="text-xs text-gray-500">Loading salespeople…</p>
+          ) : (
+            <>
+              <select
+                value={oeSalesperson}
+                onChange={(e) => setOeSalesperson(e.target.value)}
+                className="text-xs font-medium px-3 py-2 rounded-xl border border-gray-200 bg-white text-gray-700 focus:border-brand-orange focus:outline-none"
+              >
+                <option value="">Everyone — full OE Network access</option>
+                {oeReps.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              <p className="text-[11px] leading-relaxed text-gray-500">
+                {oeSalesperson
+                  ? <>Every OE screen will show <span className="font-semibold text-gray-700">{oeSalesperson}</span>&rsquo;s
+                      plans, visits, targets and assigned dealers only. They can still press
+                      Sync, but cannot add or remove source sheets.</>
+                  : <>This user sees the whole team&rsquo;s OE data. Pick a name to limit them
+                      to their own.</>}
+              </p>
+              {oeReps.length === 0 && (
+                <p className="text-[11px] text-gray-500">
+                  No salespeople found — sync an OE sheet first, then a name can be picked here.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {modules.includes("finance") && (
         <div className="mt-1 flex flex-col gap-2 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
@@ -457,6 +519,7 @@ function ManageAccessModal({
 }) {
   const [modules, setModules] = useState<ModuleKey[]>([]);
   const [financeCompanyIds, setFinanceCompanyIds] = useState<string[]>([]);
+  const [oeSalesperson, setOeSalesperson] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -467,6 +530,7 @@ function ManageAccessModal({
       .then((data) => {
         setModules(data.modules ?? []);
         setFinanceCompanyIds(data.finance_company_ids ?? []);
+        setOeSalesperson(data.oe_salesperson ?? "");
       })
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -479,7 +543,11 @@ function ManageAccessModal({
       const res = await fetch(`${API_URL}/users/${targetUser.id}/access`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...headers },
-        body: JSON.stringify({ modules, finance_company_ids: financeCompanyIds }),
+        body: JSON.stringify({
+          modules,
+          finance_company_ids: financeCompanyIds,
+          oe_salesperson: oeSalesperson || null,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -525,6 +593,8 @@ function ManageAccessModal({
             setModules={setModules}
             financeCompanyIds={financeCompanyIds}
             setFinanceCompanyIds={setFinanceCompanyIds}
+            oeSalesperson={oeSalesperson}
+            setOeSalesperson={setOeSalesperson}
           />
         )}
 
@@ -604,6 +674,7 @@ function CreateUserModal({
   const [department, setDepartment] = useState("");
   const [modules, setModules] = useState<ModuleKey[]>([]);
   const [financeCompanyIds, setFinanceCompanyIds] = useState<string[]>([]);
+  const [oeSalesperson, setOeSalesperson] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -636,7 +707,11 @@ function CreateUserModal({
         const accessRes = await fetch(`${API_URL}/users/${data.id}/access`, {
           method: "PUT",
           headers: { "Content-Type": "application/json", ...headers },
-          body: JSON.stringify({ modules, finance_company_ids: financeCompanyIds }),
+          body: JSON.stringify({
+            modules,
+            finance_company_ids: financeCompanyIds,
+            oe_salesperson: oeSalesperson || null,
+          }),
         });
         const accessData = await accessRes.json().catch(() => ({}));
         grantedModules = accessData.modules ?? [];
@@ -744,6 +819,8 @@ function CreateUserModal({
               setModules={setModules}
               financeCompanyIds={financeCompanyIds}
               setFinanceCompanyIds={setFinanceCompanyIds}
+              oeSalesperson={oeSalesperson}
+              setOeSalesperson={setOeSalesperson}
             />
           )}
 

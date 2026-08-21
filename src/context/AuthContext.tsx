@@ -16,6 +16,11 @@ export interface User {
   department?: string;
   must_change_password?: boolean;
   modules: string[];
+  /** OE Network row-level scope. Null/absent = sees all OE data; a name means
+   *  every /oe-network response is limited to that salesperson. The server
+   *  enforces it — this copy only lets the UI stop offering what the API will
+   *  refuse (the sheet registry) or answer with one value (the person filter). */
+  oe_salesperson?: string | null;
 }
 
 interface AuthContextType {

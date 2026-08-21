@@ -2,10 +2,11 @@
 // plumbing and the small building blocks every tab uses. Extracted from
 // OENetworkPage.tsx so the dealer half of the module can live in its own files
 // (see ./dealers) without duplicating any of this.
-import { useState, useEffect, useMemo } from "react";
-import { Footprints, Phone } from "lucide-react";
+import React, { useState, useEffect, useMemo } from "react";
+import { Footprints, Phone, UserRound } from "lucide-react";
 import Select from "@/components/ui/Select";
 import DateRangePicker, { dayPresets } from "@/components/ui/DateRangePicker";
+import { useAuth } from "@/context/AuthContext";
 
 export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -246,6 +247,45 @@ export {
   RefreshButton, PdfButton, SyncButton,
   FILTER_LABELS, toOpts, filterOpts,
 } from "@/components/ui/FilterBar";
+
+/** The signed-in user's OE row-level scope.
+ *
+ *  `scoped` users are field reps: every /oe-network response is already limited
+ *  to them by the server, so the UI's job is only to stop showing controls that
+ *  can no longer do anything — the salesperson picker (one option), the sheet
+ *  registry (403) — and to say whose numbers are on screen. Never a substitute
+ *  for the server check: this reads a cached user record and is advisory only.
+ *
+ *  Superadmin is never scoped, matching _scope() in routers/oe_network.py.
+ */
+export function useOEScope(): { scoped: boolean; salesperson: string | null } {
+  const { user } = useAuth();
+  const salesperson =
+    !user || user.role === "superadmin" ? null : user.oe_salesperson ?? null;
+  return { scoped: !!salesperson, salesperson };
+}
+
+/** Says whose data the panels below are showing.
+ *
+ *  Not decoration. A rep who sees 9 visits where the team did 140 has no way to
+ *  tell a scope from a broken filter, and "the numbers are wrong" is the support
+ *  call that follows. Grey, not amber: being scoped is normal, not a warning.
+ */
+export function ScopeNote({ salesperson, children }: {
+  salesperson: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="no-print flex items-start gap-2 rounded-xl bg-gray-50 border border-gray-100 px-3 py-2">
+      <UserRound size={13} className="text-gray-400 mt-0.5 shrink-0" />
+      <p className="text-[11px] leading-relaxed text-gray-500">
+        Showing <span className="font-semibold text-gray-700">your data only</span>
+        {" — "}<span className="font-semibold text-gray-700">{salesperson}</span>.
+        {children ? <> {children}</> : null}
+      </p>
+    </div>
+  );
+}
 
 /** Fetches /filter-options for a scope once, aborting if the caller unmounts. */
 export function useFilterOptions<T>(scope: string, headers: Record<string, string>): T | null {

@@ -114,6 +114,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             "department": user.department,
             "must_change_password": bool(user.must_change_password),
             "modules": get_user_modules(db, user),
+            "oe_salesperson": user.oe_salesperson,
         },
     }
 
@@ -129,6 +130,7 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         "department": current_user.department,
         "must_change_password": bool(current_user.must_change_password),
         "modules": get_user_modules(db, current_user),
+        "oe_salesperson": current_user.oe_salesperson,
     }
 
 

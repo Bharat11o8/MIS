@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import User
 from routers.auth import get_current_user
-from routers.oe_network import _require_access
+from routers.oe_network import _scope
 from services.oe_targets_sync import QUARTER_TAGS
 from services.period_filters import month_bounds
 
@@ -76,10 +76,13 @@ _SUMS = """
 @router.get("/periods")
 def periods(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Quarters that actually have data, newest first."""
-    _require_access(db, current_user)
-    rows = db.execute(text("""
-        SELECT DISTINCT fy_year, quarter FROM oe_targets ORDER BY fy_year DESC, quarter DESC
-    """)).fetchall()
+    scope, _ = _scope(db, current_user)
+    where, params = ["1=1"], {}
+    scope.apply(where, params, "salesperson", "oe_targets")
+    rows = db.execute(text(f"""
+        SELECT DISTINCT fy_year, quarter FROM oe_targets
+        WHERE {" AND ".join(where)} ORDER BY fy_year DESC, quarter DESC
+    """), params).fetchall()
     return [
         {
             "fy_year": r.fy_year, "quarter": r.quarter,
@@ -92,12 +95,16 @@ def periods(db: Session = Depends(get_db), current_user: User = Depends(get_curr
 
 @router.get("/filter-options")
 def filter_options(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_access(db, current_user)
+    scope, _ = _scope(db, current_user)
+    scope_where, scope_params = [], {}
+    scope.apply(scope_where, scope_params, "salesperson", "oe_targets")
+    scope_sql = "".join(f" AND {c}" for c in scope_where)
 
     def distinct(col: str):
         rows = db.execute(text(
-            f"SELECT DISTINCT {col} FROM oe_targets WHERE {col} IS NOT NULL ORDER BY {col}"
-        )).fetchall()
+            f"SELECT DISTINCT {col} FROM oe_targets "
+            f"WHERE {col} IS NOT NULL{scope_sql} ORDER BY {col}"
+        ), scope_params).fetchall()
         return [r[0] for r in rows]
 
     return {
@@ -131,9 +138,10 @@ def summary(
     no honest way to show a third of one. A range that lands inside a single
     quarter therefore reads exactly like picking that quarter's months.
     """
-    _require_access(db, current_user)
+    scope, salesperson = _scope(db, current_user, salesperson)
 
     where, params = _filters(oem, category, salesperson, region)
+    scope.apply(where, params, "salesperson", "oe_targets")
     # Three ways in, in priority order: an explicit month/day range from the
     # shared period controls, the FY+quarter the sheets are published as, or
     # nothing at all — which is the "all time" preset and means every month.

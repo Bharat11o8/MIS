@@ -22,10 +22,11 @@ import {
   FilterBar, FilterActions, ClearFilters, FilterSpinner,
   RefreshButton, PdfButton, SyncButton, FILTER_LABELS, filterOpts,
   monthToken, tokenLabel, shortDate, firstName, coverageColor, ModeBadge, StatCard, KPI,
-  categoryLabel,
+  categoryLabel, useOEScope, ScopeNote,
   type Period,
 } from "./oe-network/shared";
 import DealersTab from "./oe-network/dealers";
+import MyVisitsTab from "./oe-network/MyVisitsTab";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface OESource {
@@ -37,6 +38,32 @@ interface OESource {
 interface SyncResult {
   rows_total: number; rows_inserted: number; rows_deleted: number;
   skipped_tabs: string[]; errors: string[]; status: string;
+}
+/** One sheet's outcome from /sync-latest. Three of the four statuses are not
+ *  failures: "Done" pulled rows, "Already syncing" means another run holds the
+ *  sheet, "Up to date" means it was pulled inside the cooldown window. */
+interface SyncOutcome {
+  label: string;
+  status: "Done" | "Already syncing" | "Up to date" | "Failed";
+  rows_inserted: number;
+  error?: string | null;
+  last_synced_at?: string;
+}
+
+/** Newest last_synced_at across the sheets skipped by the cooldown. */
+function newestStamp(rows: SyncOutcome[]): string | null {
+  const stamps = rows.map((r) => r.last_synced_at).filter(Boolean) as string[];
+  return stamps.length ? stamps.sort()[stamps.length - 1] : null;
+}
+
+/** "40 seconds ago" / "3 minutes ago". Coarse on purpose — the reader only
+ *  needs to judge whether their own submission could have been in that run. */
+function agoLabel(iso: string | null): string {
+  if (!iso) return "a moment ago";
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs} second${secs === 1 ? "" : "s"} ago`;
+  const mins = Math.round(secs / 60);
+  return `${mins} minute${mins === 1 ? "" : "s"} ago`;
 }
 interface PvaRow {
   salesperson: string; log_name: string | null; planned: number; dealers_planned: number;
@@ -173,7 +200,7 @@ const CATEGORY_META: Record<string, { color: string; bg: string }> = {
 };
 const categoryMeta = (key: string) => CATEGORY_META[key] ?? { color: "#6b7280", bg: "#f9fafb" };
 
-type TabId = "overview" | "indepth" | "dealers" | "activity" | "targets" | "sheets";
+type TabId = "overview" | "indepth" | "dealers" | "activity" | "targets" | "sheets" | "myvisits";
 type Metric = "value" | "nos";
 
 /**
@@ -318,6 +345,7 @@ function PlanVsActualChart({ rows }: { rows: PvaRow[] }) {
 // Overview tab — plan-vs-actual coverage + log analytics for one month
 // ══════════════════════════════════════════════════════════════════════════════
 function OverviewTab({ headers }: { headers: Record<string, string> }) {
+  const { scoped, salesperson: scopeName } = useOEScope();
   const toast = useToast();
   const period = usePeriod("monthly");
   const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[]; contact_modes: string[] } | null>(null);
@@ -381,13 +409,34 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
       const res = await fetch(`${API_URL}/oe-network/sync-latest`, { method: "POST", headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "Sync failed");
-      const results: { label: string; status: string; rows_inserted: number; error?: string }[] = data.results;
-      const failed = results.filter((r) => r.status !== "Done");
+      const results: SyncOutcome[] = data.results;
+      // Neither "Already syncing" (someone else holds the sheet) nor "Up to
+      // date" (it was pulled seconds ago) is a failure of this press, and
+      // neither belongs in the red toast: a rep told their sync failed presses
+      // the button again, which turns a rush into a stampede — the exact thing
+      // the lock and the cooldown exist to prevent.
+      const busy = results.filter((r) => r.status === "Already syncing");
+      const fresh = results.filter((r) => r.status === "Up to date");
+      const failed = results.filter(
+        (r) => r.status !== "Done" && r.status !== "Already syncing" && r.status !== "Up to date");
+      const pulled = results.filter((r) => r.status === "Done");
+
       if (failed.length) {
         toast.error("Some sheets failed to sync", failed.map((f) => f.label).join(", "));
+      } else if (pulled.length === 0) {
+        // Say WHEN, never a bare "up to date" — a rep who filed a visit a
+        // moment ago needs to know whether that run could have included it.
+        toast.info(
+          busy.length ? "Someone else is syncing right now" : "Already up to date",
+          busy.length
+            ? "Their run is pulling the same sheets. Hit Refresh shortly to pick it up."
+            : `Last pulled ${agoLabel(newestStamp(fresh))}. If you have just submitted a visit, try again in a minute.`);
       } else {
-        const rows = results.reduce((s, r) => s + (r.rows_inserted ?? 0), 0);
-        toast.success("Data refreshed", `${rows.toLocaleString("en-IN")} rows loaded from ${results.length} sheet${results.length > 1 ? "s" : ""}`);
+        const rows = pulled.reduce((s, r) => s + (r.rows_inserted ?? 0), 0);
+        const skipped = busy.length + fresh.length;
+        toast.success("Data refreshed",
+          `${rows.toLocaleString("en-IN")} rows loaded from ${pulled.length} sheet${pulled.length === 1 ? "" : "s"}`
+          + (skipped ? ` · ${skipped} already current` : ""));
       }
       setRefresh((x) => x + 1);
     } catch (e) {
@@ -449,7 +498,11 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
   if (!loading && period.months.length === 0) {
     return (
       <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
-        No data yet — register and sync the visit plan and log book sheets from the <b>Data Source Sheets</b> tab.
+        {scoped
+          ? <>Nothing recorded under <b>{scopeName}</b> yet. Your planned and completed
+              visits appear here once the log book is synced — press <b>Sync</b> above
+              if you have submitted visits today.</>
+          : <>No data yet — register and sync the visit plan and log book sheets from the <b>Data Source Sheets</b> tab.</>}
       </div>
     );
   }
@@ -478,9 +531,11 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
           token={period.token} onToken={period.setToken} options={period.options}
           range={period.range} onRange={period.setRange}
         />
-        <Select value={salesperson} onChange={setSalesperson}
-          options={filterOpts(options?.salespersons, "salesperson")}
-          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        {!scoped && (
+          <Select value={salesperson} onChange={setSalesperson}
+            options={filterOpts(options?.salespersons, "salesperson")}
+            placeholder={FILTER_LABELS.salesperson.placeholder} />
+        )}
         <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
           placeholder={FILTER_LABELS.oem.placeholder} />
         <Select value={state} onChange={setState} options={filterOpts(options?.states, "state")}
@@ -508,6 +563,8 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
           <PdfButton />
         </FilterActions>
       </FilterBar>
+
+      {scoped && scopeName && <ScopeNote salesperson={scopeName} />}
 
       {/* Visit plans are written per month with no day on them, so coverage can
           only be measured month-for-month. Saying so beats showing a percentage
@@ -766,6 +823,7 @@ function StatusPill({ status }: { status: AdhDealer["status"] }) {
 }
 
 function InDepthTab({ headers }: { headers: Record<string, string> }) {
+  const { scoped, salesperson: scopeName } = useOEScope();
   const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[] } | null>(null);
   const [planMonths, setPlanMonths] = useState<Period[]>([]);
 
@@ -883,6 +941,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {scoped && scopeName && <ScopeNote salesperson={scopeName} />}
       {/* Network health KPIs — follow the directory filters below */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="Network Dealers" value={dirSummary?.dealers ?? 0}
@@ -905,9 +964,11 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0 ml-auto">
-            <Select value={adhSp} onChange={setAdhSp}
-              options={filterOpts(options?.salespersons, "salesperson")}
-              placeholder={FILTER_LABELS.salesperson.placeholder} />
+            {!scoped && (
+              <Select value={adhSp} onChange={setAdhSp}
+                options={filterOpts(options?.salespersons, "salesperson")}
+                placeholder={FILTER_LABELS.salesperson.placeholder} />
+            )}
             <Select value={adhMonth} onChange={setAdhMonth} options={adhMonthOptions} placeholder="Month…" />
             {adhLoading && <div className="w-4 h-4 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin" />}
           </div>
@@ -1028,9 +1089,11 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search dealer…"
                 className={`${inputClass} pl-8 w-40`} />
             </div>
-            <Select value={dirSp} onChange={setDirSp}
-              options={filterOpts(options?.salespersons, "salesperson")}
-              placeholder={FILTER_LABELS.salesperson.placeholder} />
+            {!scoped && (
+              <Select value={dirSp} onChange={setDirSp}
+                options={filterOpts(options?.salespersons, "salesperson")}
+                placeholder={FILTER_LABELS.salesperson.placeholder} />
+            )}
             <Select value={dirOem} onChange={setDirOem} options={filterOpts(options?.oems, "oem")}
               placeholder={FILTER_LABELS.oem.placeholder} />
             <Select value={dirState} onChange={setDirState} options={filterOpts(options?.states, "state")}
@@ -1305,6 +1368,7 @@ function PersonCard({ p, active, onPick }: {
 }
 
 function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
+  const { scoped, salesperson: scopeName } = useOEScope();
   const period = usePeriod("monthly");
   const [options, setOptions] = useState<{ salespersons: string[]; oems: string[]; states: string[]; cities: string[]; contact_modes: string[] } | null>(null);
 
@@ -1393,7 +1457,10 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
   if (!loading && period.months.length === 0) {
     return (
       <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
-        No log book data yet — register and sync the log book from the <b>Data Source Sheets</b> tab.
+        {scoped
+          ? <>No log book entries under <b>{scopeName}</b> yet. Your remarks and field
+              activity appear here once your visits are synced.</>
+          : <>No log book data yet — register and sync the log book from the <b>Data Source Sheets</b> tab.</>}
       </div>
     );
   }
@@ -1408,9 +1475,11 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
           token={period.token} onToken={period.setToken} options={period.options}
           range={period.range} onRange={period.setRange}
         />
-        <Select value={salesperson} onChange={setSalesperson}
-          options={filterOpts(options?.salespersons, "salesperson")}
-          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        {!scoped && (
+          <Select value={salesperson} onChange={setSalesperson}
+            options={filterOpts(options?.salespersons, "salesperson")}
+            placeholder={FILTER_LABELS.salesperson.placeholder} />
+        )}
         <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
           placeholder={FILTER_LABELS.oem.placeholder} />
         <Select value={state} onChange={setState} options={filterOpts(options?.states, "state")}
@@ -1431,6 +1500,8 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
           <PdfButton />
         </FilterActions>
       </FilterBar>
+
+      {scoped && scopeName && <ScopeNote salesperson={scopeName} />}
 
       <div className="print-only">
         <p className="text-sm font-bold text-gray-900">
@@ -1709,6 +1780,7 @@ function TargetBulletChart({
 }
 
 function TargetsTab({ headers }: { headers: Record<string, string> }) {
+  const { scoped, salesperson: scopeName } = useOEScope();
   const [periods, setPeriods] = useState<TgtPeriod[]>([]);
   // The same five presets as every other tab. Targets are published per quarter,
   // but they are STORED one row per month, so a month/FY/day selection is just
@@ -1809,7 +1881,11 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
   if (empty) {
     return (
       <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
-        No target data yet — register a quarter's target sheet from the <b>Data Source Sheets</b> tab.
+        {scoped
+          ? <>No targets are booked against <b>{scopeName}</b> for any quarter on record.
+              Targets the OE sheet files under a product rather than a person — the MSIL
+              and TATA accessory lines — belong to nobody and are not shown here.</>
+          : <>No target data yet — register a quarter&rsquo;s target sheet from the <b>Data Source Sheets</b> tab.</>}
       </div>
     );
   }
@@ -1843,9 +1919,11 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
           ))}
         </div>
         {/* Person first, then OEM — the same order as every other tab. */}
-        <Select value={salesperson} onChange={setSalesperson}
-          options={filterOpts(options?.salespersons, "salesperson")}
-          placeholder={FILTER_LABELS.salesperson.placeholder} />
+        {!scoped && (
+          <Select value={salesperson} onChange={setSalesperson}
+            options={filterOpts(options?.salespersons, "salesperson")}
+            placeholder={FILTER_LABELS.salesperson.placeholder} />
+        )}
         <Select value={oem} onChange={setOem} options={filterOpts(options?.oems, "oem")}
           placeholder={FILTER_LABELS.oem.placeholder} />
         <Select value={region} onChange={setRegion} options={filterOpts(options?.regions, "region")}
@@ -1862,6 +1940,14 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
           <PdfButton />
         </FilterActions>
       </FilterBar>
+
+      {scoped && scopeName && (
+        <ScopeNote salesperson={scopeName}>
+          Targets booked against no individual — the MSIL and TATA accessory
+          lines — are not counted here, so this total is smaller than the team
+          sheet&rsquo;s.
+        </ScopeNote>
+      )}
 
       <div className="print-only">
         <p className="text-sm font-bold text-gray-900">
@@ -2431,6 +2517,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "dealers", label: "Dealers" },
   { id: "activity", label: "Field Activity" },
   { id: "targets", label: "Targets" },
+  { id: "myvisits", label: "My Visits" },
   { id: "sheets", label: "Data Source Sheets" },
 ];
 
@@ -2440,20 +2527,34 @@ const TAB_SUBTITLES: Record<TabId, string> = {
   dealers: "Where the opportunity is — coverage, penetration and each dealership's own story",
   activity: "What the team is up to — remark themes, per-person rollup and the field log",
   targets: "Quarterly target vs achievement by salesperson and OEM",
+  myvisits: "Every visit and call you have submitted, in full — and exportable",
   sheets: "Connect and sync the source Google Sheets",
 };
 
 export default function OENetworkPage() {
   const { token } = useAuth();
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
+  const { scoped } = useOEScope();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const tabs = useMemo(
+    () => TABS.filter((t) => (t.id === "sheets" ? !scoped
+                            : t.id === "myvisits" ? scoped
+                            : true)),
+    [scoped]);
+
+  // A scoped user sitting on the registry tab when their access changes
+  // mid-session is moved back to Overview, rather than left on a tab whose
+  // every request now 403s.
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === activeTab)) setActiveTab("overview");
+  }, [tabs, activeTab]);
 
   return (
     <div className="p-6 flex flex-col gap-5">
       {/* Print-only header (the interactive chrome is hidden on paper) */}
       <div className="print-only mb-2">
         <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-gray-500">Amato · OE Network</div>
-        <div className="text-xl font-bold text-gray-900 mt-0.5">{TABS.find((t) => t.id === activeTab)?.label}</div>
+        <div className="text-xl font-bold text-gray-900 mt-0.5">{tabs.find((t) => t.id === activeTab)?.label}</div>
       </div>
 
       {/* Header */}
@@ -2465,7 +2566,7 @@ export default function OENetworkPage() {
         <div className="min-w-0 flex-1">
           <h1 className="flex items-center gap-3">
             <span className="page-title-dark">OE NETWORK</span>
-            <span className="page-title-orange">{TABS.find((t) => t.id === activeTab)?.label.toUpperCase()}</span>
+            <span className="page-title-orange">{tabs.find((t) => t.id === activeTab)?.label.toUpperCase()}</span>
           </h1>
           <div className="flex items-center gap-2 mt-1 min-w-0">
             <div className="w-8 h-0.5 bg-gray-800 rounded shrink-0" />
@@ -2475,7 +2576,7 @@ export default function OENetworkPage() {
           </div>
         </div>
         <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1 shrink-0">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
                 activeTab === t.id ? "bg-white text-brand-orange shadow-sm" : "text-gray-500 hover:text-gray-700"
@@ -2491,6 +2592,7 @@ export default function OENetworkPage() {
       {activeTab === "indepth" && <InDepthTab headers={headers} />}
       {activeTab === "activity" && <FieldActivityTab headers={headers} />}
       {activeTab === "targets" && <TargetsTab headers={headers} />}
+      {activeTab === "myvisits" && <MyVisitsTab headers={headers} />}
       {activeTab === "sheets" && <SheetsTab headers={headers} />}
     </div>
   );

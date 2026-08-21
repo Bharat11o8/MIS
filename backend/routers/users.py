@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy import text
 from database import get_db
 from models import User, UserModuleAccess, UserSheetSourceAccess, SheetSource
 from routers.auth import get_current_user, get_password_hash
+from services.oe_scope import SCOPED_TABLES, names_match
 from services.permissions import VALID_MODULES, get_user_modules, get_user_sheet_source_ids
 import uuid
 
@@ -26,10 +28,14 @@ class CreateUserRequest(BaseModel):
 class UserAccessIn(BaseModel):
     modules: list[str]
     finance_company_ids: list[str] = []
+    # None = sees all OE data. A name = hard-scoped to that salesperson on every
+    # /oe-network endpoint. Ignored unless 'oe_network' is among the modules.
+    oe_salesperson: Optional[str] = None
 
 class UserAccessOut(BaseModel):
     modules: list[str]
     finance_company_ids: list[str]
+    oe_salesperson: Optional[str] = None
 
 class UpdateProfileRequest(BaseModel):
     name: Optional[str] = None
@@ -80,6 +86,39 @@ def require_superadmin(current_user: User = Depends(get_current_user)):
     if current_user.role != "superadmin":
         raise HTTPException(status_code=403, detail="Superadmin access required")
     return current_user
+
+
+# ── OE salesperson names ─────────────────────────────────────────────────────
+@router.get("/oe-salespersons")
+def oe_salespersons(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_superadmin),
+):
+    """Every salesperson name the OE data actually contains, deduplicated across
+    the four tables that spell them differently.
+
+    This exists so the access screen can offer a dropdown. A free-text box would
+    be the obvious shortcut and the wrong one: a scope that matches no rows
+    fails closed, so a single typo would hand the rep an empty module with no
+    error anywhere — a support ticket that looks like a broken deployment.
+
+    The variants of one person are collapsed to the longest spelling, because
+    that is the most identifiable ("PANKAJ VIG" over "PANKAJ") and the scope
+    token-matches anyway, so which variant is stored does not change what the
+    rep sees.
+    """
+    seen: list[str] = []
+    for table, col in SCOPED_TABLES.items():
+        rows = db.execute(text(
+            f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL AND {col} <> ''"
+        )).fetchall()
+        for (name,) in rows:
+            match = next((i for i, kept in enumerate(seen) if names_match(kept, name)), None)
+            if match is None:
+                seen.append(name)
+            elif len(name) > len(seen[match]):
+                seen[match] = name
+    return {"salespersons": sorted(seen)}
 
 
 # ── Create user ──────────────────────────────────────────────────────────────
@@ -146,6 +185,7 @@ def list_users(
             "must_change_password": bool(u.must_change_password),
             "created_at": u.created_at.isoformat() if u.created_at else None,
             "modules": sorted(VALID_MODULES) if u.role == "superadmin" else by_user.get(str(u.id), []),
+            "oe_salesperson": u.oe_salesperson,
         }
         for u in users
     ]
@@ -164,6 +204,7 @@ def get_user_access(
     return UserAccessOut(
         modules=get_user_modules(db, user),
         finance_company_ids=get_user_sheet_source_ids(db, user, module="finance"),
+        oe_salesperson=user.oe_salesperson,
     )
 
 
@@ -194,6 +235,11 @@ def set_user_access(
         if bad_ids:
             raise HTTPException(status_code=400, detail=f"Unknown finance company id(s): {', '.join(bad_ids)}")
 
+    # Dropped when OE access is dropped, so a re-grant later can never silently
+    # reinstate a stale scope the admin has forgotten about.
+    scope_name = (body.oe_salesperson or "").strip() or None
+    user.oe_salesperson = scope_name if "oe_network" in set(body.modules) else None
+
     db.query(UserModuleAccess).filter(UserModuleAccess.user_id == user.id).delete()
     for m in set(body.modules):
         db.add(UserModuleAccess(user_id=user.id, module=m, granted_by=admin.id))
@@ -206,6 +252,7 @@ def set_user_access(
     return UserAccessOut(
         modules=get_user_modules(db, user),
         finance_company_ids=get_user_sheet_source_ids(db, user, module="finance"),
+        oe_salesperson=user.oe_salesperson,
     )
 
 

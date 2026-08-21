@@ -18,6 +18,9 @@ class User(Base):
     password_hash        = Column(Text, nullable=False)
     role                 = Column(String(50), nullable=False)
     department           = Column(String(100))
+    # OE Network row-level scope. NULL = sees all OE data; a name here hard-limits
+    # every /oe-network endpoint to that salesperson (services/oe_scope.py).
+    oe_salesperson       = Column(String(100), nullable=True)
     is_active            = Column(Boolean, default=True)
     must_change_password  = Column(Boolean, default=False)
     reset_otp             = Column(String(6), nullable=True)
