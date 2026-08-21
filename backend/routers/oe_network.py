@@ -96,11 +96,19 @@ def _scope(db: Session, current_user: User,
 
 
 def _require_admin(db: Session, current_user: User) -> None:
-    """The sheet registry — adding, deleting and re-syncing one named sheet — is
-    for the people who own the sheets, not for a rep who merely reads them.
-    Note this is NOT the same as the Overview's Sync button (/sync-latest),
-    which every OE user may press: pulling the latest rows is routine, while
-    registering or dropping a source rewrites what the module is made of.
+    """Keeps the sheet registry — adding, deleting and re-syncing one named
+    sheet — away from field reps, who only read what it produces.
+
+    It refuses a SCOPED account, not a non-admin one, and that is deliberate:
+    managing sheets is an ordinary part of running the module, so anyone holding
+    oe_network without a linked salesperson — management, sales heads — keeps
+    doing it exactly as they did before row-level scoping existed. Reps are the
+    only ones this takes it away from. Read as "not a field rep", not as
+    "superadmin"; the name is looser than the rule.
+
+    Not the same as the Overview's Sync button (/sync-latest), which every OE
+    user may press: pulling the latest rows is routine, while registering or
+    dropping a source rewrites what the module is made of.
     """
     scope, _ = _scope(db, current_user)
     if scope.limited:

@@ -115,9 +115,17 @@ export default function Sidebar() {
       className="no-print relative flex flex-col h-full bg-white rounded-[32px] border border-orange-100 overflow-hidden"
       style={{ width: 280, boxShadow: "0 10px 40px rgba(0,0,0,0.04)", flexShrink: 0 }}
     >
-      {/* Logo — centred */}
-      <div className="flex items-center justify-center h-20 border-b border-orange-50 shrink-0 px-4">
+      {/* Logo — centred. The BETA chip rides beside it: the app is still being
+          tested, and the people reading these numbers were not in the room when
+          it was built. Delete this span when it ships for real. */}
+      <div className="flex items-center justify-center gap-2 h-20 border-b border-orange-50 shrink-0 px-4">
         <img src={logoSrc} alt="Amato Automotive" className="h-10 w-auto" />
+        <span
+          className="text-[9px] font-bold uppercase tracking-[0.15em] px-1.5 py-0.5 rounded-md text-amber-700 bg-amber-50 border border-amber-200"
+          title="Still being tested — figures may change."
+        >
+          Beta
+        </span>
       </div>
 
       {/* Navigation */}
