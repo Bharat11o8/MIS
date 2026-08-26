@@ -1,13 +1,21 @@
 """
 AutoForm MIS — OE Network Sales Router
-Three sheet types under one module ("oe_network" permission key):
-  • oe_visit_plan — one spreadsheet per calendar month, one tab per salesperson
-  • oe_log_book   — one continuous Form-responses spreadsheet
-  • oe_targets    — one spreadsheet per quarter, stacked OEM blocks per tab
+Five sheet types under one module ("oe_network" permission key):
+  • oe_visit_plan    — one spreadsheet per calendar month, one tab per salesperson
+  • oe_log_book      — one continuous Form-responses spreadsheet
+  • oe_targets       — one spreadsheet per quarter, stacked OEM blocks per tab
+  • oe_dealer_data   — the OE team's dealer file, one tab per OEM
+  • oe_oem_targets   — one spreadsheet per FY, one tab per OEM, the brand-level
+                       target summary
 Registry + manual sync follow the standard sheet_sources pattern; data endpoints
 are filter-first (plans list, logs list, log analytics, plan-vs-actual coverage,
 dealer directory, dealer-level plan adherence). Target analytics live in
-routers/oe_targets.py; this file owns the registry and sync for all three.
+routers/oe_targets.py (per salesperson) and routers/oe_oem_targets.py (per
+brand); this file owns the registry and sync for all of them.
+
+oe_targets and oe_oem_targets are two different commitments from two different
+files — the same money cut by person and cut by brand — and are never added
+together or shown as one number.
 """
 import calendar
 import csv
@@ -32,6 +40,7 @@ from services.dealer_resolve import DealerIndex
 from services.google_sheets import extract_sheet_id
 from services.oe_dealer_data_sync import parse_dealer_data, SERIES as DEALER_SERIES
 from services.oe_network_sync import parse_visit_plan, parse_log_book
+from services.oe_oem_targets_sync import parse_oem_targets
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.period_filters import parse_date as _parse_date, snap_to_months
 from services.oe_scope import OEScope, names_match as _names_match, name_tokens as _name_tokens
@@ -50,7 +59,13 @@ MODULE_TGT = "oe_targets"
 # the other three this one feeds TWO tables (oe_dealer_monthly and
 # oe_dealer_targets) and can create dealers, so it has its own sync path.
 MODULE_DD = "oe_dealer_data"
-OE_MODULES = (MODULE_PLAN, MODULE_LOG, MODULE_TGT, MODULE_DD)
+# The brand-level target summary: one workbook per financial year, one tab per
+# OEM, one row per product, twelve months of target and achievement. Distinct
+# from MODULE_TGT, which is the same money split across salespeople and
+# published a quarter at a time. Feeds two tables (the monthly rows and last
+# year's actual, which has no month), so like MODULE_DD it has its own write.
+MODULE_OEMTGT = "oe_oem_targets"
+OE_MODULES = (MODULE_PLAN, MODULE_LOG, MODULE_TGT, MODULE_DD, MODULE_OEMTGT)
 
 # sheet_sources.quarter is VARCHAR(2) holding 'Q1'..'Q4' (Depot-to-Distributor
 # set that convention); OE targets reuse it rather than add a second column.
@@ -60,7 +75,8 @@ _MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
                 "July", "August", "September", "October", "November", "December"]
 
 _SHEET_TYPES = {MODULE_PLAN: "visit_plan", MODULE_LOG: "log_book",
-                MODULE_TGT: "targets", MODULE_DD: "dealer_data"}
+                MODULE_TGT: "targets", MODULE_DD: "dealer_data",
+                MODULE_OEMTGT: "oem_target"}
 
 
 def _scope(db: Session, current_user: User,
@@ -197,10 +213,26 @@ def add_sheet_source(
         module = MODULE_DD
         label = "OE Dealer Data"
         calendar_year, month = None, None
+    elif body.sheet_type == "oem_target":
+        # One workbook per FINANCIAL year, and the whole year's targets are in
+        # it from day one — only the achievement columns fill in month by
+        # month. So the year is the identity and re-syncing the same sheet is
+        # the normal way to pick up a new month, not an exception.
+        if body.year is None:
+            raise HTTPException(status_code=400,
+                                detail="OEM target sheets need a financial year")
+        if not (2020 <= body.year <= 2100):
+            raise HTTPException(status_code=400, detail="year must be between 2020 and 2100")
+        module = MODULE_OEMTGT
+        # FY START year, the same convention the quarterly target sheets use:
+        # 2026 => FY26-27.
+        label = f"OEM Targets — FY{body.year % 100:02d}-{(body.year + 1) % 100:02d}"
+        calendar_year, month = body.year, None
     else:
         raise HTTPException(
             status_code=400,
-            detail="sheet_type must be visit_plan, log_book, targets or dealer_data")
+            detail="sheet_type must be visit_plan, log_book, targets, dealer_data "
+                   "or oem_target")
 
     source = SheetSource(
         id=uuid.uuid4(),
@@ -299,6 +331,15 @@ _TGT_COLS = ("id", "sheet_source_id", "fy_year", "quarter", "period_year", "peri
              "oem", "category", "salesperson", "region",
              "tgt_nos", "tgt_value", "ach_nos", "ach_value", "value_scale", "sync_log_id")
 
+_OEM_TGT_COLS = ("id", "sheet_source_id", "fy_year", "period_year", "period_month",
+                 "quarter", "oem", "product", "product_key",
+                 "tgt_nos", "tgt_value", "ach_nos", "ach_value",
+                 "tgt_value_scale", "ach_value_scale", "sync_log_id")
+
+_OEM_TGT_ANNUAL_COLS = ("id", "sheet_source_id", "fy_year", "oem", "product",
+                        "product_key", "py_nos", "py_value", "py_value_scale",
+                        "sync_log_id")
+
 # A module can own more than one table: the dealer file writes the monthly
 # sales and the quarterly targets, and both are replaced together on sync.
 _DATA_TABLES = {
@@ -306,6 +347,7 @@ _DATA_TABLES = {
     MODULE_LOG: ("oe_visit_logs",),
     MODULE_TGT: ("oe_targets",),
     MODULE_DD: ("oe_dealer_monthly", "oe_dealer_targets"),
+    MODULE_OEMTGT: ("oe_oem_targets", "oe_oem_target_annual"),
 }
 _INSERT_COLS = {MODULE_PLAN: _PLAN_COLS, MODULE_LOG: _LOG_COLS, MODULE_TGT: _TGT_COLS}
 
@@ -510,6 +552,21 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
     return written
 
 
+def sync_oem_targets(db: Session, source_id: str, log_id: str,
+                     records: list, annual_records: list) -> int:
+    """Write the brand-level target summary's two tables. Returns rows written.
+
+    Its own path rather than the shared one for the same reason the dealer file
+    has one: two tables from a single parse. Nothing is resolved or created
+    here — the OEM is just the tab name — so it is only the two inserts.
+    """
+    stamp = {"sheet_source_id": source_id, "sync_log_id": log_id}
+    months = [{**rec, **stamp, "id": str(uuid.uuid4())} for rec in records]
+    annual = [{**rec, **stamp, "id": str(uuid.uuid4())} for rec in annual_records]
+    return (_bulk_insert(db, "oe_oem_targets", _OEM_TGT_COLS, months)
+            + _bulk_insert(db, "oe_oem_target_annual", _OEM_TGT_ANNUAL_COLS, annual))
+
+
 def _sync_result(log: SyncLog, db: Session, written: int, deleted: int,
                  skipped_tabs: list, errors: list) -> dict:
     """Close out a sync log and shape the response. Shared so the dealer file,
@@ -607,6 +664,9 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
             detail="This sheet is already syncing — wait for that run to finish.",
         )
 
+    # Only the OEM target sheet produces a second set of rows (last year's
+    # actual, which has no month); every other parser leaves this empty.
+    annual_records: list = []
     try:
         if source.module == MODULE_PLAN:
             records, skipped_tabs, errors = parse_visit_plan(
@@ -618,6 +678,10 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
             )
         elif source.module == MODULE_DD:
             records, skipped_tabs, errors = parse_dealer_data(source.sheet_id)
+        elif source.module == MODULE_OEMTGT:
+            records, annual_records, skipped_tabs, errors = parse_oem_targets(
+                source.sheet_id, source.calendar_year
+            )
         else:
             records, skipped_tabs, errors = parse_log_book(source.sheet_id)
     except Exception as e:
@@ -647,6 +711,12 @@ def _do_sync(db: Session, source: SheetSource, current_user: User) -> dict:
 
         if source.module == MODULE_DD:
             written = sync_dealer_data(db, str(source.id), records, errors)
+            db.commit()
+            return _sync_result(log, db, written, deleted, skipped_tabs, errors)
+
+        if source.module == MODULE_OEMTGT:
+            written = sync_oem_targets(db, str(source.id), str(log.id),
+                                       records, annual_records)
             db.commit()
             return _sync_result(log, db, written, deleted, skipped_tabs, errors)
 
@@ -715,9 +785,9 @@ def sync_latest(
     current_user: User = Depends(get_current_user),
 ):
     """One-click refresh for the Overview: the log book and the dealer file both
-    keep growing, and only the newest visit-plan month and target quarter still
-    change, so those are the sheets worth re-pulling — earlier periods are
-    frozen history."""
+    keep growing, and only the newest visit-plan month, target quarter and OEM
+    target year still change, so those are the sheets worth re-pulling —
+    earlier periods are frozen history."""
     _scope(db, current_user)
     sources = db.query(SheetSource).filter(
         SheetSource.module.in_((MODULE_LOG, MODULE_DD))).all()
@@ -737,6 +807,17 @@ def sync_latest(
     )
     if newest_targets:
         sources.append(newest_targets)
+    # The current FY's OEM summary is a live sheet all year: the targets are
+    # set once but a month of achievement lands in it every month, so the
+    # newest year is always worth re-pulling.
+    newest_oem_targets = (
+        db.query(SheetSource)
+        .filter(SheetSource.module == MODULE_OEMTGT)
+        .order_by(SheetSource.calendar_year.desc())
+        .first()
+    )
+    if newest_oem_targets:
+        sources.append(newest_oem_targets)
     if not sources:
         raise HTTPException(status_code=400, detail="No sheets registered yet")
 

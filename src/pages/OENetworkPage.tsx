@@ -22,48 +22,23 @@ import {
   FilterBar, FilterActions, ClearFilters, FilterSpinner,
   RefreshButton, PdfButton, SyncButton, FILTER_LABELS, filterOpts,
   monthToken, tokenLabel, shortDate, firstName, coverageColor, ModeBadge, StatCard, KPI,
-  categoryLabel, useOEScope, ScopeNote,
-  type Period,
+  categoryLabel, useOEScope, ScopeNote, barWidth, achColor, BulletChart, useSyncLatest,
+  type Period, type BulletDatum,
 } from "./oe-network/shared";
+import OemTargetsTab from "./oe-network/OemTargetsTab";
 import DealersTab from "./oe-network/dealers";
 import MyVisitsTab from "./oe-network/MyVisitsTab";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface OESource {
   id: string; sheet_id: string; label: string;
-  sheet_type: "visit_plan" | "log_book" | "targets" | "dealer_data";
+  sheet_type: "visit_plan" | "log_book" | "targets" | "dealer_data" | "oem_target";
   calendar_year: number | null; month: number | null; quarter: string | null;
   created_at: string | null; last_synced_at: string | null; last_sync_status: string | null;
 }
 interface SyncResult {
   rows_total: number; rows_inserted: number; rows_deleted: number;
   skipped_tabs: string[]; errors: string[]; status: string;
-}
-/** One sheet's outcome from /sync-latest. Three of the four statuses are not
- *  failures: "Done" pulled rows, "Already syncing" means another run holds the
- *  sheet, "Up to date" means it was pulled inside the cooldown window. */
-interface SyncOutcome {
-  label: string;
-  status: "Done" | "Already syncing" | "Up to date" | "Failed";
-  rows_inserted: number;
-  error?: string | null;
-  last_synced_at?: string;
-}
-
-/** Newest last_synced_at across the sheets skipped by the cooldown. */
-function newestStamp(rows: SyncOutcome[]): string | null {
-  const stamps = rows.map((r) => r.last_synced_at).filter(Boolean) as string[];
-  return stamps.length ? stamps.sort()[stamps.length - 1] : null;
-}
-
-/** "40 seconds ago" / "3 minutes ago". Coarse on purpose — the reader only
- *  needs to judge whether their own submission could have been in that run. */
-function agoLabel(iso: string | null): string {
-  if (!iso) return "a moment ago";
-  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  if (secs < 60) return `${secs} second${secs === 1 ? "" : "s"} ago`;
-  const mins = Math.round(secs / 60);
-  return `${mins} minute${mins === 1 ? "" : "s"} ago`;
 }
 interface PvaRow {
   salesperson: string; log_name: string | null; planned: number; dealers_planned: number;
@@ -200,24 +175,9 @@ const CATEGORY_META: Record<string, { color: string; bg: string }> = {
 };
 const categoryMeta = (key: string) => CATEGORY_META[key] ?? { color: "#6b7280", bg: "#f9fafb" };
 
-type TabId = "overview" | "indepth" | "dealers" | "activity" | "targets" | "sheets" | "myvisits";
+type TabId = "overview" | "indepth" | "dealers" | "activity" | "targets" | "oemtargets"
+  | "sheets" | "myvisits";
 type Metric = "value" | "nos";
-
-/**
- * Bar widths on the bullet charts stop short of the full track so the value
- * printed at the bar's tip always has somewhere to go. Labels sit outside the
- * bar in the bar's own colour rather than reversed out in white inside it —
- * a white label only stays readable while it's over the fill, and the moment a
- * bar falls short of its target the tail of the number lands on the grey track
- * and disappears.
- *
- * The gutter is reserved in PIXELS, not percent: a label is a fixed width no
- * matter how wide the card is, so a percentage reserve would quietly stop being
- * enough on a laptop even though it looked fine on a monitor.
- */
-const LABEL_RESERVE = 54;
-const barWidth = (n: number, max: number) =>
-  `calc(${Math.min(n / max, 1).toFixed(4)} * (100% - ${LABEL_RESERVE}px))`;
 
 function Pagination({ page, total, perPage, onPage }: {
   page: number; total: number; perPage: number; onPage: (p: number) => void;
@@ -361,7 +321,6 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
   const [trend, setTrend] = useState<LogAnalytics["monthly_trend"]>([]);
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState(false);
   // The trend follows the period like every other panel; the surrounding
   // history is one click away rather than the default.
   const [trendScope, setTrendScope] = useState<"period" | "all">("period");
@@ -403,48 +362,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period.options]);
 
-  const handleSyncAll = async () => {
-    setSyncing(true);
-    try {
-      const res = await fetch(`${API_URL}/oe-network/sync-latest`, { method: "POST", headers });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? "Sync failed");
-      const results: SyncOutcome[] = data.results;
-      // Neither "Already syncing" (someone else holds the sheet) nor "Up to
-      // date" (it was pulled seconds ago) is a failure of this press, and
-      // neither belongs in the red toast: a rep told their sync failed presses
-      // the button again, which turns a rush into a stampede — the exact thing
-      // the lock and the cooldown exist to prevent.
-      const busy = results.filter((r) => r.status === "Already syncing");
-      const fresh = results.filter((r) => r.status === "Up to date");
-      const failed = results.filter(
-        (r) => r.status !== "Done" && r.status !== "Already syncing" && r.status !== "Up to date");
-      const pulled = results.filter((r) => r.status === "Done");
-
-      if (failed.length) {
-        toast.error("Some sheets failed to sync", failed.map((f) => f.label).join(", "));
-      } else if (pulled.length === 0) {
-        // Say WHEN, never a bare "up to date" — a rep who filed a visit a
-        // moment ago needs to know whether that run could have included it.
-        toast.info(
-          busy.length ? "Someone else is syncing right now" : "Already up to date",
-          busy.length
-            ? "Their run is pulling the same sheets. Hit Refresh shortly to pick it up."
-            : `Last pulled ${agoLabel(newestStamp(fresh))}. If you have just submitted a visit, try again in a minute.`);
-      } else {
-        const rows = pulled.reduce((s, r) => s + (r.rows_inserted ?? 0), 0);
-        const skipped = busy.length + fresh.length;
-        toast.success("Data refreshed",
-          `${rows.toLocaleString("en-IN")} rows loaded from ${pulled.length} sheet${pulled.length === 1 ? "" : "s"}`
-          + (skipped ? ` · ${skipped} already current` : ""));
-      }
-      setRefresh((x) => x + 1);
-    } catch (e) {
-      toast.error("Sync failed", e instanceof Error ? e.message : String(e));
-    } finally {
-      setSyncing(false);
-    }
-  };
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefresh((x) => x + 1));
 
   useEffect(() => {
     const pp = periodParams(period.mode, period.token, period.range);
@@ -558,7 +476,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
             </span>
           )}
           <RefreshButton onClick={() => setRefresh((x) => x + 1)} disabled={loading} />
-          <SyncButton onClick={handleSyncAll} syncing={syncing}
+          <SyncButton onClick={syncAll} syncing={syncing}
             title="Re-pull the log book and the latest visit plan from Google Sheets" />
           <PdfButton />
         </FilterActions>
@@ -1653,20 +1571,11 @@ function pick(r: TgtMetrics, m: Metric) {
 const fmtNos = (n: number) => Math.round(n).toLocaleString("en-IN");
 const fmtBy = (m: Metric) => (m === "value" ? formatCompact : fmtNos);
 
-function achColor(pct: number | null) {
-  if (pct == null) return "text-gray-500";
-  if (pct >= ON_TRACK_PCT) return "text-green-600";
-  if (pct >= 80) return "text-amber-600";
-  return "text-red-500";
-}
-
-/** One bullet row, whether or not a person owns it. */
-interface BulletRow { key: string; sub?: string | null; m: TgtMetrics; unowned?: boolean }
-
 /**
- * Target-vs-achievement bullet rows — the same idiom as Plan vs Actual on the
- * Overview, so coverage and targets read the same way. Grey track = target,
- * fill = achieved (green once it passes the tick), one shared scale per chart.
+ * Target-vs-achievement bullet rows for the salesperson Targets tab. The chart
+ * itself is BulletChart in ./oe-network/shared — shared with the OEM Targets
+ * tab so "how far along a goal is" can only look one way in this module. This
+ * is the adapter that turns a TgtGroup into its rows.
  *
  * `unattributed` is for the charts that group by a person or their region: the
  * MSIL/TATA accessories lines belong to no salesperson, so they cannot be a bar
@@ -1682,100 +1591,25 @@ function TargetBulletChart({
   unattributed?: (TgtMetrics & { oems: string[] }) | null;
 }) {
   const fmt = fmtBy(metric);
-  const all: BulletRow[] = [
-    ...rows.map((r) => ({ key: r.key, sub: r.region, m: r })),
+  const data: BulletDatum[] = [
+    ...rows.map((r) => ({ key: r.key, sub: r.region, ...pick(r, metric) })),
     ...(unattributed
       ? [{
           key: "Accessories",
           sub: `${unattributed.oems.join(", ")} · no salesperson`,
-          m: unattributed,
+          ...pick(unattributed, metric),
           unowned: true,
         }]
       : []),
   ];
-  // One scale across every row including the unowned one, so its bar is
-  // honestly comparable to the people above it.
-  const vals = all.map((r) => pick(r.m, metric));
-  const max = Math.max(1, ...vals.map((v) => Math.max(v.tgt, v.ach)));
-  const w = (n: number) => barWidth(n, max);
-
-  if (!all.length) {
-    return <p className="text-xs text-gray-500 py-6 text-center">Nothing to show for these filters</p>;
-  }
-
   return (
-    <div className="flex flex-col gap-3.5 pt-1">
-      {all.map((r, i) => {
-        const { tgt, ach, pct } = vals[i];
-        // Colour says "on track" (90%+); the notch is a separate question —
-        // it only exists once the bar has actually run past the target.
-        const onTrack = pct != null && pct >= ON_TRACK_PCT;
-        const over = ach > tgt && tgt > 0;
-        const fill = r.unowned ? UNOWNED_COLOR : onTrack ? OVER_COLOR : VISIT_COLOR;
-        return (
-          <div key={r.key}
-            className={`flex items-center gap-3${r.unowned ? " pt-3 mt-0.5 border-t border-dashed border-gray-200" : ""}`}>
-            <div className="w-[118px] shrink-0 min-w-0">
-              <p className={`text-xs font-semibold truncate ${r.unowned ? "italic text-violet-600" : "text-gray-700"}`}
-                title={r.key}>{r.key}</p>
-              {r.sub && <p className="text-[9px] text-gray-500 truncate" title={r.sub}>{r.sub}</p>}
-            </div>
-
-            <div className="relative h-5 flex-1 min-w-0">
-              {/* The track IS the target — where it ends is the goal, so no
-                  separate marker is needed while the bar falls short of it. */}
-              {tgt > 0 && (
-                <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(tgt), background: TGT_TRACK }} />
-              )}
-              <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(ach), background: fill }} />
-              {/* Overshot the target: the bar has swallowed the track, so notch
-                  the goal back on top of it. */}
-              {over && (
-                <div className="absolute inset-y-0 w-[2px]" style={{ left: w(tgt), background: "rgba(255,255,255,0.9)" }} />
-              )}
-              <span className="absolute top-1/2 -translate-y-1/2 text-[9px] font-bold leading-none whitespace-nowrap"
-                style={{ left: `calc(${w(ach)} + 5px)`, color: fill }}>
-                {fmt(ach)}
-              </span>
-            </div>
-
-            <div className="w-[78px] shrink-0 text-right">
-              <p className={`text-sm font-black leading-none ${achColor(pct)}`}>
-                {pct != null ? `${pct}%` : "—"}
-              </p>
-              {/* The target is half the comparison, so it is dark like the
-                  planned figure on the Plan vs Actual bullets — not a caption. */}
-              <p className="text-[10px] font-semibold text-gray-700 mt-0.5">of {fmt(tgt)}</p>
-            </div>
-          </div>
-        );
-      })}
-      <div className="flex items-center gap-4 flex-wrap pt-1">
+    <BulletChart rows={data} fmt={fmt}
+      legendExtra={unattributed ? (
         <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: OVER_COLOR }} />
-          On track — {ON_TRACK_PCT}% of target or better
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: UNOWNED_COLOR }} />
+          Accessories — an OEM product line, not anybody's number
         </span>
-        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: VISIT_COLOR }} />
-          Behind — under {ON_TRACK_PCT}%
-        </span>
-        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-          {/* Outlined for the same reason as the Planned swatch — a bare
-              TGT_TRACK square is all but invisible on a white card. */}
-          <span className="w-2.5 h-2.5 rounded-sm"
-            style={{ background: TGT_TRACK, border: "1px solid #b6bcc6" }} /> Target
-        </span>
-        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-          <span className="w-[2px] h-3 bg-gray-400 rounded" /> Target mark, once beaten
-        </span>
-        {unattributed && (
-          <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: UNOWNED_COLOR }} />
-            Accessories — an OEM product line, not anybody's number
-          </span>
-        )}
-      </div>
-    </div>
+      ) : undefined} />
   );
 }
 
@@ -2131,7 +1965,7 @@ interface HistoryItem {
 
 const SHEET_TYPE_LABELS: Record<string, string> = {
   visit_plan: "Visit Plan", log_book: "Log Book", targets: "Targets",
-  dealer_data: "Dealer Data",
+  dealer_data: "Dealer Data", oem_target: "OEM Targets",
 };
 
 function SheetsTab({ headers }: { headers: Record<string, string> }) {
@@ -2154,9 +1988,15 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const [ddLink, setDdLink] = useState("");
   const [showAddTgt, setShowAddTgt] = useState(false);
   const [tgtLink, setTgtLink] = useState("");
+  const [showAddOemTgt, setShowAddOemTgt] = useState(false);
+  const [oemTgtLink, setOemTgtLink] = useState("");
   // Default to the quarter and FY the current month sits in (Indian FY, Apr–Mar).
   const [tgtQuarter, setTgtQuarter] = useState(`Q${Math.floor(((now.getMonth() + 9) % 12) / 3) + 1}`);
   const [tgtFy, setTgtFy] = useState(String(now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1));
+  // The OEM summary is registered per FINANCIAL year, so it needs its own FY
+  // picker rather than sharing the quarterly sheet's — registering one must
+  // never move the other's selection.
+  const [oemTgtFy, setOemTgtFy] = useState(String(now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1));
   const [adding, setAdding] = useState(false);
 
   const loadSources = useCallback(async () => {
@@ -2214,6 +2054,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
     const link = sheetType === "visit_plan" ? planLink
       : sheetType === "targets" ? tgtLink
       : sheetType === "dealer_data" ? ddLink
+      : sheetType === "oem_target" ? oemTgtLink
       : logLink;
     if (!link.trim()) return;
     setAdding(true);
@@ -2225,6 +2066,8 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
       } else if (sheetType === "targets") {
         body.quarter = tgtQuarter;
         body.year = Number(tgtFy);   // FY start year
+      } else if (sheetType === "oem_target") {
+        body.year = Number(oemTgtFy);   // FY start year; no quarter, it is the whole year
       }
       const res = await fetch(`${API_URL}/oe-network/sheet-sources`, {
         method: "POST", headers: { ...headers, "Content-Type": "application/json" },
@@ -2236,6 +2079,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
       if (sheetType === "visit_plan") { setShowAddPlan(false); setPlanLink(""); }
       else if (sheetType === "targets") { setShowAddTgt(false); setTgtLink(""); }
       else if (sheetType === "dealer_data") { setShowAddDd(false); setDdLink(""); }
+      else if (sheetType === "oem_target") { setShowAddOemTgt(false); setOemTgtLink(""); }
       else { setShowAddLog(false); setLogLink(""); }
       await loadSources();
       // First sync right away, like every other sheet module.
@@ -2251,6 +2095,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const logSources = sources.filter((s) => s.sheet_type === "log_book");
   const tgtSources = sources.filter((s) => s.sheet_type === "targets");
   const ddSources = sources.filter((s) => s.sheet_type === "dealer_data");
+  const oemTgtSources = sources.filter((s) => s.sheet_type === "oem_target");
 
   const monthOptions = MONTH_FULL.map((m, i) => ({ value: String(i + 1), label: m }));
   const yearOptions = Array.from({ length: 4 }, (_, i) => now.getFullYear() - 2 + i)
@@ -2402,6 +2247,47 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           : <p className="text-xs text-gray-500 py-3">No target sheets registered yet.</p>}
       </div>
 
+      {/* OEM target summary — one workbook per FINANCIAL year, a tab per OEM.
+          No quarter to pick: the whole year's targets are in it from day one
+          and only the achievement columns fill in, so a re-sync is the normal
+          way to pick up a new month. */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">OEM Target Summary</h3>
+            <p className="text-[10px] text-gray-500">
+              The brand-level year — one tab per OEM, one row per product, twelve months of
+              target and achievement. Columns are found by their headers and each money column&rsquo;s
+              scale is detected on its own, because the file mixes rupees and crores within a tab.
+            </p>
+          </div>
+          <button onClick={() => setShowAddOemTgt(!showAddOemTgt)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
+            <Plus size={13} /> Add Year
+          </button>
+        </div>
+        <AnimatePresence>
+          {showAddOemTgt && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <div className="bg-orange-50/50 rounded-xl p-3 my-2 flex flex-col gap-2">
+                <input value={oemTgtLink} onChange={(e) => setOemTgtLink(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/…" className={inputClass} />
+                <div className="flex gap-2">
+                  <Select value={oemTgtFy} onChange={setOemTgtFy} options={fyOptions} className="flex-1" />
+                  <button onClick={() => handleAdd("oem_target")} disabled={adding || !oemTgtLink.trim()}
+                    className="text-xs font-semibold text-white px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+                    {adding ? "Adding…" : "Add & Sync"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {oemTgtSources.length
+          ? oemTgtSources.map(sourceRow)
+          : <p className="text-xs text-gray-500 py-3">No OEM target summary registered yet.</p>}
+      </div>
+
       {/* Dealer data — one workbook, a tab per OEM, no period to pick: the
           month columns are read off the header row, so a re-sync picks up a
           newly added month on its own. */}
@@ -2516,7 +2402,12 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Visit/Calling" },
   { id: "dealers", label: "Dealers" },
   { id: "activity", label: "Remarks" },
-  { id: "targets", label: "Targets" },
+  // Two target tabs, and the labels have to say which is which: one is the
+  // money split between PEOPLE (the quarterly sheets), the other the
+  // commitment made to each BRAND (the FY summary). "Targets" on its own next
+  // to "OEM Targets" reads as though one were a subset of the other.
+  { id: "targets", label: "Salesperson Targets" },
+  { id: "oemtargets", label: "OEM Targets" },
   { id: "myvisits", label: "My Visits" },
   { id: "sheets", label: "Data Source Sheets" },
 ];
@@ -2527,6 +2418,7 @@ const TAB_SUBTITLES: Record<TabId, string> = {
   dealers: "Where the opportunity is — coverage, penetration and each dealership's own story",
   activity: "What the team is up to — remark themes, per-person rollup and the field log",
   targets: "Quarterly target vs achievement by salesperson and OEM",
+  oemtargets: "The financial year's target agreed with each brand, and where it stands",
   myvisits: "Every visit and call you have submitted, in full — and exportable",
   sheets: "Connect and sync the source Google Sheets",
 };
@@ -2592,6 +2484,7 @@ export default function OENetworkPage() {
       {activeTab === "indepth" && <InDepthTab headers={headers} />}
       {activeTab === "activity" && <FieldActivityTab headers={headers} />}
       {activeTab === "targets" && <TargetsTab headers={headers} />}
+      {activeTab === "oemtargets" && <OemTargetsTab headers={headers} />}
       {activeTab === "myvisits" && <MyVisitsTab headers={headers} />}
       {activeTab === "sheets" && <SheetsTab headers={headers} />}
     </div>

@@ -7,6 +7,7 @@ import { Footprints, Phone, UserRound } from "lucide-react";
 import Select from "@/components/ui/Select";
 import DateRangePicker, { dayPresets } from "@/components/ui/DateRangePicker";
 import { useAuth } from "@/context/AuthContext";
+import { useToast } from "@/components/ui/Toast";
 
 export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -53,6 +54,10 @@ export const ON_TRACK_PCT = 90;
  *  An unknown code is shown AS TYPED rather than hidden behind a guess. */
 export const CATEGORY_LABELS: Record<string, string> = {
   SC: "Seat Covers", MAT: "Mats", ACC: "Accessories",
+  // The OEM target sheet buckets a couple more product lines than the
+  // quarterly one does. They live in the SAME map, not a second one, or the
+  // module ends up with two names for one thing again.
+  STEERING: "Steering Covers", OTHER: "Other Products",
 };
 export const categoryLabel = (c: string | null | undefined) =>
   (c && (CATEGORY_LABELS[c] ?? c)) || "\u2014";
@@ -396,4 +401,227 @@ export function StatCard({ label, value, sub, icon, color, bg }: {
       </div>
     </div>
   );
+}
+
+/**
+ * Bar widths on the bullet charts stop short of the full track so the value
+ * printed at the bar's tip always has somewhere to go. Labels sit outside the
+ * bar in the bar's own colour rather than reversed out in white inside it —
+ * a white label only stays readable while it's over the fill, and the moment a
+ * bar falls short of its target the tail of the number lands on the grey track
+ * and disappears.
+ *
+ * The gutter is reserved in PIXELS, not percent: a label is a fixed width no
+ * matter how wide the card is, so a percentage reserve would quietly stop being
+ * enough on a laptop even though it looked fine on a monitor.
+ */
+export const LABEL_RESERVE = 54;
+export const barWidth = (n: number, max: number) =>
+  `calc(${Math.min(n / max, 1).toFixed(4)} * (100% - ${LABEL_RESERVE}px))`;
+
+/** Achievement percentage, coloured. Null is grey, never red — an absent
+ *  figure is not a bad one. */
+export function achColor(pct: number | null) {
+  if (pct == null) return "text-gray-500";
+  if (pct >= ON_TRACK_PCT) return "text-green-600";
+  if (pct >= 80) return "text-amber-600";
+  return "text-red-500";
+}
+
+/** One row of a target-vs-achievement bullet chart. */
+export interface BulletDatum {
+  key: string;
+  sub?: string | null;
+  tgt: number;
+  /** null means NOT PUBLISHED — no bar and no percentage, never a zero-length
+   *  bar, which reads as a measured miss. */
+  ach: number | null;
+  pct: number | null;
+  /** A line that belongs to no person (the MSIL/TATA accessory rows). Drawn
+   *  below a dashed rule in its own colour so it can never be read as one. */
+  unowned?: boolean;
+}
+
+/**
+ * Target vs achievement, as bullet rows — the module's one idiom for "how far
+ * along a goal is", shared by the salesperson Targets tab and the OEM Targets
+ * tab so the two cannot drift apart. Grey track = target, fill = achieved
+ * (green once past the tick), one shared scale down the whole chart.
+ */
+export function BulletChart({ rows, fmt, empty, legendExtra }: {
+  rows: BulletDatum[];
+  fmt: (n: number) => string;
+  empty?: string;
+  legendExtra?: React.ReactNode;
+}) {
+  // One scale across every row, including any unowned one, so its bar is
+  // honestly comparable to those above it.
+  const max = Math.max(1, ...rows.map((r) => Math.max(r.tgt, r.ach ?? 0)));
+  const w = (n: number) => barWidth(n, max);
+
+  if (!rows.length) {
+    return (
+      <p className="text-xs text-gray-500 py-6 text-center">
+        {empty ?? "Nothing to show for these filters"}
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3.5 pt-1">
+      {rows.map((r) => {
+        // Colour says "on track" (90%+); the notch is a separate question —
+        // it only exists once the bar has actually run past the target.
+        const onTrack = r.pct != null && r.pct >= ON_TRACK_PCT;
+        const over = r.ach != null && r.ach > r.tgt && r.tgt > 0;
+        const fill = r.unowned ? UNOWNED_COLOR : onTrack ? OVER_COLOR : VISIT_COLOR;
+        return (
+          <div key={r.key}
+            className={`flex items-center gap-3${r.unowned ? " pt-3 mt-0.5 border-t border-dashed border-gray-200" : ""}`}>
+            <div className="w-[118px] shrink-0 min-w-0">
+              <p className={`text-xs font-semibold truncate ${r.unowned ? "italic text-violet-600" : "text-gray-700"}`}
+                title={r.key}>{r.key}</p>
+              {r.sub && <p className="text-[9px] text-gray-500 truncate" title={r.sub}>{r.sub}</p>}
+            </div>
+
+            <div className="relative h-5 flex-1 min-w-0">
+              {/* The track IS the target — where it ends is the goal, so no
+                  separate marker is needed while the bar falls short of it. */}
+              {r.tgt > 0 && (
+                <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(r.tgt), background: TGT_TRACK }} />
+              )}
+              {r.ach != null && (
+                <div className="absolute inset-y-0 left-0 rounded-md" style={{ width: w(r.ach), background: fill }} />
+              )}
+              {/* Overshot the target: the bar has swallowed the track, so notch
+                  the goal back on top of it. */}
+              {over && (
+                <div className="absolute inset-y-0 w-[2px]" style={{ left: w(r.tgt), background: "rgba(255,255,255,0.9)" }} />
+              )}
+              <span className="absolute top-1/2 -translate-y-1/2 text-[9px] font-bold leading-none whitespace-nowrap"
+                style={{ left: `calc(${w(r.ach ?? 0)} + 5px)`, color: r.ach == null ? "#9ca3af" : fill }}>
+                {r.ach == null ? "—" : fmt(r.ach)}
+              </span>
+            </div>
+
+            <div className="w-[78px] shrink-0 text-right">
+              <p className={`text-sm font-black leading-none ${achColor(r.pct)}`}>
+                {r.pct != null ? `${r.pct}%` : "—"}
+              </p>
+              {/* The target is half the comparison, so it is dark like the
+                  planned figure on the Plan vs Actual bullets — not a caption. */}
+              <p className="text-[10px] font-semibold text-gray-700 mt-0.5">of {fmt(r.tgt)}</p>
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-4 flex-wrap pt-1">
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: OVER_COLOR }} />
+          On track — {ON_TRACK_PCT}% of target or better
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: VISIT_COLOR }} />
+          Behind — under {ON_TRACK_PCT}%
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          {/* Outlined for the same reason as the Planned swatch — a bare
+              TGT_TRACK square is all but invisible on a white card. */}
+          <span className="w-2.5 h-2.5 rounded-sm"
+            style={{ background: TGT_TRACK, border: "1px solid #b6bcc6" }} /> Target
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <span className="w-[2px] h-3 bg-gray-400 rounded" /> Target mark, once beaten
+        </span>
+        {legendExtra}
+      </div>
+    </div>
+  );
+}
+
+// ── Sync ──────────────────────────────────────────────────────────────────────
+
+/** One sheet's outcome from /sync-latest. Three of the four statuses are not
+ *  failures: "Done" pulled rows, "Already syncing" means another run holds the
+ *  sheet, "Up to date" means it was pulled inside the cooldown window. */
+export interface SyncOutcome {
+  label: string;
+  status: "Done" | "Already syncing" | "Up to date" | "Failed";
+  rows_inserted: number;
+  error?: string | null;
+  last_synced_at?: string;
+}
+
+/** Newest last_synced_at across the sheets skipped by the cooldown. */
+function newestStamp(rows: SyncOutcome[]): string | null {
+  const stamps = rows.map((r) => r.last_synced_at).filter(Boolean) as string[];
+  return stamps.length ? stamps.sort()[stamps.length - 1] : null;
+}
+
+/** "40 seconds ago" / "3 minutes ago". Coarse on purpose — the reader only
+ *  needs to judge whether their own submission could have been in that run. */
+function agoLabel(iso: string | null): string {
+  if (!iso) return "a moment ago";
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs} second${secs === 1 ? "" : "s"} ago`;
+  const mins = Math.round(secs / 60);
+  return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * The Sync button's behaviour, shared by every tab that owns a sheet.
+ *
+ * Extracted rather than copied because the interesting part is what it refuses
+ * to call a failure. "Already syncing" (somebody else holds the sheet) and "Up
+ * to date" (it was pulled inside the cooldown) are both normal, and a rep told
+ * their sync FAILED presses the button again — which turns a rush into a
+ * stampede, the exact thing the lock and the cooldown exist to prevent. A
+ * second copy of this logic is a second chance to get that wrong.
+ *
+ * `onDone` is called after a run that changed anything, so the caller can
+ * re-query.
+ */
+export function useSyncLatest(headers: Record<string, string>, onDone: () => void) {
+  const toast = useToast();
+  const [syncing, setSyncing] = useState(false);
+
+  const syncAll = async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch(`${API_URL}/oe-network/sync-latest`, { method: "POST", headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "Sync failed");
+      const results: SyncOutcome[] = data.results;
+      const busy = results.filter((r) => r.status === "Already syncing");
+      const fresh = results.filter((r) => r.status === "Up to date");
+      const failed = results.filter(
+        (r) => r.status !== "Done" && r.status !== "Already syncing" && r.status !== "Up to date");
+      const pulled = results.filter((r) => r.status === "Done");
+
+      if (failed.length) {
+        toast.error("Some sheets failed to sync", failed.map((f) => f.label).join(", "));
+      } else if (pulled.length === 0) {
+        // Say WHEN, never a bare "up to date" — a rep who filed a visit a
+        // moment ago needs to know whether that run could have included it.
+        toast.info(
+          busy.length ? "Someone else is syncing right now" : "Already up to date",
+          busy.length
+            ? "Their run is pulling the same sheets. Hit Refresh shortly to pick it up."
+            : `Last pulled ${agoLabel(newestStamp(fresh))}. If you have just submitted a visit, try again in a minute.`);
+      } else {
+        const rows = pulled.reduce((s, r) => s + (r.rows_inserted ?? 0), 0);
+        const skipped = busy.length + fresh.length;
+        toast.success("Data refreshed",
+          `${rows.toLocaleString("en-IN")} rows loaded from ${pulled.length} sheet${pulled.length === 1 ? "" : "s"}`
+          + (skipped ? ` · ${skipped} already current` : ""));
+      }
+      onDone();
+    } catch (e) {
+      toast.error("Sync failed", e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return { syncing, syncAll };
 }

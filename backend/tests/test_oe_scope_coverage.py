@@ -29,7 +29,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 ROUTERS = os.path.join(os.path.dirname(__file__), "..", "routers")
-OE_FILES = ["oe_network.py", "oe_targets.py"]
+OE_FILES = ["oe_network.py", "oe_targets.py", "oe_oem_targets.py"]
 
 # Endpoints that own the sheet registry rather than reading rows. They gate on
 # _require_admin, which is stricter than a scope: a scoped user is refused
