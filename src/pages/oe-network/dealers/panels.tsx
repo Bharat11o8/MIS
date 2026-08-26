@@ -96,8 +96,8 @@ export function QuarterPanel({ rows, funnel }: { rows: DealerQuarter[]; funnel: 
                     rather than printing a zero. */}
                 {funnel && (
                   <span className="text-[11px] text-gray-500">
-                    {r.ysasc == null ? n0(r.oem_total) + " sold" : `${n0(r.ysasc)} YSASC`}
-                    {" · "}{pct(r.penetration)} penetration
+                    {r.ysasc == null ? n0(r.oem_total) + " sold" : `${n0(r.ysasc)} Available YS Part Number`}
+                    {" · "}{pct(r.penetration)} YS Share
                   </span>
                 )}
               </div>
@@ -174,7 +174,7 @@ export function ContactEffectPanel({ data }: { data: DealerPerf["contact_effect"
       <h3 className="text-sm font-bold text-gray-800">Does contacting them help?</h3>
       <Explain>
         Dealerships grouped by how many times they were contacted in a month, and what
-        our penetration was at them <b className="text-gray-600">in that same month</b>.
+        our YS Share was at them <b className="text-gray-600">in that same month</b>.
         Each bar is a group, not a dealer — "3-4" means every dealer-month with three
         or four contacts in it. If contact moved the needle, the bars would climb left
         to right.

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Store, Target, CarFront, Percent, Package, Footprints } from "lucide-react";
+import { Store, Target, CarFront, Percent, Package, Barcode } from "lucide-react";
 import Select from "@/components/ui/Select";
 import {
   API_URL, MONTH_SHORT, FilterBar, FilterActions, ClearFilters, FilterSpinner,
@@ -195,70 +195,55 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           purple, context grey. Two tile sets, because the two file shapes
           answer different questions — not the same tiles with blanks in them. */}
       {k && funnel && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        // Three across, so the six tiles fall into two rows that each hold ONE
+        // kind of number: the funnel in units on top (every cover they sold →
+        // the ones we make a part for → the ones we sold), and the ratios read
+        // off it underneath. Six abreast put a percentage between two unit
+        // counts and forced every long name to truncate; the rows are the
+        // grouping, not just a way to fit them.
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <StatCard label="Total MSIL SC Sales" value={nOr(k.oem_total)}
+            icon={<CarFront size={18} />} {...KPI.neutral} />
+          <StatCard label="Available YS Part Number" value={nOr(k.ysasc)}
+            sub={k.ysasc == null ? "not supplied" : undefined}
+            icon={<Barcode size={18} />} {...KPI.neutral} />
+          <StatCard label="YS SC Sale" value={n0(k.ys_sale)}
+            sub={k.target ? `target ${n0(k.target)}` : undefined}
+            icon={<Package size={18} />} {...KPI.ours} />
+
+          <StatCard label="YS Share" value={pct(k.penetration)}
+            sub={k.ysasc == null ? "not supplied" : `${n0(k.ys_sale)} ÷ ${n0(k.ysasc)}`}
+            icon={<Target size={18} />} {...KPI.conversion} />
+          {/* Directly under the two figures it divides, and next to YS Share
+              because the two get confused constantly: this one is what we make
+              a part for, not what we sold. */}
+          <StatCard label="Available Part Number %" value={pct(k.addressable_pct)}
+            sub={k.ysasc == null ? "not supplied" : `${n0(k.ysasc)} ÷ ${nOr(k.oem_total)}`}
+            icon={<Percent size={18} />} {...KPI.neutral} />
           <StatCard label="Coverage" value={pct(k.coverage)}
             sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}
             icon={<Store size={18} />} {...KPI.activity} />
-          <StatCard label="Penetration" value={pct(k.penetration)}
-            sub={k.ysasc == null
-              ? "needs YSASC from the dealer file"
-              : `${n0(k.ys_sale)} ours ÷ ${n0(k.ysasc)} YSASC`}
-            icon={<Target size={18} />} {...KPI.conversion} />
-          <StatCard label="Total sold" value={nOr(k.oem_total)}
-            sub="every cover, ours or not"
-            icon={<CarFront size={18} />} {...KPI.neutral} />
-          {/* The product side of the funnel. Kept next to penetration because
-              the two answer different questions and get confused constantly:
-              this one is what we make a part for, not what we sold. */}
-          <StatCard label="Addressable %" value={pct(k.addressable_pct)}
-            sub={k.ysasc == null ? "not supplied" : `${n0(k.ysasc)} YSASC of ${nOr(k.oem_total)}`}
-            icon={<Percent size={18} />} {...KPI.neutral} />
-          <StatCard label="YS Sale" value={n0(k.ys_sale)}
-            sub={k.target ? `target ${n0(k.target)}` : undefined}
-            icon={<Package size={18} />} {...KPI.ours} />
-          <StatCard label="Contacts" value={n0(k.visits + k.calls)}
-            sub={`${n0(k.visits)} visits · ${n0(k.calls)} calls`}
-            icon={<Footprints size={18} />} {...KPI.activity} />
         </div>
       )}
 
       {k && !funnel && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-          <StatCard label="Coverage" value={pct(k.coverage)}
-            sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}
-            icon={<Store size={18} />} {...KPI.activity} />
+        // One row of four. This source publishes a target and what we sold
+        // against it — four figures, so four tiles, rather than the funnel
+        // set's two rows.
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {/* Purple is `target` and never lands on a person — see KPI. */}
           <StatCard label="Target" value={n0(k.target)}
             sub="whole quarter, never pro-rated"
             icon={<Target size={18} />} {...KPI.target} />
-          <StatCard label="Achieved" value={n0(k.sold)}
-            sub="our units inside that quarter"
+          <StatCard label="Amato SC Sale" value={n0(k.sold)}
             icon={<Package size={18} />} {...KPI.ours} />
-          <StatCard label="vs Target" value={pct(tgtPct)}
-            sub={`${n0(k.sold)} of ${n0(k.target)} units`}
+          <StatCard label="Achieved %" value={pct(tgtPct)}
+            sub={`${n0(k.sold)} ÷ ${n0(k.target)}`}
             icon={<Percent size={18} />} {...KPI.conversion} />
-          <StatCard label="Contacts" value={n0(k.visits + k.calls)}
-            sub={`${n0(k.visits)} visits · ${n0(k.calls)} calls`}
-            icon={<Footprints size={18} />} {...KPI.activity} />
+          <StatCard label="Coverage" value={pct(k.coverage)}
+            sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}
+            icon={<Store size={18} />} {...KPI.activity} />
         </div>
-      )}
-
-      {/* Says what this OEM's file can and cannot answer, next to the numbers
-          rather than in a tooltip — the alternative is a reader assuming the
-          missing panels failed to load. */}
-      {k && !funnel && (
-        <p className="text-[11px] text-gray-500 -mt-2">
-          {data && data.capabilities.oems > 1 ? (
-            <>The OEMs in view do not all report how much their dealers sold in total, so
-              penetration and addressable % are not shown for this selection. Pick a single
-              OEM to see them where they exist.</>
-          ) : (
-            <>This OEM's dealer file reports a <b className="text-gray-600">target and what
-              we achieved</b> against it, and never how many covers the dealer sold in
-              total — so there is no penetration or addressable % to show. Achieved is our
-              units inside the quarter the target covers.</>
-          )}
-        </p>
       )}
 
       {noSales && data && (

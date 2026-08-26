@@ -9,14 +9,16 @@ export { KPI, categoryLabel } from "../shared";
 /**
  * The dealer file's funnel, in the OE team's own vocabulary:
  *
- *   oem_total  "Total MSIL" — every seat cover that dealer sold, ours or not
- *   ysasc      "YSASC" (YS Available Seat Covers) — of those, the ones on a
- *              vehicle we hold a part number for. NULL when the source file
- *              predates the three-series format and simply didn't say.
- *   ys_sale    "YS Sale" — what we actually sold them
+ *   oem_total  "Total MSIL SC Sales" — every seat cover that dealer sold,
+ *              ours or not
+ *   ysasc      "Available YS Part Number" (the file's own column is YSASC,
+ *              YS Available Seat Covers) — of those, the ones on a vehicle we
+ *              hold a part number for. NULL when the source file predates the
+ *              three-series format and simply didn't say.
+ *   ys_sale    "YS SC Sale" — what we actually sold them
  *
- * and the three ratios read off it. `penetration` is the headline and its
- * denominator is ysasc, so it is null whenever ysasc is.
+ * and the three ratios read off it. `penetration` ("YS Share" on screen) is
+ * the headline and its denominator is ysasc, so it is null whenever ysasc is.
  *
  * oem_total is nullable for a bigger reason than a missing cell: not every OEM
  * publishes one. TATA's tab gives a target and an achievement and never says
@@ -117,7 +119,8 @@ export type DealerTotals = Funnel & { visits: number; calls: number; months: num
 export interface DealerDetail {
   /** What this dealer's OEM publishes, judged across ALL its months. The drawer
    *  renders the tile set the source can fill, the same way the tab does — a
-   *  TATA dealer has no Total sold, YSASC or Penetration in any month, so those
+   *  TATA dealer has no Total MSIL SC Sales, Available YS Part Number or YS
+   *  Share in any month, so those
    *  tiles are absent rather than dashed. */
   capabilities: { funnel: boolean };
   dealer: PerfDealer & { source: string; dealer_code: string | null };
@@ -198,14 +201,14 @@ export const hitPct = (ach: number | null | undefined, tgt: number | null | unde
  *  The signed metrics need no floor — they already scale with volume, so a
  *  small dealer cannot produce a big figure in either direction. */
 export type RankMetric =
-  | "ys_sale" | "penetration" | "gap" | "oem_total" | "addressable_pct" | "tgt_gap";
+  | "ys_sale" | "penetration" | "gap" | "oem_total" | "ysasc" | "tgt_gap";
 
 /** Which rankings a scope can actually answer. The funnel ones divide by
  *  figures a non-funnel OEM never publishes, so offering them there would put a
  *  column of dashes behind a picker that looks like it should work. */
 export const RANK_METRICS = (funnel: boolean): RankMetric[] =>
   funnel
-    ? ["gap", "ys_sale", "penetration", "oem_total", "addressable_pct"]
+    ? ["gap", "ys_sale", "penetration", "oem_total", "ysasc"]
     : ["tgt_gap", "ys_sale"];
 export const RANK_META: Record<RankMetric, {
   label: string; what: string; top: string; bottom: string; floor: boolean;
@@ -217,7 +220,7 @@ export const RANK_META: Record<RankMetric, {
   gap: {
     label: "vs Average",
     what: "units above or below what the OEM average would predict for this dealer — "
-      + "what we actually sell them, minus their YSASC × the average penetration. "
+      + "what we actually sell them, minus their Available YS Part Number × the average YS Share. "
       + "Measured on the addressable figure, so a dealer is never charged for cars "
       + "we make no part for",
     top: "the dealers furthest AHEAD of the average — where we're already "
@@ -230,15 +233,15 @@ export const RANK_META: Record<RankMetric, {
     signed: true,
   },
   ys_sale: {
-    label: "YS Sale",
+    label: "YS SC Sale",
     what: "the number of our units the dealer bought in this period",
     top: "our biggest dealers by volume",
     bottom: "the dealers buying least from us",
     floor: true,
   },
   penetration: {
-    label: "Penetration",
-    what: "YS Sale ÷ YSASC — of the covers this dealer sold that we make a part for, "
+    label: "YS Share",
+    what: "YS SC Sale ÷ Available YS Part Number — of the covers this dealer sold that we make a part for, "
       + "the share that was ours. This is a selling number: everything it divides by "
       + "was genuinely winnable",
     top: "where we convert the most of what we could have won",
@@ -246,16 +249,23 @@ export const RANK_META: Record<RankMetric, {
     floor: true,
   },
   oem_total: {
-    label: "Total sold",
+    label: "Total MSIL SC Sales",
     what: "every seat cover the dealer sold, ours or anyone's — how big they are",
     top: "the biggest dealerships in the network",
     bottom: "the smallest dealerships",
     floor: false,
   },
   tgt_gap: {
-    label: "vs Target",
+    // Named against the "vs X" rule above, deliberately: the OE team asked for
+    // "Remaining Target" and that is what the column says. The SIGN is
+    // unchanged — + is still ahead — so the name no longer carries the
+    // direction and every place this metric is described has to state it
+    // instead. That is why `what` below leads with the sign rather than
+    // mentioning it in passing.
+    label: "Remaining Target",
     what: "what we have actually sold this dealer inside the quarter so far, minus the "
-      + "quarter target they were set. The target is the whole quarter's and is never "
+      + "quarter target they were set — so + is AHEAD of target and − is still to go. "
+      + "The target is the whole quarter's and is never "
       + "pro-rated, so part-way through a quarter a negative figure is expected — read "
       + "it against how much of the quarter has gone",
     top: "the dealers already PAST their target, furthest first. Not a problem list.",
@@ -264,18 +274,49 @@ export const RANK_META: Record<RankMetric, {
     floor: false,
     signed: true,
   },
-  addressable_pct: {
-    label: "Addressable %",
-    what: "YSASC ÷ Total sold — how much of this dealer's seat-cover business we make a "
-      + "part for at all. A LOW number here is a part-number gap, not a rep's "
-      + "failure: no amount of selling reaches the rest",
-    top: "where our range covers most of what the dealer sells",
-    bottom: "where our range covers least — these are product decisions, not sales ones",
-    floor: true,
+  // Ranked on the COUNT, not the share. The percentage answers "how much of
+  // this dealer does our range reach", which is a product question; the count
+  // answers "how many winnable units are sitting at this dealer", which is the
+  // one a rep planning a week can act on. It also needs no volume floor — an
+  // absolute count already scales with size, so the bottom of the list cannot
+  // fill up with tiny dealerships the way a ratio's does.
+  ysasc: {
+    label: "Available YS Part Number",
+    what: "the covers this dealer sold that we hold a part number for — the winnable "
+      + "business at this dealer in units, before any of it is won. The share version "
+      + "of the same figure is the Available Part Number % tile above",
+    top: "where the most winnable units sit, whether or not we are winning them",
+    bottom: "where there is least to win — a small dealer, or one selling covers we "
+      + "make no part for",
+    floor: false,
   },
 };
 
-export const rankValue = (d: PerfDealer, m: RankMetric, avgPene: number): number => {
+/** Our units for the scope being read.
+ *
+ *  The two are the SAME NUMBER whenever the period is whole quarters, which is
+ *  why the TATA tables used to carry both — "Achieved" and "Amato SC Sale" sat
+ *  side by side showing identical figures. They diverge on a partial period:
+ *  `ys_sale` is the filtered months, `sold` is every month of the quarters
+ *  those months touch, which is the only one the quarter target can be judged
+ *  against. So a target-only OEM reports `sold` and a funnel OEM reports
+ *  `ys_sale`, and the tile, the column and the ranking all read this.
+ *
+ *  Ranking by one while displaying the other is how a "top 20" ends up in an
+ *  order the column it claims to be sorted on cannot explain. */
+export const oursOf = (d: Pick<PerfDealer, "ys_sale" | "sold">, funnel: boolean): number =>
+  (funnel ? d.ys_sale : d.sold ?? d.ys_sale);
+
+/** The ranking's on-screen name for the scope it is being read in. Our own
+ *  units go by a different name per OEM — MSIL's file calls them YS SC Sale,
+ *  TATA's are Amato — so one static label would be wrong on one of the two
+ *  tabs. Everything else is named the same in both scopes. */
+export const rankLabel = (m: RankMetric, funnel: boolean): string =>
+  (!funnel && m === "ys_sale" ? "Amato SC Sale" : RANK_META[m].label);
+
+export const rankValue = (
+  d: PerfDealer, m: RankMetric, avgPene: number, funnel = true,
+): number => {
   // Both signed metrics are written ACTUAL minus EXPECTED, never the other way
   // round, so + always reads "we sold more than expected". Reversing either one
   // makes two tabs of one module disagree about what a plus sign means, which
@@ -288,6 +329,6 @@ export const rankValue = (d: PerfDealer, m: RankMetric, avgPene: number): number
   // actually agreed to, rather than against a modelled average.
   if (m === "tgt_gap") return (d.sold ?? d.ys_sale) - (d.target ?? 0);
   if (m === "penetration") return d.penetration ?? 0;
-  if (m === "addressable_pct") return d.addressable_pct ?? 0;
-  return m === "ys_sale" ? d.ys_sale : d.oem_total ?? 0;
+  if (m === "ysasc") return d.ysasc ?? 0;
+  return m === "ys_sale" ? oursOf(d, funnel) : d.oem_total ?? 0;
 };

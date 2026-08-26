@@ -140,7 +140,7 @@ interface TgtSummary {
 }
 interface TgtPeriod { fy_year: number; quarter: number; token: string; label: string }
 
-// ── Field Activity (remarks) ───────────────────────────────────────────────────
+// ── Remarks ───────────────────────────────────────────────────────────────────
 interface RemarkTheme { key: string; label: string; count: number }
 /** One note = one remark category the rep filled in. Since 29 Jul 2026 the form
  *  makes them tick categories and write separately in each, so a single visit
@@ -1223,7 +1223,7 @@ function InDepthTab({ headers }: { headers: Record<string, string> }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Field Activity tab — remark themes, per-salesperson rollup, full field log
+// Remarks tab — remark themes, per-salesperson rollup, full field log
 // ══════════════════════════════════════════════════════════════════════════════
 
 /** A theme tag as it appears in the feed and rollup cards. */
@@ -1505,7 +1505,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
 
       <div className="print-only">
         <p className="text-sm font-bold text-gray-900">
-          Field Activity · {period.options.find((o) => o.value === period.token)?.label ?? ""}
+          Remarks · {period.options.find((o) => o.value === period.token)?.label ?? ""}
           {salesperson && ` · ${salesperson}`}{oem && ` · ${oem}`}
           {category && ` · ${categoryLabel(category)}`}{theme && ` · ${themeMeta(theme).label}`}
           {qDeb && ` · “${qDeb}”`}
@@ -2515,7 +2515,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Visit/Calling" },
   { id: "dealers", label: "Dealers" },
-  { id: "activity", label: "Field Activity" },
+  { id: "activity", label: "Remarks" },
   { id: "targets", label: "Targets" },
   { id: "myvisits", label: "My Visits" },
   { id: "sheets", label: "Data Source Sheets" },
@@ -2560,7 +2560,7 @@ export default function OENetworkPage() {
       {/* Header */}
       {/* The title block must shrink (min-w-0 flex-1) and the tab strip must not
           (shrink-0), or a long subtitle pushes the tabs onto their own row —
-          which is why the tab strip sat beside the title on Field Activity and
+          which is why the tab strip sat beside the title on Remarks and
           below it on Dealers. The subtitle truncates instead of moving them. */}
       <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="no-print flex items-center justify-between flex-wrap gap-3">
         <div className="min-w-0 flex-1">

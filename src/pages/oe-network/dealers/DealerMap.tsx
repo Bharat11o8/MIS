@@ -78,7 +78,7 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
   if (!all.length) {
     return (
       <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
-        No addressable (YSASC) dealer data for this selection — the OE dealer file only
+        No Available YS Part Number dealer data for this selection — the OE dealer file only
         covers MSIL so far, and only from the three-series format onward.
       </div>
     );
@@ -133,14 +133,14 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
             that rep's own average makes a weak territory look like it has the
             least to gain. Unlabelled, it just looks like a filter that failed. */}
         <p className="text-[11px] text-gray-500 shrink-0 ml-auto">
-          Whole-OEM average penetration <b className="text-gray-600">{avgPene.toFixed(1)}%</b>
+          Whole-OEM average YS Share <b className="text-gray-600">{avgPene.toFixed(1)}%</b>
           <span className="block text-[10px] text-gray-500 text-right">fixed yardstick — ignores rep/state</span>
         </p>
       </div>
 
       <Explain>
         Left-to-right is <b className="text-gray-600">how much this dealer sells that
-        we make a part for</b> (YSASC — not their whole volume, so nobody is placed
+        we make a part for</b> (Available YS Part Number — not their whole volume, so nobody is placed
         by business we could never have won); bottom-to-top is{" "}
         <b className="text-gray-600">how much of that we actually win</b>. The dotted
         line is the {avgPene.toFixed(1)}% OEM average.
@@ -211,10 +211,10 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
           })}
 
           <text x={(W - PL) / 2 + PL} y={H - 6} textAnchor="middle" fontSize="10" fill="#9ca3af">
-            YSASC — covers they sell that we make a part for (square-root scale)
+            Available YS Part Number — covers they sell that we make a part for (square-root scale)
           </text>
           <text x={-(H / 2)} y={13} transform="rotate(-90)" textAnchor="middle" fontSize="10" fill="#9ca3af">
-            Penetration of YSASC
+            YS Share of Available YS Part Number
           </text>
         </svg>
 
@@ -242,13 +242,13 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
               {hover.city} · {hover.salesperson ?? "—"}
             </p>
             <p className="text-[11px] mt-1 font-semibold">
-              {n0(hover.ys_sale)} ours of {n0(hover.ysasc)} YSASC ·{" "}
+              {n0(hover.ys_sale)} ours of {n0(hover.ysasc)} Available YS Part Number ·{" "}
               <span style={{ color: (hover.penetration ?? 0) >= avgPene ? "#4ade80" : "#fdba74" }}>
                 {pct(hover.penetration)}
               </span>
             </p>
             <p className="text-[10px] text-white/65">
-              {n0(hover.oem_total)} sold in total · {pct(hover.addressable_pct)} addressable
+              {n0(hover.oem_total)} total MSIL SC sales · {pct(hover.addressable_pct)} available part number
             </p>
             <p className="text-[10px] text-white/70">
               {hover.contacts} contact{hover.contacts === 1 ? "" : "s"} in period

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { shortDate } from "../shared";
-import { type PerfDealer, n0, nOr, pct, hitPct } from "./model";
+import { type PerfDealer, n0, nOr, pct, hitPct, oursOf } from "./model";
 import Explain from "./Explain";
 
 const PAGE = 30;
@@ -27,14 +27,14 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
     // Biggest of OUR business first; dealers with no sales at all sink to the
     // bottom by their total volume so the list stays meaningful for them too.
     const base = [...dealers].sort((a, b) =>
-      b.ys_sale - a.ys_sale || (b.oem_total ?? 0) - (a.oem_total ?? 0)
+      oursOf(b, funnel) - oursOf(a, funnel) || (b.oem_total ?? 0) - (a.oem_total ?? 0)
       || (b.target ?? 0) - (a.target ?? 0) || a.name.localeCompare(b.name));
     const t = q.trim().toLowerCase();
     if (!t) return base;
     return base.filter((d) =>
       [d.name, d.city, d.state, d.salesperson ?? "", d.codes ?? ""]
         .some((s) => s.toLowerCase().includes(t)));
-  }, [dealers, q]);
+  }, [dealers, q, funnel]);
 
   const rows = filtered.slice(0, shown);
 
@@ -61,14 +61,14 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
         {" "}<b className="text-gray-600">{n0(filtered.length)}</b>
         {q.trim() ? <> of {n0(dealers.length)} dealers match.</> : <> dealers in view.</>}
         {funnel ? (
-          <> Pene is green from the <b>{avgPene.toFixed(1)}%</b> OEM average up; a grey
-            dash means the dealer file supplied no YSASC for this dealer, so penetration
+          <> YS Share is green from the <b>{avgPene.toFixed(1)}%</b> OEM average up; a grey
+            dash means the dealer file supplied no Available YS Part Number for this dealer, so YS Share
             cannot be computed — not that it is zero.</>
         ) : (
           <> This OEM's file reports a target and what we achieved against it, and never
-            how much the dealer sold in total — so there is no penetration to show here.
-            <b className="text-gray-600"> Achieved</b> is our units inside the quarter the
-            target covers, and the target is the <b className="text-gray-600">whole</b>
+            how much the dealer sold in total — so there is no YS Share to show here.
+            <b className="text-gray-600"> Amato SC Sale</b> is our units inside the quarter
+            the target covers, and the target is the <b className="text-gray-600">whole</b>
             {" "}quarter's, so part-way through one, under 100% is expected.</>
         )}
       </Explain>
@@ -88,20 +88,23 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
                 <th className="text-left font-bold py-2">Rep</th>
                 {funnel ? (
                   <>
-                    <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">Total</th>
+                    <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">Total MSIL SC Sales</th>
                     <th className="text-right font-bold py-2"
-                      title="YSASC — of that total, the covers on a vehicle we hold a part number for">
-                      YSASC
+                      title="Available YS Part Number — of that total, the covers on a vehicle we hold a part number for">
+                      Available YS Part Number
                     </th>
-                    <th className="text-right font-bold py-2">YS Sale</th>
-                    <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
+                    <th className="text-right font-bold py-2">YS SC Sale</th>
+                    <th className="text-right font-bold py-2" title="YS SC Sale ÷ Available YS Part Number">YS Share</th>
                   </>
                 ) : (
                   <>
                     <th className="text-right font-bold py-2" title="The whole quarter's target, never pro-rated">Target</th>
-                    <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">Achieved</th>
-                    <th className="text-right font-bold py-2">YS Sale</th>
-                    <th className="text-right font-bold py-2" title="Achieved ÷ target">vs Tgt</th>
+                    {/* One column, not two. "Achieved" and "Amato SC Sale" were
+                        the same figure under two names — see oursOf in model.ts. */}
+                    <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">
+                      Amato SC Sale
+                    </th>
+                    <th className="text-right font-bold py-2" title="Amato SC Sale ÷ target">Achieved %</th>
                   </>
                 )}
                 <th className="text-right font-bold py-2">Contacts</th>
@@ -137,8 +140,9 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
                   ) : (
                     <>
                       <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.target)}</td>
-                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.sold)}</td>
-                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">
+                        {nOr(oursOf(d, funnel))}
+                      </td>
                       <td className={`py-2 text-right tabular-nums font-semibold ${
                         hitPct(d.sold, d.target) == null ? "text-gray-500"
                           : hitPct(d.sold, d.target)! >= 100 ? "text-green-600" : "text-gray-700"}`}>

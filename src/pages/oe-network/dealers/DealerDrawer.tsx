@@ -198,32 +198,37 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
             {/* Same colour identities as the tab's KPI row — see KPI in model.ts.
                 3 columns until the drawer is genuinely wide: five abreast in a
                 narrow drawer is what truncated every label to "TO…" / "PE…".
+                The drawer is 72vw, so five funnel tiles only fit at 2xl — the
+                funnel names are the long ones and they are the reason the
+                breakpoint differs between the two sets.
 
                 Two tile sets, chosen by what the OEM publishes — not one set
                 with dashes in it. TATA reports a target and what we sold
                 against it and never how much the dealer sold in total, so
-                Total sold, YSASC and Penetration have no answer for any TATA
-                dealer, in any month. Drawn anyway they were three permanently
-                empty tiles that read as a load failure. */}
+                Total MSIL SC Sales, Available YS Part Number and YS Share have
+                no answer for any TATA dealer, in any month. Drawn anyway they
+                were three permanently empty tiles that read as a load failure. */}
             <div className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${
-              funnel ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+              funnel ? "2xl:grid-cols-5" : "xl:grid-cols-4"}`}>
               {funnel ? (
                 <>
                   {/* Within a funnel OEM a single dash still means "not
                       published for this month", which is a different statement
                       from zero — see Funnel in model.ts. */}
-                  <StatCard label="Total sold" value={nOr(view.totals.oem_total)}
-                    sub={view.totals.oem_total == null
-                      ? "not reported for this period"
-                      : "all seat covers, ours or not"}
+                  <StatCard label="Total MSIL SC Sales" value={nOr(view.totals.oem_total)}
+                    sub={view.totals.oem_total == null ? "not reported for this period" : undefined}
                     icon={<CarFront size={16} />} {...KPI.neutral} />
-                  <StatCard label="YSASC" value={nOr(view.totals.ysasc)}
-                    sub={view.totals.ysasc == null ? "not supplied" : `${pct(view.totals.addressable_pct)} of total sold`}
+                  <StatCard label="Available YS Part Number" value={nOr(view.totals.ysasc)}
+                    sub={view.totals.ysasc == null
+                      ? "not supplied"
+                      : `${pct(view.totals.addressable_pct)} of ${nOr(view.totals.oem_total)}`}
                     icon={<Package size={16} />} {...KPI.neutral} />
-                  <StatCard label="YS Sale" value={n0(view.totals.ys_sale)} icon={<Package size={16} />}
+                  <StatCard label="YS SC Sale" value={n0(view.totals.ys_sale)} icon={<Package size={16} />}
                     {...KPI.ours} />
-                  <StatCard label="Penetration" value={pct(view.totals.penetration)}
-                    sub={view.totals.penetration == null ? "needs YSASC" : "of YSASC"}
+                  <StatCard label="YS Share" value={pct(view.totals.penetration)}
+                    sub={view.totals.penetration == null
+                      ? "not supplied"
+                      : `${n0(view.totals.ys_sale)} ÷ ${nOr(view.totals.ysasc)}`}
                     icon={<Target size={16} />} {...KPI.conversion} />
                 </>
               ) : (
@@ -235,11 +240,14 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                   <StatCard label="Target" value={n0(tgtTotals.target)}
                     sub={view.whole ? "every quarter on record" : "whole quarter, never pro-rated"}
                     icon={<Target size={16} />} {...KPI.target} />
-                  <StatCard label="Achieved" value={n0(tgtTotals.sold)}
+                  <StatCard label="Amato SC Sale" value={n0(tgtTotals.sold)}
                     sub="our units inside that quarter"
                     icon={<Package size={16} />} {...KPI.ours} />
-                  <StatCard label="vs Target" value={pct(hitPct(tgtTotals.sold, tgtTotals.target))}
-                    sub={`${n0(tgtTotals.sold)} of ${n0(tgtTotals.target)} units`}
+                  {/* A percentage, so it is named as one — this tile read
+                      "vs Target" while showing achieved ÷ target, the same
+                      mislabel the directory column carried. */}
+                  <StatCard label="Achieved %" value={pct(hitPct(tgtTotals.sold, tgtTotals.target))}
+                    sub={`${n0(tgtTotals.sold)} ÷ ${n0(tgtTotals.target)}`}
                     icon={<Percent size={16} />} {...KPI.conversion} />
                 </>
               )}

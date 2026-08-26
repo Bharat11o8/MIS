@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RANK_META, RANK_METRICS, rankValue, type PerfDealer, type RankMetric } from "./model";
+import { RANK_META, RANK_METRICS, rankValue, oursOf, type PerfDealer, type RankMetric } from "./model";
 
 /**
  * The sign convention on the Dealers tab.
@@ -90,16 +90,45 @@ describe("the convention holds across both metrics", () => {
   it("names the signed metrics neutrally, so the sign is free to carry meaning", () => {
     // "Opportunity" and "Behind target" both state a direction, which pins + to
     // meaning "behind" and puts the label at war with the number.
-    for (const m of ["gap", "tgt_gap"] as RankMetric[]) {
-      expect(RANK_META[m].signed).toBe(true);
-      expect(RANK_META[m].label).toMatch(/^vs /);
-    }
+    expect(RANK_META.gap.signed).toBe(true);
+    expect(RANK_META.gap.label).toMatch(/^vs /);
+  });
+
+  it("ranks our units on the figure the scope actually displays", () => {
+    // A target-only OEM shows `sold` (the whole quarter the target covers) in
+    // its Amato SC Sale column; a funnel OEM shows `ys_sale` (the filtered
+    // months). They are equal on a whole-quarter period, so a mix-up is
+    // invisible until someone filters to a single month — at which point the
+    // "top 20" is ordered by a number that is not in the column.
+    const d = dealer({ ys_sale: 40, sold: 120, target: 100 });
+    expect(oursOf(d, true)).toBe(40);
+    expect(oursOf(d, false)).toBe(120);
+    expect(rankValue(d, "ys_sale", 20, true)).toBe(40);
+    expect(rankValue(d, "ys_sale", 20, false)).toBe(120);
+  });
+
+  it("falls back to ys_sale when a target-only OEM has no quarter to sum", () => {
+    // `sold` is null for a dealer whose months touch no quarter at all. Reading
+    // that as 0 would drop a real dealer to the bottom of the list.
+    const d = dealer({ ys_sale: 40, sold: null, target: 100 });
+    expect(oursOf(d, false)).toBe(40);
+  });
+
+  it("makes tgt_gap state its own sign, because its name no longer does", () => {
+    // The OE team asked for "Remaining Target" over the neutral "vs Target".
+    // The sign was NOT flipped to match — + still means ahead, module-wide — so
+    // the name now points the opposite way to the number and the description is
+    // the only thing left telling the reader which. If someone rewrites `what`
+    // and drops the sign, this column becomes unreadable, so pin it here.
+    expect(RANK_META.tgt_gap.signed).toBe(true);
+    expect(RANK_META.tgt_gap.what).toMatch(/\+ is AHEAD/);
+    expect(RANK_META.tgt_gap.what).toMatch(/− is still to go/);
   });
 
   it("marks only the signed metrics as signed", () => {
     // The table picks its default end from this flag, so a volume ranking
     // wrongly marked signed would open on the smallest dealers.
-    for (const m of ["ys_sale", "penetration", "oem_total", "addressable_pct"] as RankMetric[]) {
+    for (const m of ["ys_sale", "penetration", "oem_total", "ysasc"] as RankMetric[]) {
       expect(RANK_META[m].signed).toBeFalsy();
     }
   });

@@ -85,7 +85,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
             Each bar is one month of what we sold {subject}. This OEM's file reports a
             target and what we achieved against it, and never how many covers the dealer
             sold in total — so there is no funnel to split the bar into, and no
-            penetration to read off it.
+            YS Share to read off it.
             {anyActivity && <>{" "}The strip underneath is how many{" "}
               <span style={{ color: ACT_VISIT }} className="font-semibold">visits</span> and{" "}
               <span style={{ color: CALL_COLOR }} className="font-semibold">calls</span>{" "}
@@ -103,7 +103,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
         on top is business we make no part for, which no amount of selling reaches</>}.
         So the orange measured against{" "}
         {anyUnmade ? <b className="text-gray-600">orange + dark grey</b> : "the bar"}{" "}
-        <i>is</i> penetration, drawn to scale. The{" "}
+        <i>is</i> YS Share, drawn to scale. The{" "}
         <span style={{ color: VISIT_COLOR }} className="font-semibold">orange line</span>{" "}
         reads it as a percentage against the right-hand axis
         {benchmark ? <>, and the dashed line is the {benchmark.toFixed(1)}% OEM average</> : null}.
@@ -138,10 +138,10 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
           />
           <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" iconSize={7}
             formatter={(value: string) => <span style={{ color: CHART_LABEL }}>{value}</span>} />
-          <Bar yAxisId="units" dataKey="ours" stackId="funnel" name="YS Sale — ours"
+          <Bar yAxisId="units" dataKey="ours" stackId="funnel" name="YS SC Sale — ours"
             fill={VISIT_COLOR} radius={funnel ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
           {funnel ? (
-            <Bar yAxisId="units" dataKey="missed" stackId="funnel" name="YSASC — not won"
+            <Bar yAxisId="units" dataKey="missed" stackId="funnel" name="Available YS Part Number — not won"
               fill={FUNNEL_MISSED} radius={anyUnmade ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
           ) : null}
           {funnel && anyUnmade ? (
@@ -153,7 +153,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
               strokeOpacity={0.5} />
           ) : null}
           {funnel ? (
-            <Line yAxisId="pct" type="monotone" dataKey="pene" name="Penetration"
+            <Line yAxisId="pct" type="monotone" dataKey="pene" name="YS Share"
               stroke={VISIT_COLOR} strokeWidth={2}
               dot={{ r: 3, fill: "#fff", stroke: VISIT_COLOR, strokeWidth: 2 }} connectNulls={false} />
           ) : null}

@@ -381,10 +381,17 @@ export function StatCard({ label, value, sub, icon, color, bg }: {
         {icon}
       </div>
       <div className="min-w-0">
-        {/* Both lines truncate on narrow cards, and the sub line is often the
-            explanation of the metric — the title keeps the full text reachable. */}
-        <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 truncate" title={label}>{label}</p>
-        <p className="text-xl font-black text-gray-800 leading-tight">{value}</p>
+        {/* The LABEL wraps, it does not truncate. It is the name of the metric,
+            and a clipped name is unreadable in a way a clipped explanation is
+            not — "AVAILABLE PART NUMBER %" cut to "AVAILABLE PART N…" tells the
+            reader nothing about which of two similar figures they are looking
+            at. Two lines is the cap; grid rows stretch, so a wrapped label
+            simply makes the whole row taller and the tiles stay aligned.
+            The SUB line still truncates — it is supplementary, and the title
+            keeps the full text reachable on both. */}
+        <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 leading-tight line-clamp-2"
+          title={label}>{label}</p>
+        <p className="text-xl font-black text-gray-800 leading-tight mt-0.5">{value}</p>
         {sub && <p className="text-[10px] text-gray-500 truncate" title={sub}>{sub}</p>}
       </div>
     </div>

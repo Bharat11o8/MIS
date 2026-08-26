@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Select from "@/components/ui/Select";
 import {
-  type PerfDealer, type RankMetric, RANK_META, RANK_METRICS, rankValue,
+  type PerfDealer, type RankMetric, RANK_META, RANK_METRICS, rankValue, rankLabel, oursOf,
   n0, nOr, pct, hitPct,
 } from "./model";
 import Explain from "./Explain";
@@ -61,7 +61,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
   const flooring = end === "bottom" && meta.floor;
   const pool = flooring ? withSales.filter((d) => (d.ysasc ?? 0) >= floor) : withSales;
   const sorted = [...pool].sort((a, b) =>
-    rankValue(b, metric, avgPene) - rankValue(a, metric, avgPene));
+    rankValue(b, metric, avgPene, funnel) - rankValue(a, metric, avgPene, funnel));
   const rows = (end === "top" ? sorted : [...sorted].reverse()).slice(0, count);
   // Asking for 50 out of a pool of 31 is not an error, but the heading must not
   // claim 50 — otherwise a short list reads as data missing.
@@ -76,7 +76,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
       <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-bold text-gray-800">
-            {end === "top" ? "Top" : "Bottom"} {rows.length} · {meta.label}
+            {end === "top" ? "Top" : "Bottom"} {rows.length} · {rankLabel(metric, funnel)}
           </h3>
           <p className="text-[11px] text-gray-500">{meta.what}</p>
         </div>
@@ -93,7 +93,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
             className="min-w-[92px]"
             options={COUNTS.map((n) => ({ value: String(n), label: `${n} rows` }))} />
           <Select value={metric} onChange={(v) => setMetric(v as RankMetric)}
-            options={metrics.map((k) => ({ value: k, label: RANK_META[k].label }))} />
+            options={metrics.map((k) => ({ value: k, label: rankLabel(k, funnel) }))} />
         </div>
       </div>
 
@@ -109,7 +109,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
             {rows.length === 1 ? "ies" : "y"} here, fewer than the {count} requested.</>
         )}
         {flooring && (
-          <> Only dealers with <b>{n0(floor)}+</b> YSASC covers are included, otherwise
+          <> Only dealers with <b>{n0(floor)}+</b> Available YS Part Number covers are included, otherwise
             the bottom of a share-based list is just the smallest dealerships.</>
         )}
         {funnel ? (
@@ -121,8 +121,8 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
             <span className="text-red-500 font-semibold">−n</span> means we are n
             units <i>short</i> of it — units that are there and we aren't getting.</>
         ) : (
-          <> The <b className="text-gray-600">vs Tgt</b> column reads the same way
-            everywhere in this module —{" "}
+          <> The <b className="text-gray-600">Remaining Target</b> column reads the
+            same way as every signed figure in this module —{" "}
             <span className="text-green-600 font-semibold">+n</span> is good:
             n units <i>past</i> the quarter target.{" "}
             <span className="text-red-500 font-semibold">−n</span> means n units
@@ -141,16 +141,16 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
               {funnel ? (
                 <>
                   <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">
-                    Total
+                    Total MSIL SC Sales
                   </th>
                   <th className="text-right font-bold py-2"
-                    title="YSASC — of that total, the covers on a vehicle we hold a part number for">
-                    YSASC
+                    title="Available YS Part Number — of that total, the covers on a vehicle we hold a part number for">
+                    Available YS Part Number
                   </th>
-                  <th className="text-right font-bold py-2">YS Sale</th>
-                  <th className="text-right font-bold py-2" title="YS Sale ÷ YSASC">Pene</th>
+                  <th className="text-right font-bold py-2">YS SC Sale</th>
+                  <th className="text-right font-bold py-2" title="YS SC Sale ÷ Available YS Part Number">YS Share</th>
                   <th className="text-right font-bold py-2"
-                    title="Units vs what network-average penetration would predict: + = ahead of the average, − = short of it">
+                    title="Units vs what the network-average YS Share would predict: + = ahead of the average, − = short of it">
                     vs Avg
                   </th>
                 </>
@@ -159,14 +159,15 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
                   <th className="text-right font-bold py-2" title="The whole quarter's target, never pro-rated">
                     Target
                   </th>
+                  {/* One column, not two. "Achieved" and "Amato SC Sale" were
+                      the same figure under two names — see oursOf in model.ts. */}
                   <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">
-                    Achieved
+                    Amato SC Sale
                   </th>
-                  <th className="text-right font-bold py-2">YS Sale</th>
-                  <th className="text-right font-bold py-2" title="Achieved ÷ target">Hit %</th>
+                  <th className="text-right font-bold py-2" title="Amato SC Sale ÷ target">Achieved %</th>
                   <th className="text-right font-bold py-2"
-                    title="Units vs the quarter target: + = already past it, − = still to go">
-                    vs Tgt
+                    title="Units against the quarter target. + = already PAST it, − = still to go — the sign says which, not the name">
+                    Remaining Target
                   </th>
                 </>
               )}
@@ -205,8 +206,9 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
                   ) : (
                     <>
                       <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.target)}</td>
-                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.sold)}</td>
-                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-gray-800">
+                        {nOr(oursOf(d, funnel))}
+                      </td>
                       <td className={`py-2 text-right tabular-nums font-semibold ${
                         hitPct(d.sold, d.target) == null ? "text-gray-500"
                           : hitPct(d.sold, d.target)! >= 100 ? "text-green-600" : "text-gray-700"}`}>
