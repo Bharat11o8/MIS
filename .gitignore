@@ -22,8 +22,15 @@ backend/.env
 Local_sheets/
 
 # ── Local-only docs & scripts (contain VPS/internal details — never commit) ───
+# None of these holds a password, but between them they name the VPS host, its
+# IP and SSH user, the service account, a Drive folder id and staff email
+# addresses. In a public repo that is a free reconnaissance pack: it tells a
+# stranger exactly who to phish and where to knock.
 DEPLOY.md
 DEV_AND_DEPLOY.md
+DEPLOYMENT.md
+DRIVE_DELEGATION_SETUP.md
+VISIT_LOG_PHOTO_SETUP.md
 tunnel-vps-db.ps1
 CLAUDE.md
 # ── IDE & tooling ─────────────────────────────────────────────────────────────

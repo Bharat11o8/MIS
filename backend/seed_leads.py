@@ -15,10 +15,16 @@ from services.lead_parser import parse_leads_file
 db = SessionLocal()
 
 # ── 1. Create demo user ──────────────────────────────────────────────────────
-DEMO_EMAIL    = "lead@autoformindia.com"
-DEMO_PASSWORD = "Lead@2024"
+# The password comes from the environment and is never written down here. A
+# literal in this file is a published credential — the repo is public — and this
+# account is a leads_head, not a throwaway.
+DEMO_EMAIL    = os.getenv("SEED_LEADS_EMAIL", "lead@autoformindia.com")
+DEMO_PASSWORD = os.getenv("SEED_LEADS_PASSWORD") or ""
 DEMO_NAME     = "Lead Manager (Demo)"
 DEMO_ROLE     = "leads_head"
+
+if not DEMO_PASSWORD:
+    sys.exit("SEED_LEADS_PASSWORD must be set before seeding the demo user.")
 
 existing = db.query(User).filter(User.email == DEMO_EMAIL).first()
 if existing:
@@ -33,12 +39,15 @@ else:
         role=DEMO_ROLE,
         department="Lead Management",
         is_active=True,
-        must_change_password=False,
+        # Forced change at first login, so the value typed on the command line
+        # does not become a long-lived password.
+        must_change_password=True,
     )
     db.add(demo_user)
     db.commit()
     db.refresh(demo_user)
-    print(f"Created user: {DEMO_EMAIL} / {DEMO_PASSWORD}")
+    # The password is not echoed — terminal scrollback outlives the command.
+    print(f"Created user: {DEMO_EMAIL} (must change password at first login)")
 
 # ── 2. Import all 4 months of lead data ─────────────────────────────────────
 from models import Lead

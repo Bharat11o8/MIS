@@ -83,16 +83,16 @@ CREATE INDEX IF NOT EXISTS idx_leads_date     ON leads(lead_date);
 CREATE INDEX IF NOT EXISTS idx_leads_status   ON leads(status);
 CREATE INDEX IF NOT EXISTS idx_leads_city     ON leads(city);
 
--- ─── Seed: Default superadmin ────────────────────────────────────
--- Password: admin123 (bcrypt hash)
-INSERT INTO users (name, email, password_hash, role)
-VALUES (
-    'Super Admin',
-    'admin@autoformindia.com',
-    '$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW',
-    'superadmin'
-)
-ON CONFLICT (email) DO NOTHING;
+-- ─── First superadmin ────────────────────────────────────────────
+-- Deliberately NOT seeded here. A fixed hash in a schema file is a published
+-- credential: this repo is public, so the account and its password would be
+-- readable by anyone, and every database ever created from this file would
+-- share them.
+--
+-- Create the first account instead with:
+--     python scripts/create_superadmin.py
+-- which reads SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD from the environment,
+-- generates a fresh hash, and forces a password change at first login.
 
 -- Verify tables created
 SELECT table_name FROM information_schema.tables
