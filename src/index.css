@@ -134,11 +134,15 @@
   }
 
   /* Two-tone page title */
+  /* nowrap because each span is one NAME. Left to wrap, a narrow header breaks
+     them mid-phrase — "OE / NETWORK" beside "SALESPERSON / TARGETS" — which
+     reads as four things rather than two. The line break belongs BETWEEN the
+     spans, so the h1 that holds them carries flex-wrap instead. */
   .page-title-dark {
-    @apply text-3xl font-black text-gray-900 tracking-tight;
+    @apply text-3xl font-black text-gray-900 tracking-tight whitespace-nowrap;
   }
   .page-title-orange {
-    @apply text-3xl font-black tracking-tight;
+    @apply text-3xl font-black tracking-tight whitespace-nowrap;
     color: #f46617;
   }
 

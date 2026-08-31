@@ -2456,7 +2456,11 @@ export default function OENetworkPage() {
           below it on Dealers. The subtitle truncates instead of moving them. */}
       <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="no-print flex items-center justify-between flex-wrap gap-3">
         <div className="min-w-0 flex-1">
-          <h1 className="flex items-center gap-3">
+          {/* flex-wrap, and no row gap: the tab labels here are long and vary
+              ("Salesperson Targets", "Data Source Sheets"), so on a narrow
+              window the title has to fall onto a second line — between the two
+              spans, never inside one. */}
+          <h1 className="flex flex-wrap items-center gap-x-3 gap-y-0">
             <span className="page-title-dark">OE NETWORK</span>
             <span className="page-title-orange">{tabs.find((t) => t.id === activeTab)?.label.toUpperCase()}</span>
           </h1>
