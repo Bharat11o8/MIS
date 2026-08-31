@@ -4,7 +4,7 @@
 // (see ./dealers) without duplicating any of this.
 import React, { useState, useEffect, useMemo } from "react";
 import { Footprints, Phone, UserRound } from "lucide-react";
-import Select from "@/components/ui/Select";
+import Select, { type SelectOption } from "@/components/ui/Select";
 import DateRangePicker, { dayPresets } from "@/components/ui/DateRangePicker";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/ui/Toast";
@@ -78,7 +78,11 @@ export function fqOf(month: number) { return month >= 4 ? Math.floor((month - 4)
 export function quarterToken(fy: number, q: number) { return `${fy}-Q${q}`; }
 export function quarterLabel(t: string) {
   const [fyStr, qStr] = t.split("-Q");
-  return `Q${qStr} FY${String(Number(fyStr) + 1).slice(2)}`;
+  // Spelled out as the full financial year, not "FY27". One workbook per FY
+  // made the short form look harmless; with two registered the picker offered
+  // "Q1 FY27" beside "Q1 FY28" while the yearly picker said "FY26-27", so the
+  // same three months had two names and neither said which year it started in.
+  return `Q${qStr} ${fyLabel(Number(fyStr))}`;
 }
 export function fyLabel(fy: number) { return `FY${String(fy).slice(2)}-${String(fy + 1).slice(2)}`; }
 export const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -129,7 +133,7 @@ const PERIOD_LABELS: Record<PeriodChoice, string> = {
 export function PeriodControls({ mode, onMode, token, onToken, options, range, onRange }: {
   mode: PeriodChoice; onMode: (m: PeriodChoice) => void;
   token: string; onToken: (t: string) => void;
-  options: { value: string; label: string }[];
+  options: SelectOption[];
   range: DateRange; onRange: (r: DateRange) => void;
 }) {
   return (
@@ -196,14 +200,13 @@ export function monthInBounds(year: number, month: number, bounds: [string, stri
 
 /** Period option lists derived from the months that actually hold data, so
  *  future months make new options appear on their own. */
-export function buildPeriodOptions(months: Period[]): Record<PeriodMode, { value: string; label: string }[]> {
+export function buildPeriodOptions(months: Period[]): Record<PeriodMode, SelectOption[]> {
   // Deduped here rather than by each caller: a tab whose months come from two
   // sheets (the Overview unions plan months with log months) would otherwise
   // offer the same month twice in the picker.
   const uniq = new Map<string, Period>();
   months.forEach((p) => uniq.set(monthToken(p), p));
   const sorted = [...uniq.values()].sort((a, b) => b.year - a.year || b.month - a.month);
-  const monthly = sorted.map((p) => ({ value: monthToken(p), label: tokenLabel(monthToken(p)) }));
   const quarters = new Set<string>();
   const fys = new Set<number>();
   sorted.forEach((p) => {
@@ -211,6 +214,21 @@ export function buildPeriodOptions(months: Period[]): Record<PeriodMode, { value
     quarters.add(quarterToken(fy, fqOf(p.month)));
     fys.add(fy);
   });
+  // Headed by financial year once a second year's sheet is registered. Twelve
+  // months is a list; twenty-four is a wall, and the FY boundary is invisible
+  // in it — April 2027 and March 2027 sit next to each other and belong to
+  // different years. A single FY gets no heading: one heading over every row
+  // says nothing and costs a line.
+  //
+  // The month labels keep their year ("April 2026") rather than shortening to
+  // "April" under the heading, because Jan–Mar of FY26-27 are calendar 2027
+  // and a bare month name under "FY26-27" would read as the wrong year.
+  const headed = fys.size > 1;
+  const monthly = sorted.map((p) => ({
+    value: monthToken(p),
+    label: tokenLabel(monthToken(p)),
+    ...(headed ? { group: fyLabel(fyOf(p.year, p.month)) } : {}),
+  }));
   const quarterly = [...quarters].sort((a, b) => {
     const [fa, qa] = a.split("-Q").map(Number);
     const [fb, qb] = b.split("-Q").map(Number);
@@ -218,6 +236,32 @@ export function buildPeriodOptions(months: Period[]): Record<PeriodMode, { value
   }).map((t) => ({ value: t, label: quarterLabel(t) }));
   const yearly = [...fys].sort((a, b) => b - a).map((fy) => ({ value: String(fy), label: fyLabel(fy) }));
   return { monthly, quarterly, yearly };
+}
+
+/**
+ * The option to select in `to` mode so the user keeps looking at the same
+ * window, or the newest option when nothing carries over.
+ *
+ * Pure, and separate from usePeriod, because this is the bit that is easy to
+ * get quietly wrong — an off-by-one here does not crash, it just shows a
+ * different period than the one the user was reading.
+ *
+ * Everything is compared as month ranges so one rule covers every direction,
+ * coarse to fine and back. `opts` is newest-first, so this lands on the newest
+ * period overlapping the old one: August gives Q2, not Q1.
+ */
+export function carryPeriod(
+  from: PeriodChoice, token: string, to: PeriodMode, opts: SelectOption[],
+): SelectOption | null {
+  if (!opts.length) return null;
+  // "custom" and "all" have no token to carry, so they fall through to newest.
+  const win = from === "custom" || from === "all" || !token
+    ? null : periodRange(from, token);
+  const kept = win && opts.find((o) => {
+    const [f, t] = periodRange(to, o.value);
+    return f <= win[1] && t >= win[0];
+  });
+  return kept ?? opts[0];
 }
 
 /**
@@ -234,12 +278,20 @@ export function usePeriod(initialMode: PeriodChoice = "monthly") {
 
   const optionsByMode = useMemo(() => buildPeriodOptions(months), [months]);
   const options = mode === "custom" || mode === "all" ? [] : optionsByMode[mode];
-  // Switching views lands on the latest period of that view, never an empty selection.
+  // Switching views KEEPS THE WINDOW the user is looking at, falling back to
+  // the latest period only when there is nothing to carry over.
+  //
+  // This is what makes a long month list usable. Narrowing from the year is
+  // the natural way to reach an old month — FY26-27 → Q3 → December — and it
+  // only works if the coarse choice carries down; landing on the newest month
+  // of the newest year every time turns two years of months into one flat
+  // scroll. It also means the dropdown OPENS at the right place, because the
+  // list scrolls to the selected item.
   const switchMode = (m: PeriodChoice) => {
     setMode(m);
     if (m === "custom" || m === "all") return;   // neither needs a token
-    const first = optionsByMode[m][0];
-    if (first) setToken(first.value);
+    const next = carryPeriod(mode, token, m, optionsByMode[m]);
+    if (next) setToken(next.value);              // null = no data yet
   };
   return { mode, token, setToken, range, setRange, months, setMonths, options, switchMode };
 }

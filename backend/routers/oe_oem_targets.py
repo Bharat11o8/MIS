@@ -9,7 +9,7 @@ Not to be confused with routers/oe_targets.py. That reads the quarterly
 workbook where the year's money is split across SALESPEOPLE. This reads the
 commitment made to each BRAND. Two files, two grains, never one number.
 
-Four choices worth knowing:
+Five choices worth knowing:
 
   • Every aggregate is computed from the per-month rows. The sheet's own annual
     and quarter totals are not ingested, and one of them is already wrong —
@@ -31,6 +31,12 @@ Four choices worth knowing:
     published month returns None and the UI draws "—". The sheet's own quarter
     columns say 0 for quarters that have not started; that number is not in
     this database and must not be reintroduced here.
+
+  • HYUNDAI AND KIA ARE REPORTED AS ONE BRAND, "MOBIS" — see OEM_GROUPS. The
+    folding happens HERE, on read, never in the stored rows: the workbook keeps
+    a tab each because that is how the two OEMs report, and a database that
+    matches its source is a database somebody can reconcile. It also means
+    splitting them again is a one-line edit rather than a re-sync.
 
   • NOT SCOPED, DELIBERATELY. These are OEM-wide totals with no personal
     attribution — nobody's name appears anywhere in the source. Scoping them
@@ -59,6 +65,39 @@ router = APIRouter(prefix="/oe-network/oem-targets", tags=["OE Network"])
 
 def _fy_label(fy: int) -> str:
     return f"FY{fy % 100:02d}-{(fy + 1) % 100:02d}"
+
+
+# Hyundai and Kia are one commercial relationship: both brands are supplied
+# through Mobis, and the business commits, reviews and reports against the
+# combined number. The workbook cannot say that — it gets a tab per OEM because
+# that is how each one publishes — so the tab says it instead.
+#
+# Grouping on read rather than at sync is deliberate twice over. The stored
+# rows stay a faithful copy of the sheet, so a figure here can always be traced
+# back to a cell. And it avoids a collision that would lose data outright:
+# Hyundai and Kia both sell MATS and ACCESSORIES, so writing both tabs under
+# one OEM name would breach the (oem, product, month) unique index and force
+# the two rows to be added together at ingest, destroying the split for good.
+OEM_GROUPS = {"MOBIS": ("HYUNDAI", "KIA")}
+
+
+def _oem_sql(col: str = "oem") -> str:
+    """`col` folded into its display group.
+
+    Generated from OEM_GROUPS rather than written out, so the dropdown, the
+    aggregates and the filter cannot drift apart — the day a third brand joins
+    Mobis, one tuple changes and all three follow. The values are module
+    constants and never request input, so there is nothing here to bind.
+    """
+    whens = " ".join(
+        "WHEN {c} IN ({members}) THEN '{group}'".format(
+            c=col, group=group, members=", ".join(f"'{m}'" for m in members))
+        for group, members in OEM_GROUPS.items()
+    )
+    return f"CASE {whens} ELSE {col} END"
+
+
+OEM_SQL = _oem_sql()
 
 
 def _pct(num, den) -> Optional[float]:
@@ -119,7 +158,13 @@ def _metrics(r) -> dict:
 
 def _filters(oem, product, product_key):
     where, params = ["1=1"], {}
-    for col, val in {"oem": oem, "product": product, "product_key": product_key}.items():
+    if oem:
+        # Compared against the GROUPED name, so "MOBIS" selects both its tabs
+        # while every ungrouped OEM still matches itself. One code path means
+        # the dropdown cannot offer a value the filter is unable to honour.
+        where.append(f"{OEM_SQL} = :oem")
+        params["oem"] = oem
+    for col, val in {"product": product, "product_key": product_key}.items():
         if val:
             where.append(f"{col} = :{col}")
             params[col] = val
@@ -171,8 +216,15 @@ def filter_options(db: Session = Depends(get_db), current_user: User = Depends(g
         )).fetchall()
         return [r[0] for r in rows]
 
+    oems = [r[0] for r in db.execute(text(
+        f"SELECT DISTINCT {OEM_SQL} AS oem FROM oe_oem_targets"
+        f" WHERE oem IS NOT NULL ORDER BY oem"
+    )).fetchall()]
+
     return {
-        "oems": distinct("oem"),
+        # Grouped, so HYUNDAI and KIA never appear on their own — offering a
+        # value the aggregates no longer produce would return an empty tab.
+        "oems": oems,
         "products": distinct("product"),
         "product_keys": distinct("product_key"),
     }
@@ -221,14 +273,17 @@ def summary(
             GROUP BY {group_by} ORDER BY {order_by}
         """), params).fetchall()
 
-    by_oem = grouped("oem AS key", "oem", "SUM(tgt_value) DESC")
+    by_oem = grouped(f"{OEM_SQL} AS key", OEM_SQL, "SUM(tgt_value) DESC")
     # Keyed by product_key so MSIL's "Docket + Accessories" and Hyundai's
     # "ACCESSORIES" land on one bar. The verbatim product name stays available
     # in by_oem_product, which is what the drilldown reads.
     by_product = grouped("product_key AS key", "product_key", "SUM(tgt_value) DESC")
+    # Grouped by the display name but still split by the verbatim product, so
+    # Hyundai's "SEAT COVERS" and Kia's "SEAT COVERS (PASSANGER)" stay two
+    # lines under Mobis while their identically named MATS become one.
     by_oem_product = grouped(
-        "oem, product AS key, MIN(product_key) AS product_key",
-        "oem, product", "oem, SUM(tgt_value) DESC")
+        f"{OEM_SQL} AS oem, product AS key, MIN(product_key) AS product_key",
+        f"{OEM_SQL}, product", f"{OEM_SQL}, SUM(tgt_value) DESC")
     by_month = db.execute(text(f"""
         SELECT period_year, period_month, quarter, {_SUMS}
         FROM oe_oem_targets WHERE {where_sql}
@@ -257,19 +312,19 @@ def summary(
     # merging cannot change what either clause means.
     py_params |= params
     prior = db.execute(text(f"""
-        SELECT oem, SUM(py_nos) AS py_nos, SUM(py_value) AS py_value
+        SELECT {OEM_SQL} AS oem, SUM(py_nos) AS py_nos, SUM(py_value) AS py_value
         FROM oe_oem_target_annual WHERE {" AND ".join(py_where)}
-        GROUP BY oem ORDER BY oem
+        GROUP BY {OEM_SQL} ORDER BY 1
     """), py_params).fetchall()
 
     # Which money scale each OEM's columns used. A crore-scaled tab carries
     # ₹1L resolution at best, and the tab says so rather than letting a
     # rupee-precise figure imply precision the source never had.
     scales = db.execute(text(f"""
-        SELECT oem,
+        SELECT {OEM_SQL} AS oem,
                STRING_AGG(DISTINCT tgt_value_scale, '/' ORDER BY tgt_value_scale) AS tgt_scale,
                STRING_AGG(DISTINCT ach_value_scale, '/' ORDER BY ach_value_scale) AS ach_scale
-        FROM oe_oem_targets WHERE {where_sql} GROUP BY oem
+        FROM oe_oem_targets WHERE {where_sql} GROUP BY {OEM_SQL}
     """), params).fetchall()
 
     if pm_from and pm_to:

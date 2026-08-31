@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 import {
   fyOf, fqOf, quarterToken, quarterLabel, fyLabel, monthToken, tokenLabel,
   periodRange, periodParams, buildPeriodOptions, periodMonthBounds, monthInBounds,
+  carryPeriod,
   type Period,
 } from "./shared";
 
@@ -34,7 +35,12 @@ describe("Indian financial year", () => {
 
   it("labels an FY by both calendar years", () => {
     expect(fyLabel(2026)).toBe("FY26-27");
-    expect(quarterLabel(quarterToken(2026, 1))).toBe("Q1 FY27");
+    // The full financial year, matching fyLabel and the backend's own quarter
+    // labels. "Q1 FY27" would leave a reader guessing whether FY27 starts or
+    // ends in 2027 — and the yearly picker beside it says "FY26-27".
+    expect(quarterLabel(quarterToken(2026, 1))).toBe("Q1 FY26-27");
+    expect(quarterLabel(quarterToken(2026, 4))).toBe("Q4 FY26-27");
+    expect(quarterLabel(quarterToken(2027, 1))).toBe("Q1 FY27-28");
   });
 });
 
@@ -182,5 +188,106 @@ describe("buildPeriodOptions", () => {
 
   it("round-trips a month token through its label", () => {
     expect(tokenLabel(monthToken({ year: 2026, month: 1 }))).toBe("January 2026");
+  });
+
+  it("leaves a single financial year unheaded", () => {
+    // One heading over every row is noise, and it appears the moment a tab has
+    // only ever been given one year's sheet — which is most of them.
+    const { monthly } = buildPeriodOptions(months.filter((p) => p.month >= 4));
+    expect(monthly.every((o) => o.group === undefined)).toBe(true);
+  });
+
+  it("heads months by financial year once a second one is registered", () => {
+    // Two full years, the case that made a 24-row dropdown.
+    const two: Period[] = [];
+    for (let i = 0; i < 24; i++) {
+      const abs = 2026 * 12 + 3 + i;            // April 2026 onwards
+      two.push({ year: Math.floor(abs / 12), month: (abs % 12) + 1 });
+    }
+    const { monthly } = buildPeriodOptions(two);
+    expect(monthly).toHaveLength(24);
+    expect(monthly[0].label).toBe("March 2028");
+    expect(monthly[0].group).toBe("FY27-28");
+    expect(monthly[23].label).toBe("April 2026");
+    expect(monthly[23].group).toBe("FY26-27");
+
+    // The headings must come out as two unbroken runs, because the Select
+    // draws a heading per RUN. Newest-first month order already puts each FY
+    // together; if it ever stopped doing so, the picker would grow a second
+    // "FY26-27" heading halfway down rather than reorder anything.
+    const runs = monthly.map((o) => o.group)
+      .filter((g, i, a) => i === 0 || g !== a[i - 1]);
+    expect(runs).toEqual(["FY27-28", "FY26-27"]);
+
+    // Jan–Mar 2027 are calendar 2027 but financial FY26-27 — the reason the
+    // labels keep their calendar year instead of shortening to "January".
+    const jan27 = monthly.find((o) => o.value === "2027-1");
+    expect(jan27).toMatchObject({ label: "January 2027", group: "FY26-27" });
+  });
+
+  it("keeps quarterly and yearly unheaded — they never outgrow one screen", () => {
+    const { quarterly, yearly } = buildPeriodOptions(months);
+    expect([...quarterly, ...yearly].every((o) => !("group" in o))).toBe(true);
+  });
+});
+
+
+describe("carryPeriod", () => {
+  // Two full financial years, the case a single 24-row month list made painful.
+  const twoYears: Period[] = [];
+  for (let i = 0; i < 24; i++) {
+    const abs = 2026 * 12 + 3 + i;               // April 2026 onwards
+    twoYears.push({ year: Math.floor(abs / 12), month: (abs % 12) + 1 });
+  }
+  const opts = buildPeriodOptions(twoYears);
+  const carry = (from: "monthly" | "quarterly" | "yearly" | "custom" | "all",
+                 token: string, to: "monthly" | "quarterly" | "yearly") =>
+    carryPeriod(from, token, to, opts[to])?.value;
+
+  it("narrows a year to the newest quarter and month inside it", () => {
+    // The point of the whole thing: FY26-27 → Q3 → December, without ever
+    // scrolling past FY27-28.
+    expect(carry("yearly", "2026", "quarterly")).toBe("2026-Q4");
+    expect(carry("yearly", "2026", "monthly")).toBe("2027-3");
+    expect(carry("quarterly", "2026-Q3", "monthly")).toBe("2026-12");
+  });
+
+  it("widens a month to the period that contains it", () => {
+    expect(carry("monthly", "2026-8", "quarterly")).toBe("2026-Q2");
+    expect(carry("monthly", "2026-8", "yearly")).toBe("2026");
+    // Jan 2027 is FY26-27 Q4, not FY27-28 Q1 — the boundary that makes this
+    // worth a test rather than a slice of the token.
+    expect(carry("monthly", "2027-1", "quarterly")).toBe("2026-Q4");
+    expect(carry("monthly", "2027-1", "yearly")).toBe("2026");
+    expect(carry("monthly", "2027-4", "yearly")).toBe("2027");
+  });
+
+  it("round-trips without drifting between years", () => {
+    // Widen then narrow must not walk you into the other financial year.
+    const q = carry("monthly", "2026-5", "quarterly")!;
+    expect(q).toBe("2026-Q1");
+    expect(carry("quarterly", q, "monthly")).toBe("2026-6");
+    const y = carry("quarterly", q, "yearly")!;
+    expect(y).toBe("2026");
+    expect(carry("yearly", y, "quarterly")).toBe("2026-Q4");
+  });
+
+  it("falls back to the newest period when nothing carries over", () => {
+    // custom and all-time hold no token, and neither does a fresh mount.
+    expect(carry("custom", "", "monthly")).toBe("2028-3");
+    expect(carry("all", "", "quarterly")).toBe("2027-Q4");
+    expect(carry("monthly", "", "yearly")).toBe("2027");
+    // A token for a period the data no longer covers must not select nothing.
+    expect(carry("yearly", "2019", "monthly")).toBe("2028-3");
+  });
+
+  it("returns null rather than a token when there is no data", () => {
+    expect(carryPeriod("monthly", "2026-8", "monthly", [])).toBeNull();
+  });
+
+  it("keeps the exact month when the mode does not change", () => {
+    // Switching away and back is a normal thing to do, and it must be a no-op.
+    expect(carry("monthly", "2026-11", "monthly")).toBe("2026-11");
+    expect(carry("quarterly", "2026-Q3", "quarterly")).toBe("2026-Q3");
   });
 });

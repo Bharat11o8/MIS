@@ -220,8 +220,10 @@ export default function OemTargetsTab({ headers }: { headers: Record<string, str
 
   // A crore-scaled column can only express ₹0.01 Cr, i.e. ₹1 lakh — worth
   // saying out loud when someone reconciles against the sheet to the rupee.
+  // includes(), not ===: a scale is detected per column, so one OEM can report
+  // "crores/rupees" — and a grouped OEM merges two tabs that may disagree.
   const croreOems = Object.entries(data?.value_scales ?? {})
-    .filter(([, s]) => s.target === "crores" || s.actual === "crores")
+    .filter(([, s]) => !!s.target?.includes("crores") || !!s.actual?.includes("crores"))
     .map(([o]) => o);
 
   if (empty) {
