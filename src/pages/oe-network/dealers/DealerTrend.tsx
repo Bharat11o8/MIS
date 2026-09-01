@@ -4,7 +4,7 @@ import {
 } from "recharts";
 import { VISIT_COLOR, CALL_COLOR, TGT_TRACK, FUNNEL_MISSED, CHART_LABEL, MONTH_SHORT } from "../shared";
 import { formatCompactNos } from "@/lib/format";
-import { type DealerMonth, n0 } from "./model";
+import { type DealerMonth, n0, oursLabels } from "./model";
 import Explain from "./Explain";
 
 // Visits are orange on every other tab, but in THIS card orange already means
@@ -38,9 +38,14 @@ const ACT_VISIT = "#0d9488";
  * Used for the whole network and for a single dealership unchanged; only the
  * magnitudes differ.
  */
-export default function DealerTrend({ rows, benchmark, title = "Network trend", subject = "these dealerships" }: {
-  rows: DealerMonth[]; benchmark?: number | null; title?: string; subject?: string;
+export default function DealerTrend({ rows, benchmark, oems = [], title = "Network trend", subject = "these dealerships" }: {
+  rows: DealerMonth[]; benchmark?: number | null;
+  /** The OEMs these rows belong to. The rows are already aggregated and carry
+   *  no OEM of their own, so the name for our units has to come in with them. */
+  oems?: string[];
+  title?: string; subject?: string;
 }) {
+  const L = oursLabels(oems);
   if (!rows.length) return null;
 
   // Whether this OEM publishes the dealer's own total. Read off the rows rather
@@ -85,7 +90,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
             Each bar is one month of what we sold {subject}. This OEM's file reports a
             target and what we achieved against it, and never how many covers the dealer
             sold in total — so there is no funnel to split the bar into, and no
-            YS Share to read off it.
+            {L.share} to read off it.
             {anyActivity && <>{" "}The strip underneath is how many{" "}
               <span style={{ color: ACT_VISIT }} className="font-semibold">visits</span> and{" "}
               <span style={{ color: CALL_COLOR }} className="font-semibold">calls</span>{" "}
@@ -103,7 +108,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
         on top is business we make no part for, which no amount of selling reaches</>}.
         So the orange measured against{" "}
         {anyUnmade ? <b className="text-gray-600">orange + dark grey</b> : "the bar"}{" "}
-        <i>is</i> YS Share, drawn to scale. The{" "}
+        <i>is</i> {L.share}, drawn to scale. The{" "}
         <span style={{ color: VISIT_COLOR }} className="font-semibold">orange line</span>{" "}
         reads it as a percentage against the right-hand axis
         {benchmark ? <>, and the dashed line is the {benchmark.toFixed(1)}% OEM average</> : null}.
@@ -118,8 +123,8 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
       <ResponsiveContainer width="100%" height={230}>
         <ComposedChart data={data} margin={margin}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-          <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-          <YAxis yAxisId="units" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
+          <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} />
+          <YAxis yAxisId="units" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false}
             width={44} tickFormatter={(v: number) => formatCompactNos(v)} />
           {/* The right-hand axis stays even with no percentage on it, so the
               plot area keeps the same width as the activity strip below and the
@@ -138,10 +143,10 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
           />
           <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" iconSize={7}
             formatter={(value: string) => <span style={{ color: CHART_LABEL }}>{value}</span>} />
-          <Bar yAxisId="units" dataKey="ours" stackId="funnel" name="YS SC Sale — ours"
+          <Bar yAxisId="units" dataKey="ours" stackId="funnel" name={`${L.sale} — ours`}
             fill={VISIT_COLOR} radius={funnel ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
           {funnel ? (
-            <Bar yAxisId="units" dataKey="missed" stackId="funnel" name="Available YS Part Number — not won"
+            <Bar yAxisId="units" dataKey="missed" stackId="funnel" name={`${L.avail} — not won`}
               fill={FUNNEL_MISSED} radius={anyUnmade ? [0, 0, 0, 0] : [4, 4, 0, 0]} />
           ) : null}
           {funnel && anyUnmade ? (
@@ -153,7 +158,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
               strokeOpacity={0.5} />
           ) : null}
           {funnel ? (
-            <Line yAxisId="pct" type="monotone" dataKey="pene" name="YS Share"
+            <Line yAxisId="pct" type="monotone" dataKey="pene" name={L.share}
               stroke={VISIT_COLOR} strokeWidth={2}
               dot={{ r: 3, fill: "#fff", stroke: VISIT_COLOR, strokeWidth: 2 }} connectNulls={false} />
           ) : null}
@@ -164,7 +169,7 @@ export default function DealerTrend({ rows, benchmark, title = "Network trend", 
         <ResponsiveContainer width="100%" height={78}>
           <ComposedChart data={data} margin={margin}>
             <XAxis dataKey="name" hide />
-            <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
+            <YAxis tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false}
               width={44} allowDecimals={false} />
             {/* Invisible spacer standing in for the funnel chart's 38px right-hand
                 % axis. Without it this plot area is 38px wider than the one above

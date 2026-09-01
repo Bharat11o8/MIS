@@ -282,7 +282,7 @@ export default function MyVisitsTab({ headers }: { headers: Record<string, strin
             <tbody>
               {loading ? (
                 <tr><td colSpan={COLUMNS.length} className="py-10 text-center">
-                  <div className="w-5 h-5 border-2 border-orange-200 border-t-orange-500 rounded-full animate-spin inline-block" />
+                  <div className="w-5 h-5 border-2 border-orange-200 border-t-brand-orange rounded-full animate-spin inline-block" />
                 </td></tr>
               ) : rows.length === 0 ? (
                 /* Distinguishes "nothing in this window" from "nothing at all",

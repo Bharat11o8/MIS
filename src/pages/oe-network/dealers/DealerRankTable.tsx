@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Select from "@/components/ui/Select";
 import {
-  type PerfDealer, type RankMetric, RANK_META, RANK_METRICS, rankValue, rankLabel, oursOf,
+  type PerfDealer, type RankMetric, RANK_META, RANK_METRICS, rankMeta, rankValue, rankLabel, oursOf, totalLabel, oursLabels,
   n0, nOr, pct, hitPct,
 } from "./model";
 import Explain from "./Explain";
@@ -15,15 +15,27 @@ import Explain from "./Explain";
  *  client, so this is a slice — no refetch, no server round trip. */
 const COUNTS = [10, 20, 30, 50] as const;
 
-export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
+export default function DealerRankTable({ dealers, avgPene, funnel, fullCoverage = false, products, onPick }: {
   dealers: PerfDealer[]; avgPene: number;
   /** Whether the OEMs in view publish the funnel. Without it the rankings that
    *  divide by a total nobody supplies are not offered at all — a metric picker
    *  that can only produce a column of dashes reads as broken. */
   funnel: boolean;
+  /** Whether we hold a part number for the whole range of every OEM in view.
+   *  When we do, the addressable column IS the total column and is not drawn —
+   *  see oursLabels / RANK_METRICS. */
+  fullCoverage?: boolean;
+  /** Products the rows are summed over, so the units column is not captioned
+   *  "SC" when it also holds mats. */
+  products?: string[];
   onPick: (d: PerfDealer) => void;
 }) {
-  const metrics = RANK_METRICS(funnel);
+  const metrics = RANK_METRICS(funnel, fullCoverage);
+  // Named from the rows on screen: TATA publishes a total of its own now, so
+  // the column can no longer be captioned with MSIL's name for it.
+  const oems = [...new Set(dealers.map((d) => d.oem))];
+  // Our units go by the OEM's own name for them — YS on MSIL, Amato on TATA.
+  const L = oursLabels(oems, products);
   const [metric, setMetric] = useState<RankMetric>(metrics[0]);
   // Which end is the useful one depends on the metric, so the default follows
   // it. On a signed metric (+ = ahead) the dealers worth working are the most
@@ -39,7 +51,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
   useEffect(() => {
     if (!metrics.includes(metric)) setMetric(metrics[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [funnel]);
+  }, [funnel, fullCoverage]);
   // A signed metric's useful end is its bottom and a ranking's is its top, so
   // carrying the old end across a metric switch lands the reader on the least
   // interesting half of the new list — "top 20 vs Average" is the dealers who
@@ -57,7 +69,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
     return vols.length ? vols[Math.floor(vols.length / 2)] : 0;
   }, [withSales]);
 
-  const meta = RANK_META[metric];
+  const meta = rankMeta(metric, oems, products);
   const flooring = end === "bottom" && meta.floor;
   const pool = flooring ? withSales.filter((d) => (d.ysasc ?? 0) >= floor) : withSales;
   const sorted = [...pool].sort((a, b) =>
@@ -76,7 +88,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
       <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-bold text-gray-800">
-            {end === "top" ? "Top" : "Bottom"} {rows.length} · {rankLabel(metric, funnel)}
+            {end === "top" ? "Top" : "Bottom"} {rows.length} · {rankLabel(metric, funnel, oems, products)}
           </h3>
           <p className="text-[11px] text-gray-500">{meta.what}</p>
         </div>
@@ -93,7 +105,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
             className="min-w-[92px]"
             options={COUNTS.map((n) => ({ value: String(n), label: `${n} rows` }))} />
           <Select value={metric} onChange={(v) => setMetric(v as RankMetric)}
-            options={metrics.map((k) => ({ value: k, label: rankLabel(k, funnel) }))} />
+            options={metrics.map((k) => ({ value: k, label: rankLabel(k, funnel, oems, products) }))} />
         </div>
       </div>
 
@@ -109,7 +121,7 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
             {rows.length === 1 ? "ies" : "y"} here, fewer than the {count} requested.</>
         )}
         {flooring && (
-          <> Only dealers with <b>{n0(floor)}+</b> Available YS Part Number covers are included, otherwise
+          <> Only dealers with <b>{n0(floor)}+</b> {L.avail} covers are included, otherwise
             the bottom of a share-based list is just the smallest dealerships.</>
         )}
         {funnel ? (
@@ -141,16 +153,20 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
               {funnel ? (
                 <>
                   <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">
-                    Total MSIL SC Sales
+                    {totalLabel(oems)}
                   </th>
+                  {/* Not drawn at full coverage: it is the total column again.
+                      Two columns of identical numbers read as a rendering fault. */}
+                  {!fullCoverage && (
+                    <th className="text-right font-bold py-2"
+                      title="Of that total, the covers on a vehicle we hold a part number for">
+                      {L.avail}
+                    </th>
+                  )}
+                  <th className="text-right font-bold py-2">{L.sale}</th>
+                  <th className="text-right font-bold py-2" title={`${L.sale} ÷ ${L.avail}`}>{L.share}</th>
                   <th className="text-right font-bold py-2"
-                    title="Available YS Part Number — of that total, the covers on a vehicle we hold a part number for">
-                    Available YS Part Number
-                  </th>
-                  <th className="text-right font-bold py-2">YS SC Sale</th>
-                  <th className="text-right font-bold py-2" title="YS SC Sale ÷ Available YS Part Number">YS Share</th>
-                  <th className="text-right font-bold py-2"
-                    title="Units vs what the network-average YS Share would predict: + = ahead of the average, − = short of it">
+                    title={`Units vs what the network-average ${L.share} would predict: + = ahead of the average, − = short of it`}>
                     vs Avg
                   </th>
                 </>
@@ -162,9 +178,9 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
                   {/* One column, not two. "Achieved" and "Amato SC Sale" were
                       the same figure under two names — see oursOf in model.ts. */}
                   <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">
-                    Amato SC Sale
+                    {L.sale}
                   </th>
-                  <th className="text-right font-bold py-2" title="Amato SC Sale ÷ target">Achieved %</th>
+                  <th className="text-right font-bold py-2" title={`${L.sale} ÷ target`}>Achieved %</th>
                   <th className="text-right font-bold py-2"
                     title="Units against the quarter target. + = already PAST it, − = still to go — the sign says which, not the name">
                     Remaining Target
@@ -193,7 +209,11 @@ export default function DealerRankTable({ dealers, avgPene, funnel, onPick }: {
                   {funnel ? (
                     <>
                       <td className="py-2 text-right tabular-nums text-gray-500">{nOr(d.oem_total)}</td>
-                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.ysasc)}</td>
+                      {/* Header is hidden at full coverage, so the cell must be too
+                          or every column after it shifts one place left. */}
+                      {!fullCoverage && (
+                        <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.ysasc)}</td>
+                      )}
                       <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
                       {/* No penetration is "no data", not "bad" — the dash must stay
                           grey, never inherit the below-average red. */}

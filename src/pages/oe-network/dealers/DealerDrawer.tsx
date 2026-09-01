@@ -5,7 +5,7 @@ import {
   API_URL, StatCard, ModeBadge, shortDate, MONTH_SHORT,
   ON_TRACK_PCT, OVER_COLOR, VISIT_COLOR,
 } from "../shared";
-import { type DealerDetail, KPI, n0, nOr, pct, hitPct, categoryLabel } from "./model";
+import { type DealerDetail, KPI, n0, nOr, pct, hitPct, categoryLabel, totalLabel, oursLabels } from "./model";
 import DealerTrend from "./DealerTrend";
 
 /** "Aug 2026" for a single month, "Apr – Jun 2026" for a range. Sales are
@@ -103,6 +103,10 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
   // opens in its familiar shape while the first response is in flight, matching
   // the tab's default for the same reason.
   const funnel = data?.capabilities?.funnel ?? true;
+
+  // The drawer is one dealer, so the OEM is unambiguous and our units get
+  // that OEM's own name for them — YS on MSIL, Amato on TATA.
+  const L = oursLabels(data ? [data.dealer.oem] : []);
 
   // Target and achievement rolled up across the quarters in scope, for the
   // non-funnel tile set. Summed from the SAME rows the Target vs achievement
@@ -205,8 +209,10 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                 Two tile sets, chosen by what the OEM publishes — not one set
                 with dashes in it. TATA reports a target and what we sold
                 against it and never how much the dealer sold in total, so
-                Total MSIL SC Sales, Available YS Part Number and YS Share have
-                no answer for any TATA dealer, in any month. Drawn anyway they
+                a total, an addressable figure and a share have no answer
+                for a dealer whose OEM publishes none of them, in any month.
+                (TATA now publishes a seat-cover total, so this applies to its mat
+                figures rather than to the whole tab.) Drawn anyway they
                 were three permanently empty tiles that read as a load failure. */}
             <div className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${
               funnel ? "2xl:grid-cols-5" : "xl:grid-cols-4"}`}>
@@ -215,17 +221,17 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                   {/* Within a funnel OEM a single dash still means "not
                       published for this month", which is a different statement
                       from zero — see Funnel in model.ts. */}
-                  <StatCard label="Total MSIL SC Sales" value={nOr(view.totals.oem_total)}
+                  <StatCard label={totalLabel([data.dealer.oem])} value={nOr(view.totals.oem_total)}
                     sub={view.totals.oem_total == null ? "not reported for this period" : undefined}
                     icon={<CarFront size={16} />} {...KPI.neutral} />
-                  <StatCard label="Available YS Part Number" value={nOr(view.totals.ysasc)}
+                  <StatCard label={L.avail} value={nOr(view.totals.ysasc)}
                     sub={view.totals.ysasc == null
                       ? "not supplied"
                       : `${pct(view.totals.addressable_pct)} of ${nOr(view.totals.oem_total)}`}
                     icon={<Package size={16} />} {...KPI.neutral} />
-                  <StatCard label="YS SC Sale" value={n0(view.totals.ys_sale)} icon={<Package size={16} />}
+                  <StatCard label={L.sale} value={n0(view.totals.ys_sale)} icon={<Package size={16} />}
                     {...KPI.ours} />
-                  <StatCard label="YS Share" value={pct(view.totals.penetration)}
+                  <StatCard label={L.share} value={pct(view.totals.penetration)}
                     sub={view.totals.penetration == null
                       ? "not supplied"
                       : `${n0(view.totals.ys_sale)} ÷ ${nOr(view.totals.ysasc)}`}
@@ -240,7 +246,7 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                   <StatCard label="Target" value={n0(tgtTotals.target)}
                     sub={view.whole ? "every quarter on record" : "whole quarter, never pro-rated"}
                     icon={<Target size={16} />} {...KPI.target} />
-                  <StatCard label="Amato SC Sale" value={n0(tgtTotals.sold)}
+                  <StatCard label={L.sale} value={n0(tgtTotals.sold)}
                     sub="our units inside that quarter"
                     icon={<Package size={16} />} {...KPI.ours} />
                   {/* A percentage, so it is named as one — this tile read
@@ -272,7 +278,7 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
             )}
 
             {view.months.length > 0 ? (
-              <DealerTrend rows={view.months} benchmark={benchmark}
+              <DealerTrend rows={view.months} benchmark={benchmark} oems={[data.dealer.oem]}
                 title={`This dealership, month by month${view.whole ? " — all time" : ""}`}
                 subject="this dealership" />
             ) : (

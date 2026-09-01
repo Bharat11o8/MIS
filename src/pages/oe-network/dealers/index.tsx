@@ -8,7 +8,8 @@ import {
   periodParams, usePeriod, useFilterOptions, filterOpts, FILTER_LABELS,
   shortDate, useOEScope, ScopeNote, type Period,
 } from "../shared";
-import { type DealerPerf, KPI, n0, nOr, pct, hitPct, categoryLabel } from "./model";
+import { type DealerPerf, KPI, n0, nOr, pct, hitPct, categoryLabel, totalLabel, oursLabels } from "./model";
+import Explain from "./Explain";
 import DealerMap from "./DealerMap";
 import DealerRankTable from "./DealerRankTable";
 import DealerDirectory from "./DealerDirectory";
@@ -23,6 +24,11 @@ export default function DealersTab({ headers }: { headers: Record<string, string
   const options = useFilterOptions<{
     oems: string[]; states: string[]; salespersons: string[]; products: string[];
   }>("dealer_sales", headers);
+  // The tab opens on ONE OEM on purpose. Unfiltered, seat-cover volumes from
+  // every OEM sum into one share, and the OEMs are not comparable that way —
+  // MSIL converts about 15% of what it can and TATA about 75%, so the blend
+  // describes neither. MSIL is the default only because it is the file we
+  // have carried longest; it is a normal filter value and Clear resets it.
   const [oem, setOem] = useState("MSIL");
   const [salesperson, setSalesperson] = useState("");
   const [state, setState] = useState("");
@@ -117,6 +123,21 @@ export default function DealersTab({ headers }: { headers: Record<string, string
   // screen of dashes that looks like a failed load. Defaults true so the tab
   // renders its familiar shape while the first response is in flight.
   const funnel = data?.capabilities.funnel ?? true;
+  // TATA carries our full range, so its Available Part Number % is 100 by
+  // definition rather than by accident. Said on the tiles, not in a tooltip.
+  const fullCoverage = data?.capabilities.full_coverage ?? false;
+  // The OEM whose column this is. "Total MSIL SC Sales" over TATA numbers
+  // names the wrong OEM, which reads as the filter having failed.
+  const fs = data?.funnel_scope ?? null;
+  const oems = [...new Set((data?.dealers ?? []).map((d) => d.oem))];
+  const oemTotalLabel = totalLabel(oems);
+  // MSIL's file calls our units YS, TATA's calls them Amato. See OURS_NAME.
+  // Products in the current selection — the headline tiles are summed over all
+  // of them, so a seat-cover word on that figure would be a lie whenever mats
+  // are in it too.
+  const L = oursLabels(oems, data?.capabilities.products);
+  // The panel below is narrower: only the products that publish a total.
+  const FS = oursLabels(oems, fs?.products);
   const tgtPct = hitPct(k?.sold, k?.target);
   // The benchmark, NOT this view's own penetration. Filtering to a rep must not
   // change the yardstick their dealers are measured against, or a weak
@@ -154,8 +175,11 @@ export default function DealersTab({ headers }: { headers: Record<string, string
               ...(options?.products ?? []).map((c) => ({ value: c, label: categoryLabel(c) }))]}
             placeholder={FILTER_LABELS.product.placeholder} />
         )}
-        <ClearFilters show={!!(salesperson || state || product)}
-          onClear={() => { setSalesperson(""); setState(""); setProduct(""); }} />
+        {/* OEM belongs here too. It starts set, so leaving it out meant the tab
+            opened with a filter applied, no Clear button offered, and nothing on
+            screen saying a filter was on at all. */}
+        <ClearFilters show={!!(oem || salesperson || state || product)}
+          onClear={() => { setOem(""); setSalesperson(""); setState(""); setProduct(""); }} />
         {/* A refetch after the first load used to be invisible — old numbers sat
             on screen with nothing saying a newer answer was on its way. */}
         <FilterSpinner show={loading} />
@@ -201,25 +225,36 @@ export default function DealersTab({ headers }: { headers: Record<string, string
         // off it underneath. Six abreast put a percentage between two unit
         // counts and forced every long name to truncate; the rows are the
         // grouping, not just a way to fit them.
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <StatCard label="Total MSIL SC Sales" value={nOr(k.oem_total)}
+        <div className={`grid grid-cols-2 gap-3 ${
+          fullCoverage ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
+          <StatCard label={oemTotalLabel} value={nOr(k.oem_total)}
             icon={<CarFront size={18} />} {...KPI.neutral} />
-          <StatCard label="Available YS Part Number" value={nOr(k.ysasc)}
-            sub={k.ysasc == null ? "not supplied" : undefined}
-            icon={<Barcode size={18} />} {...KPI.neutral} />
-          <StatCard label="YS SC Sale" value={n0(k.ys_sale)}
+          {/* Not drawn at full coverage: for an OEM whose whole range we carry
+              this is the total again and the percentage is 100 by definition,
+              and two tiles repeating the number above them invite the question
+              of why they disagree. The Explain under the panel says it instead. */}
+          {!fullCoverage && (
+            <StatCard label={L.avail} value={nOr(k.ysasc)}
+              sub={k.ysasc == null ? "not supplied" : undefined}
+              icon={<Barcode size={18} />} {...KPI.neutral} />
+          )}
+          <StatCard label={L.sale} value={n0(k.ys_sale)}
             sub={k.target ? `target ${n0(k.target)}` : undefined}
             icon={<Package size={18} />} {...KPI.ours} />
 
-          <StatCard label="YS Share" value={pct(k.penetration)}
-            sub={k.ysasc == null ? "not supplied" : `${n0(k.ys_sale)} ÷ ${n0(k.ysasc)}`}
+          <StatCard label={L.share} value={pct(k.penetration)}
+            sub={k.ysasc == null ? "not supplied"
+                 : fullCoverage ? `${n0(k.ys_sale)} ÷ ${nOr(k.oem_total)} — their whole volume`
+                 : `${n0(k.ys_sale)} ÷ ${n0(k.ysasc)}`}
             icon={<Target size={18} />} {...KPI.conversion} />
-          {/* Directly under the two figures it divides, and next to YS Share
-              because the two get confused constantly: this one is what we make
-              a part for, not what we sold. */}
-          <StatCard label="Available Part Number %" value={pct(k.addressable_pct)}
-            sub={k.ysasc == null ? "not supplied" : `${n0(k.ysasc)} ÷ ${nOr(k.oem_total)}`}
-            icon={<Percent size={18} />} {...KPI.neutral} />
+          {!fullCoverage && (
+            /* Directly under the two figures it divides, and next to the share
+               because the two get confused constantly: this one is what we make
+               a part for, not what we sold. */
+            <StatCard label="Available Part Number %" value={pct(k.addressable_pct)}
+              sub={k.ysasc == null ? "not supplied" : `${n0(k.ysasc)} ÷ ${nOr(k.oem_total)}`}
+              icon={<Percent size={18} />} {...KPI.neutral} />
+          )}
           <StatCard label="Coverage" value={pct(k.coverage)}
             sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}
             icon={<Store size={18} />} {...KPI.activity} />
@@ -235,7 +270,7 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           <StatCard label="Target" value={n0(k.target)}
             sub="whole quarter, never pro-rated"
             icon={<Target size={18} />} {...KPI.target} />
-          <StatCard label="Amato SC Sale" value={n0(k.sold)}
+          <StatCard label={L.sale} value={n0(k.sold)}
             icon={<Package size={18} />} {...KPI.ours} />
           <StatCard label="Achieved %" value={pct(tgtPct)}
             sub={`${n0(k.sold)} ÷ ${n0(k.target)}`}
@@ -243,6 +278,48 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           <StatCard label="Coverage" value={pct(k.coverage)}
             sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}
             icon={<Store size={18} />} {...KPI.activity} />
+        </div>
+      )}
+
+      {/* The funnel for the products that publish one, when the selection as a
+          whole does not. Its own row, headed with the products it covers — the
+          figures below are a subset of the row above, and unlabelled they would
+          read as disagreeing with it. */}
+      {k && !funnel && fs && (
+        <div className="bg-white border border-orange-100 rounded-2xl p-5 flex flex-col gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-gray-800">
+              {fs.products.map(categoryLabel).join(" · ")} — volume and share
+            </h3>
+            <p className="text-[11px] text-gray-500">
+              {fs.products.map(categoryLabel).join(" and ")} only, not the whole
+              selection: this OEM publishes a total for{" "}
+              {fs.products.length === 1 ? "that product" : "those products"} and not
+              for the rest, and one product's sales over another's volume is not a share.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label={oemTotalLabel} value={nOr(fs.oem_total)}
+              icon={<CarFront size={18} />} {...KPI.neutral} />
+            {!fullCoverage && (
+              <StatCard label={FS.avail} value={nOr(fs.ysasc)}
+                icon={<Barcode size={18} />} {...KPI.neutral} />
+            )}
+            <StatCard label={FS.sale} value={n0(fs.ys_sale)}
+              icon={<Package size={18} />} {...KPI.ours} />
+            <StatCard label={FS.share} value={pct(fs.penetration)}
+              sub={fullCoverage ? `${n0(fs.ys_sale)} ÷ ${nOr(fs.oem_total)} — their whole volume`
+                   : `${n0(fs.ys_sale)} ÷ ${nOr(fs.ysasc)}`}
+              icon={<Target size={18} />} {...KPI.conversion} />
+          </div>
+          <Explain>
+            <b className="text-gray-600">{FS.share}</b> is what we won of what we could
+            have won. {fullCoverage
+              ? "We hold a part number for this OEM's whole range, so everything they sold was winnable and the share is simply ours over theirs — there is no separate addressable figure to show."
+              : "The denominator is only the covers we make a part for, so it never charges us for business we could not have taken."}{" "}
+            A high figure means little headroom left at these dealers, not that they are small;
+            a low one is where the volume already exists and is going to someone else.
+          </Explain>
         </div>
       )}
 
@@ -262,19 +339,20 @@ export default function DealersTab({ headers }: { headers: Record<string, string
               by there is nothing for them to plot, so they are left out rather
               than drawn empty. */}
           {funnel && (
-            <DealerMap dealers={data.dealers} avgPene={avgPene}
+            <DealerMap dealers={data.dealers} avgPene={avgPene} fullCoverage={fullCoverage}
               onPick={(d) => setOpenDealer(d.id)} />
           )}
           <DealerRankTable dealers={data.dealers} avgPene={avgPene} funnel={funnel}
+            fullCoverage={fullCoverage} products={data.capabilities.products}
             onPick={(d) => setOpenDealer(d.id)} />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <CoveragePanel rows={data.by_salesperson} />
-            <QuarterPanel rows={data.by_quarter} funnel={funnel} />
+            <QuarterPanel rows={data.by_quarter} funnel={funnel} oems={oems} />
           </div>
           {funnel && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <DealerTrend rows={data.by_month} benchmark={avgPene} />
-              <ContactEffectPanel data={data.contact_effect} />
+              <DealerTrend rows={data.by_month} benchmark={avgPene} oems={oems} />
+              <ContactEffectPanel data={data.contact_effect} oems={oems} />
             </div>
           )}
         </>
@@ -286,6 +364,7 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           this OEM yet, because the dealers and their contact history are real. */}
       {data && data.dealers.length > 0 && (
         <DealerDirectory dealers={data.dealers} avgPene={avgPene} funnel={funnel}
+          fullCoverage={fullCoverage} products={data.capabilities.products}
           onPick={(d) => setOpenDealer(d.id)} />
       )}
 

@@ -426,8 +426,8 @@ export default function OemTargetsTab({ headers }: { headers: Record<string, str
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={monthChart} margin={{ top: 18, right: 8, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval={0} />
-                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} interval={0} />
+                <YAxis tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false}
                   tickFormatter={(v: number) => (metric === "value" ? formatCompactNos(v) : fmtNos(v))} />
                 <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }}
                   itemStyle={{ color: CHART_LABEL }}

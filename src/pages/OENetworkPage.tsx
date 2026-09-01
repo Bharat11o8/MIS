@@ -565,9 +565,9 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={salespersonChart} margin={{ top: 16, right: 8, left: -18, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
+              <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false}
                 interval={0} tickFormatter={firstName} />
-              <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
+              <YAxis tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} allowDecimals={false} />
               <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="Visits" stackId="a" fill={VISIT_COLOR} radius={[0, 0, 0, 0]}>
@@ -623,8 +623,8 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={trendChart} margin={{ top: 16, right: 16, left: -18, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} allowDecimals={false} />
                 <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 {/* A one-month period is a single point: without a visible dot a
@@ -680,8 +680,8 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
           <ResponsiveContainer width="100%" height={Math.max(160, stateChart.length * 26)}>
             <BarChart data={stateChart} layout="vertical" margin={{ top: 0, right: 24, left: 30, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: "#6b7280" }} width={90} axisLine={false} tickLine={false} />
+              <XAxis type="number" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} allowDecimals={false} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} width={90} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }} />
               <Bar dataKey="Contacts" fill={VISIT_COLOR} radius={[0, 4, 4, 0]} barSize={12}>
                 <LabelList dataKey="Contacts" position="right" fill="#6b7280" fontSize={10} fontWeight={700} />
@@ -1864,8 +1864,8 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={monthChart} margin={{ top: 18, right: 8, left: -12, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval={0} />
-                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false}
+                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false} interval={0} />
+                  <YAxis tick={{ fontSize: 10, fill: CHART_LABEL }} axisLine={false} tickLine={false}
                     tickFormatter={(v: number) => (metric === "value" ? formatCompactNos(v) : fmtNos(v))} />
                   <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid #fed7aa" }}
                     itemStyle={{ color: CHART_LABEL }} formatter={(v: number) => fmt(v)} />
@@ -2428,8 +2428,13 @@ export default function OENetworkPage() {
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
   const { scoped } = useOEScope();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  // OEM Targets is a management view — the commitment made to each BRAND, with
+  // no personal attribution in it at all. A rep has no row of their own in it,
+  // so showing it would hand them the whole company's brand plan rather than a
+  // slice of their own work. Hidden here AND refused by the API; the tab strip
+  // is a convenience, not the control.
   const tabs = useMemo(
-    () => TABS.filter((t) => (t.id === "sheets" ? !scoped
+    () => TABS.filter((t) => (t.id === "sheets" || t.id === "oemtargets" ? !scoped
                             : t.id === "myvisits" ? scoped
                             : true)),
     [scoped]);

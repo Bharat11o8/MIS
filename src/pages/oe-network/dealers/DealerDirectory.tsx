@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { shortDate } from "../shared";
-import { type PerfDealer, n0, nOr, pct, hitPct, oursOf } from "./model";
+import { type PerfDealer, n0, nOr, pct, hitPct, oursOf, totalLabel, oursLabels } from "./model";
 import Explain from "./Explain";
 
 const PAGE = 30;
@@ -12,14 +12,24 @@ const PAGE = 30;
  * "let me just scroll the whole network". Search matches name, city, state,
  * rep and dealer codes, so typing a code off an invoice finds the outlet.
  */
-export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
+export default function DealerDirectory({ dealers, avgPene, funnel, fullCoverage = false, products, onPick }: {
   dealers: PerfDealer[]; avgPene: number;
   /** Whether the OEMs in view publish the funnel. When they don't, the volume
    *  columns have nothing behind them and the list is read against targets
    *  instead — the same rows, the numbers this OEM actually supplies. */
   funnel: boolean;
+  /** Whether we hold a part number for the whole range of every OEM in view.
+   *  When we do, the addressable column IS the total column and is not drawn —
+   *  see oursLabels / RANK_METRICS. */
+  fullCoverage?: boolean;
+  /** See DealerRankTable. */
+  products?: string[];
   onPick: (d: PerfDealer) => void;
 }) {
+  // See DealerRankTable: the total column carries the OEM's own name.
+  const oems = [...new Set(dealers.map((d) => d.oem))];
+  // See DealerRankTable: the OEM's own word for our units.
+  const L = oursLabels(oems, products);
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(PAGE);
 
@@ -61,13 +71,13 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
         {" "}<b className="text-gray-600">{n0(filtered.length)}</b>
         {q.trim() ? <> of {n0(dealers.length)} dealers match.</> : <> dealers in view.</>}
         {funnel ? (
-          <> YS Share is green from the <b>{avgPene.toFixed(1)}%</b> OEM average up; a grey
-            dash means the dealer file supplied no Available YS Part Number for this dealer, so YS Share
+          <> {L.share} is green from the <b>{avgPene.toFixed(1)}%</b> OEM average up; a grey
+            dash means the dealer file supplied no {L.avail} for this dealer, so {L.share}
             cannot be computed — not that it is zero.</>
         ) : (
           <> This OEM's file reports a target and what we achieved against it, and never
-            how much the dealer sold in total — so there is no YS Share to show here.
-            <b className="text-gray-600"> Amato SC Sale</b> is our units inside the quarter
+            how much the dealer sold in total — so there is no {L.share} to show here.
+            <b className="text-gray-600"> {L.sale}</b> is our units inside the quarter
             the target covers, and the target is the <b className="text-gray-600">whole</b>
             {" "}quarter's, so part-way through one, under 100% is expected.</>
         )}
@@ -88,13 +98,17 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
                 <th className="text-left font-bold py-2">Rep</th>
                 {funnel ? (
                   <>
-                    <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">Total MSIL SC Sales</th>
-                    <th className="text-right font-bold py-2"
-                      title="Available YS Part Number — of that total, the covers on a vehicle we hold a part number for">
-                      Available YS Part Number
-                    </th>
-                    <th className="text-right font-bold py-2">YS SC Sale</th>
-                    <th className="text-right font-bold py-2" title="YS SC Sale ÷ Available YS Part Number">YS Share</th>
+                    <th className="text-right font-bold py-2" title="Every seat cover this dealer sold, ours or not">{totalLabel(oems)}</th>
+                    {/* See DealerRankTable: identical to the total column
+                        when we carry the OEM's whole range. */}
+                    {!fullCoverage && (
+                      <th className="text-right font-bold py-2"
+                        title="Of that total, the covers on a vehicle we hold a part number for">
+                        {L.avail}
+                      </th>
+                    )}
+                    <th className="text-right font-bold py-2">{L.sale}</th>
+                    <th className="text-right font-bold py-2" title={`${L.sale} ÷ ${L.avail}`}>{L.share}</th>
                   </>
                 ) : (
                   <>
@@ -102,9 +116,9 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
                     {/* One column, not two. "Achieved" and "Amato SC Sale" were
                         the same figure under two names — see oursOf in model.ts. */}
                     <th className="text-right font-bold py-2" title="Our units inside the quarter the target covers">
-                      Amato SC Sale
+                      {L.sale}
                     </th>
-                    <th className="text-right font-bold py-2" title="Amato SC Sale ÷ target">Achieved %</th>
+                    <th className="text-right font-bold py-2" title={`${L.sale} ÷ target`}>Achieved %</th>
                   </>
                 )}
                 <th className="text-right font-bold py-2">Contacts</th>
@@ -129,7 +143,11 @@ export default function DealerDirectory({ dealers, avgPene, funnel, onPick }: {
                   {funnel ? (
                     <>
                       <td className="py-2 text-right tabular-nums text-gray-500">{nOr(d.oem_total)}</td>
-                      <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.ysasc)}</td>
+                      {/* Header is hidden at full coverage, so the cell must be too
+                          or every column after it shifts one place left. */}
+                      {!fullCoverage && (
+                        <td className="py-2 text-right tabular-nums text-gray-600">{nOr(d.ysasc)}</td>
+                      )}
                       <td className="py-2 text-right tabular-nums font-semibold text-gray-800">{n0(d.ys_sale)}</td>
                       <td className={`py-2 text-right tabular-nums font-semibold ${
                         d.penetration == null ? "text-gray-500"

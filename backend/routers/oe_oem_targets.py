@@ -38,11 +38,17 @@ Five choices worth knowing:
     matches its source is a database somebody can reconcile. It also means
     splitting them again is a one-line edit rather than a re-sync.
 
-  • NOT SCOPED, DELIBERATELY. These are OEM-wide totals with no personal
-    attribution — nobody's name appears anywhere in the source. Scoping them
-    would answer a question the data cannot ask. _scope() is still called, and
-    must be: it is what gates the module, and the coverage test requires every
-    OE route to go through it.
+  • MANAGEMENT ONLY, AND NOT ROW-SCOPED — two separate facts, both needed.
+    These are OEM-wide totals with no personal attribution: nobody's name
+    appears anywhere in the source, so there is no row-level filter to apply
+    and applying one would answer a question the data cannot ask.
+
+    That is NOT a reason to serve them to a field rep. A rep has no row here,
+    so an unfiltered answer is the whole company's brand plan rather than a
+    slice of their own work — the one case where "nothing to scope" and
+    "safe to show" come apart. Every route therefore refuses a scoped account
+    outright, via _refuse_if_scoped, and the tab is hidden in the UI as well.
+    The hidden tab is a convenience; this is the control.
 """
 from typing import Optional
 
@@ -54,6 +60,7 @@ from database import get_db
 from models import User
 from routers.auth import get_current_user
 from routers.oe_network import _scope
+from services.oe_scope import OEScope
 from services.oe_targets_sync import QUARTER_TAGS
 from services.period_filters import month_bounds
 
@@ -61,6 +68,23 @@ MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 router = APIRouter(prefix="/oe-network/oem-targets", tags=["OE Network"])
+
+
+_MANAGEMENT_ONLY = (
+    "OEM Targets is a management view and is not available on a salesperson "
+    "account. Your own targets are on the Salesperson Targets tab."
+)
+
+
+def _refuse_if_scoped(scope: OEScope) -> None:
+    """403 for a field rep.
+
+    Takes the resolved scope rather than resolving it, so a caller still has to
+    go through _scope() to use this — the same reason _scope hands back the
+    thing you must apply instead of just saying yes or no.
+    """
+    if scope.limited:
+        raise HTTPException(status_code=403, detail=_MANAGEMENT_ONLY)
 
 
 def _fy_label(fy: int) -> str:
@@ -181,7 +205,7 @@ def periods(db: Session = Depends(get_db), current_user: User = Depends(get_curr
     an actual, or it lands on a screen of targets with no results against them
     and reads as broken.
     """
-    _scope(db, current_user)
+    _refuse_if_scoped(_scope(db, current_user)[0])
     rows = db.execute(text("""
         SELECT period_year, period_month, fy_year,
                BOOL_OR(ach_nos IS NOT NULL) AS has_actual
@@ -207,7 +231,7 @@ def periods(db: Session = Depends(get_db), current_user: User = Depends(get_curr
 def filter_options(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Every value the sheet holds, never only those the current filter left —
     a dropdown that shrinks to the active selection traps the user."""
-    _scope(db, current_user)
+    _refuse_if_scoped(_scope(db, current_user)[0])
 
     def distinct(col: str):
         rows = db.execute(text(
@@ -244,7 +268,7 @@ def summary(
     current_user: User = Depends(get_current_user),
 ):
     """Everything the OEM Targets tab draws, in one round trip."""
-    _scope(db, current_user)
+    _refuse_if_scoped(_scope(db, current_user)[0])
 
     where, params = _filters(oem, product, product_key)
     # A day range snaps to whole months: a target is a number for a month and

@@ -43,6 +43,7 @@ from services.oe_network_sync import parse_visit_plan, parse_log_book
 from services.oe_oem_targets_sync import parse_oem_targets
 from services.oe_targets_sync import parse_targets, QUARTER_TAGS
 from services.period_filters import parse_date as _parse_date, snap_to_months
+from services.oe_dealer_data_sync import FULL_PART_COVERAGE_OEMS
 from services.oe_scope import OEScope, names_match as _names_match, name_tokens as _name_tokens
 from services.permissions import require_module
 from services.sync_logs import SYNC_LOG_RETENTION, prune_sync_logs
@@ -2489,6 +2490,23 @@ def _ratio(num, den) -> Optional[float]:
     return round(100.0 * num / den, 2) if den else None
 
 
+def _ours(d: dict) -> float:
+    """Our units for a target-only OEM, per dealer.
+
+    Mirrors `oursOf` in the Dealers tab's model.ts and has to keep mirroring it:
+    the "Amato SC Sale" tile is the sum of the column printed underneath it, so
+    the moment the two disagree about an absent `sold` the page gives two
+    answers to one question.
+
+    `sold` is NULL for a dealer whose months touch no quarter at all — TATA's
+    JAS'26 targets land before the OND ones do, so an October screen has
+    achievement with no quarter to sum it into. Reading that as 0 is what made
+    the tile show 0 while every row beneath it showed real units. ys_sale is
+    already COALESCEd to 0 in the query, so the fallback is always a number.
+    """
+    return d["sold"] if d["sold"] is not None else d["ys_sale"]
+
+
 def _funnel(oem_total, ysasc, ys_sale) -> dict:
     """The dealer file's three figures and the three ratios read off them.
 
@@ -2932,7 +2950,8 @@ def dealer_performance(
     m_from, m_to, d_from, d_to = _period_bounds(year, month, from_ym, to_ym,
                                                 from_date, to_date)
     params = {"m_from": m_from, "m_to": m_to, "d_from": d_from, "d_to": d_to,
-              "f_prod": product or None}
+              "f_prod": product or None,
+              "full_cov": list(FULL_PART_COVERAGE_OEMS)}
     where: list = []
     # Scoped on the dealer's assigned rep, straight from the OE dealer file's
     # SALES PERSON column — so a rep's patch includes the dealers they have
@@ -2976,16 +2995,25 @@ def dealer_performance(
     tot_avail = sum(avail) if avail else None
     contacted = sum(1 for g in groups.values() if g["contacts"])
 
-    # What the OEMs in scope actually publish, so the tab shows the panels their
-    # data can support instead of a screen of blanks. `funnel` is an AND across
-    # the scope on purpose: with MSIL and TATA both in view there is no honest
-    # network penetration to show, because half the denominator does not exist.
+    # What the OEMs in scope actually publish, counted per (OEM, PRODUCT) rather
+    # than per OEM. TATA publishes a total for seat covers and none for mats, so
+    # "does TATA have a funnel" has no single answer — with both products in view
+    # oem_total covers SC while ys_sale covers SC and MAT, and every ratio read
+    # off them divides one pool by another. Per product, SC gets its funnel and
+    # MAT correctly does not.
     caps = db.execute(text(f"""
         SELECT COUNT(DISTINCT d.oem) AS oems,
-               COUNT(DISTINCT d.oem) FILTER (WHERE m.oem_total IS NOT NULL) AS funnel_oems,
-               ARRAY_AGG(DISTINCT m.product) AS products
+               COUNT(DISTINCT (d.oem, m.product)) AS series,
+               COUNT(DISTINCT (d.oem, m.product))
+                   FILTER (WHERE m.oem_total IS NOT NULL) AS funnel_series,
+               COUNT(DISTINCT d.oem)
+                   FILTER (WHERE NOT (d.oem = ANY(:full_cov))) AS partial_oems,
+               ARRAY_AGG(DISTINCT m.product) AS products,
+               ARRAY_AGG(DISTINCT m.product)
+                   FILTER (WHERE m.oem_total IS NOT NULL) AS funnel_products
         FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
-        WHERE {_SALES_WINDOW.replace('month', 'm.month')} {extra}
+        WHERE {_SALES_WINDOW.replace('month', 'm.month')}
+          AND {_prod('m')} {extra}
     """), params).mappings().first()
 
     # The yardstick "opportunity" is measured against, and it must NOT move when
@@ -3005,7 +3033,43 @@ def dealer_performance(
     """), params).mappings().first()
     bench_f = _funnel(bench["oem_total"], bench["ysasc"], bench["ys_sale"])
 
-    funnel_ok = caps["oems"] == caps["funnel_oems"]
+    # 0 == 0 on an empty period, deliberately: no rows tells us nothing about
+    # what the OEM publishes, so the tab must not flip into its other shape.
+    funnel_ok = caps["series"] == caps["funnel_series"]
+    # Whether every OEM in view holds a part number for the whole range, which
+    # is what makes their Available Part Number % a truthful 100 rather than a
+    # suspicious one. Requires rows: an empty screen claims nothing.
+    #
+    # Deliberately NOT gated on funnel_ok. This is a fact about the OEMs, not
+    # about whether this particular selection can draw a funnel — and the
+    # funnel_scope panel below is drawn exactly when funnel_ok is false, so
+    # tying the two would leave that panel explaining the wrong OEM's rules.
+    full_coverage = bool(caps["oems"] and not caps["partial_oems"])
+
+    # TATA publishes a seat-cover total and no mat total, so across both products
+    # there is no single honest funnel — oem_total would cover SC while ys_sale
+    # covered SC and MAT. But there IS a funnel for seat covers, and leaving it
+    # off the page hides the tab's most useful number behind a filter nobody
+    # knows to set: the tab looked completely unchanged after the totals arrived.
+    #
+    # So it is returned as its OWN block, aggregated over only the products that
+    # publish a total and carrying their names, and the tab labels it with them.
+    # It can never be read as covering the whole selection, and it is not mixed
+    # into `kpis`, which stays the figure for everything in view.
+    funnel_products = sorted(caps["funnel_products"] or [])
+    funnel_scope = None
+    if not funnel_ok and funnel_products:
+        fs = db.execute(text(f"""
+            SELECT SUM(m.oem_total) AS oem_total, SUM(m.ysasc) AS ysasc,
+                   SUM(m.ys_sale) AS ys_sale
+            FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
+            WHERE {_SALES_WINDOW.replace('month', 'm.month')}
+              AND m.product = ANY(:funnel_prods) {extra}
+        """), params | {"funnel_prods": funnel_products}).mappings().first()
+        funnel_scope = {
+            "products": funnel_products,
+            **_funnel(fs["oem_total"], fs["ysasc"], fs["ys_sale"]),
+        }
 
     kpis = {
         # Dealerships, not rows: coverage is "did we contact this dealership",
@@ -3032,7 +3096,8 @@ def dealer_performance(
         "target": sum(d["target"] or 0 for d in dealers),
         "achievement": (sum(d["achievement"] for d in dealers if d["achievement"] is not None)
                         if any(d["achievement"] is not None for d in dealers) else None),
-        "sold": sum(d["sold"] or 0 for d in dealers),
+        # Not `d["sold"] or 0` — see _ours. Absent quarter, not zero sales.
+        "sold": sum(_ours(d) for d in dealers),
     }
 
     # With a funnel OEM and a non-funnel one both in scope, ys_sale counts every
@@ -3043,6 +3108,13 @@ def dealer_performance(
     # not sit in the payload waiting for the next reader to trust it.
     if not funnel_ok:
         for key in ("penetration", "share", "addressable_pct"):
+            kpis[key] = None
+        # The absolutes go too. They are not individually wrong — oem_total is a
+        # real figure for the products that publish one — but sitting in a block
+        # labelled as the whole selection they describe no single population,
+        # which is exactly what the ratios were removed for. The honest,
+        # product-labelled version is `funnel_scope` below.
+        for key in ("oem_total", "ysasc"):
             kpis[key] = None
 
     by_sp: dict = {}
@@ -3070,7 +3142,7 @@ def dealer_performance(
                 b[k] = (b[k] or 0) + d[k]
         b["target"] += d["target"] or 0
         b["achievement"] += d["achievement"] or 0
-        b["sold"] += d["sold"] or 0
+        b["sold"] += _ours(d)
     for b in by_sp.values():
         b["coverage"] = round(100.0 * b["contacted"] / b["assigned"], 1) if b["assigned"] else None
         b.update(_funnel(b["oem_total"], b["ysasc"], b["ys_sale"]))
@@ -3090,10 +3162,14 @@ def dealer_performance(
             # it must not flip the tab into its other shape — with no rows the
             # answer is "as before", not "no funnel".
             "funnel": funnel_ok,
+            "full_coverage": full_coverage,
             "products": sorted(caps["products"] or []),
             "oems": caps["oems"] or 0,
         },
         "kpis": kpis,
+        # The funnel for the products that publish one, when not all do.
+        # None when `kpis` already carries it, or when nothing publishes one.
+        "funnel_scope": funnel_scope,
         "dealers": dealers,
         "by_salesperson": sorted(by_sp.values(), key=lambda b: -b["ys_sale"]),
         "by_month": _dealer_months(db, extra, params),

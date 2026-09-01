@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { VISIT_COLOR, CALL_COLOR } from "../shared";
-import { type PerfDealer, n0, pct } from "./model";
+import { VISIT_COLOR, CALL_COLOR, CHART_LABEL } from "../shared";
+import { type PerfDealer, n0, pct, oursLabels } from "./model";
 import Explain from "./Explain";
 
 // The third dot colour: a dealer below the network average that is too small to
@@ -44,9 +44,15 @@ function niceNum(v: number): number {
  * separate circles rather than one blob), the legend swatches toggle a whole
  * band off, and hovering fades everything else right back.
  */
-export default function DealerMap({ dealers, avgPene, onPick }: {
-  dealers: PerfDealer[]; avgPene: number; onPick: (d: PerfDealer) => void;
+export default function DealerMap({ dealers, avgPene, fullCoverage = false, onPick }: {
+  dealers: PerfDealer[]; avgPene: number;
+  /** Whether the addressable axis IS the dealer's whole volume — see below:
+   *  the sentence explaining the x axis is the opposite of true when it is. */
+  fullCoverage?: boolean;
+  onPick: (d: PerfDealer) => void;
 }) {
+  // The OEM's own word for our units — YS on MSIL, Amato on TATA.
+  const L = oursLabels([...new Set(dealers.map((d) => d.oem))]);
   const [hover, setHover] = useState<PerfDealer | null>(null);
   const [off, setOff] = useState<Set<Band>>(new Set());
 
@@ -78,7 +84,7 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
   if (!all.length) {
     return (
       <div className="bg-white border border-orange-100 rounded-2xl p-10 text-center text-sm text-gray-500">
-        No Available YS Part Number dealer data for this selection — the OE dealer file only
+        No addressable-volume dealer data for this selection — the OE dealer file only
         covers MSIL so far, and only from the three-series format onward.
       </div>
     );
@@ -133,15 +139,18 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
             that rep's own average makes a weak territory look like it has the
             least to gain. Unlabelled, it just looks like a filter that failed. */}
         <p className="text-[11px] text-gray-500 shrink-0 ml-auto">
-          Whole-OEM average YS Share <b className="text-gray-600">{avgPene.toFixed(1)}%</b>
+          Whole-OEM average {L.share} <b className="text-gray-600">{avgPene.toFixed(1)}%</b>
           <span className="block text-[10px] text-gray-500 text-right">fixed yardstick — ignores rep/state</span>
         </p>
       </div>
 
       <Explain>
         Left-to-right is <b className="text-gray-600">how much this dealer sells that
-        we make a part for</b> (Available YS Part Number — not their whole volume, so nobody is placed
-        by business we could never have won); bottom-to-top is{" "}
+        we make a part for</b> ({fullCoverage
+          ? <>their whole volume, because we hold a part number across this OEM&rsquo;s
+            entire range — everything they sold was winnable</>
+          : <>{L.avail} — not their whole volume, so nobody is placed by business we
+            could never have won</>}); bottom-to-top is{" "}
         <b className="text-gray-600">how much of that we actually win</b>. The dotted
         line is the {avgPene.toFixed(1)}% OEM average.
         So <span style={{ color: VISIT_COLOR }} className="font-semibold">orange dots
@@ -159,11 +168,11 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
           {yTicks.map((t) => (
             <g key={t}>
               <line x1={PL} x2={W - PR} y1={y(t)} y2={y(t)} stroke="#f3f4f6" />
-              <text x={PL - 8} y={y(t) + 3} textAnchor="end" fontSize="10" fill="#9ca3af">{t}%</text>
+              <text x={PL - 8} y={y(t) + 3} textAnchor="end" fontSize="10" fill={CHART_LABEL}>{t}%</text>
             </g>
           ))}
           {xTicks.map((t) => (
-            <text key={t} x={x(t)} y={H - PB + 15} textAnchor="middle" fontSize="10" fill="#9ca3af">
+            <text key={t} x={x(t)} y={H - PB + 15} textAnchor="middle" fontSize="10" fill={CHART_LABEL}>
               {t >= 1000 ? `${(t / 1000).toFixed(1)}k` : t}
             </text>
           ))}
@@ -171,7 +180,7 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
           {/* The volume threshold that splits "work these" from "too small". */}
           <line x1={midX} x2={midX} y1={PT} y2={H - PB}
             stroke="#d1d5db" strokeWidth={1} strokeDasharray="4 4" />
-          <text x={midX + 5} y={PT - 6} fontSize="9" fill="#9ca3af">bigger dealers →</text>
+          <text x={midX + 5} y={PT - 6} fontSize="9" fill={CHART_LABEL}>bigger dealers →</text>
 
           {/* Drawn after the grid but before the dots, and labelled at the LEFT
               so the caption sits over empty space rather than over the dense
@@ -210,11 +219,11 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
             );
           })}
 
-          <text x={(W - PL) / 2 + PL} y={H - 6} textAnchor="middle" fontSize="10" fill="#9ca3af">
-            Available YS Part Number — covers they sell that we make a part for (square-root scale)
+          <text x={(W - PL) / 2 + PL} y={H - 6} textAnchor="middle" fontSize="10" fill={CHART_LABEL}>
+            {L.avail} — covers they sell that we make a part for (square-root scale)
           </text>
-          <text x={-(H / 2)} y={13} transform="rotate(-90)" textAnchor="middle" fontSize="10" fill="#9ca3af">
-            YS Share of Available YS Part Number
+          <text x={-(H / 2)} y={13} transform="rotate(-90)" textAnchor="middle" fontSize="10" fill={CHART_LABEL}>
+            {L.share} of {L.avail}
           </text>
         </svg>
 
@@ -242,7 +251,7 @@ export default function DealerMap({ dealers, avgPene, onPick }: {
               {hover.city} · {hover.salesperson ?? "—"}
             </p>
             <p className="text-[11px] mt-1 font-semibold">
-              {n0(hover.ys_sale)} ours of {n0(hover.ysasc)} Available YS Part Number ·{" "}
+              {n0(hover.ys_sale)} ours of {n0(hover.ysasc)} {L.avail} ·{" "}
               <span style={{ color: (hover.penetration ?? 0) >= avgPene ? "#4ade80" : "#fdba74" }}>
                 {pct(hover.penetration)}
               </span>

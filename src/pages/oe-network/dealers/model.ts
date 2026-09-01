@@ -5,6 +5,7 @@
 // KPI (the StatCard colour roles) lives in ../shared and is used module-wide;
 // re-exported here so the dealer components keep one import.
 export { KPI, categoryLabel } from "../shared";
+import { CATEGORY_LABELS } from "../shared";
 
 /**
  * The dealer file's funnel, in the OE team's own vocabulary:
@@ -58,7 +59,70 @@ export interface PerfDealer extends Funnel {
  *  `funnel` is an AND across the scope: with a funnel OEM and a non-funnel one
  *  both in view there is no honest network penetration to show, because half
  *  the denominator does not exist. */
-export interface Capabilities { funnel: boolean; products: string[]; oems: number }
+/** The funnel for the products that publish a total, when not all of them do.
+ *
+ *  TATA seat covers carry one and TATA mats do not, so `kpis` — which covers
+ *  everything in view — correctly has no funnel at all. Drawing nothing was
+ *  worse than it sounds: the totals arrived and the tab looked identical,
+ *  because its most useful figure was reachable only by setting a product
+ *  filter nobody knew to set. This block is aggregated over `products` alone
+ *  and must always be labelled with them; it is NOT the whole selection. */
+export interface FunnelScope extends Funnel { products: string[] }
+
+export interface Capabilities {
+  funnel: boolean;
+  /** Whether every OEM in view is one we hold a part number for across their
+   *  whole range. On MSIL the addressable pool is a real constraint the file
+   *  measures; on TATA we carry everything, so Available YS Part Number IS the
+   *  dealer's total and Available Part Number % is a truthful 100 — which looks
+   *  exactly like a bug unless the page says why. */
+  full_coverage: boolean;
+  products: string[];
+  oems: number;
+}
+
+/** What our own units are called, in the OEM's own words.
+ *
+ *  MSIL's file calls them YS — YSC, YSASC, "TOTAL YS". TATA's calls them AMATO
+ *  ("JULY'26 ACH SC AMATO"). The name belongs to the source and is not ours to
+ *  standardise: a rep reading this tab has the sheet open next to it.
+ *
+ *  This used to be inferred from `funnel` — a target-only OEM was TATA, so it
+ *  got "Amato" and everyone else got "YS". That proxy died the day TATA started
+ *  publishing a seat-cover total: TATA filtered to seat covers now HAS a funnel
+ *  and would have been captioned in MSIL's vocabulary. Keyed on the OEM itself. */
+const OURS_NAME: Record<string, string> = { MSIL: "YS", TATA: "Amato" };
+
+/** Neutral wording when several OEMs are in view — naming one of them would be
+ *  a claim about the other's rows.
+ *
+ *  `products` names the product word. It is not decoration: TATA's unfiltered
+ *  figure is seat covers AND mats, and calling that "Amato SC Sale" put a
+ *  seat-cover label on a number containing mats — while the seat-cover-only
+ *  panel directly beneath it carried the SAME label over a different figure.
+ *  One label, two numbers, one screen. With more than one product in view the
+ *  product word is dropped rather than guessed. */
+export const oursLabels = (oems: string[], products?: string[]) => {
+  const n = oems.length === 1 ? (OURS_NAME[oems[0]] ?? "YS") : null;
+  // "SC" stays the literal source word — it is what MSIL's file and every
+  // existing caption say — while other single products take their display name.
+  const p = products && products.length === 1
+    ? (products[0] === "SC" ? "SC" : CATEGORY_LABELS[products[0]] ?? products[0])
+    : null;
+  const sale = [n ?? "Our", p, "Sale"].filter(Boolean).join(" ");
+  return {
+    sale,
+    avail: n ? `Available ${n} Part Number` : "Available Part Number",
+    share: n ? `${n} Share` : "Our Share",
+  };
+};
+
+/** "Total MSIL SC Sales" is MSIL's own name for the column. It stopped being a
+ *  safe constant the day TATA started publishing a total of its own: printed
+ *  over TATA's numbers it names the wrong OEM, which is worse than vague.
+ *  One OEM in view gets its name; a mixed view gets none. */
+export const totalLabel = (oems: string[]): string =>
+  `Total ${oems.length === 1 ? oems[0] : "OEM"} SC Sales`;
 export interface DealerSpRow extends Funnel {
   salesperson: string; assigned: number; contacted: number; coverage: number | null;
   visits: number; calls: number; target: number; achievement: number; sold: number;
@@ -87,6 +151,8 @@ export interface ContactBucket extends Funnel {
 export interface DealerPerf {
   period: { month_from: string | null; month_to: string | null; date_from: string | null; date_to: string | null };
   capabilities: Capabilities;
+  /** See FunnelScope. Null when `kpis` already carries the funnel. */
+  funnel_scope: FunnelScope | null;
   kpis: Funnel & {
     /** Dealerships (groups), which is what coverage is a share of. `outlets` is
      *  the number of rows in `dealers` — larger wherever one dealership is
@@ -122,7 +188,7 @@ export interface DealerDetail {
    *  TATA dealer has no Total MSIL SC Sales, Available YS Part Number or YS
    *  Share in any month, so those
    *  tiles are absent rather than dashed. */
-  capabilities: { funnel: boolean };
+  capabilities: { funnel: boolean; full_coverage?: boolean };
   dealer: PerfDealer & { source: string; dealer_code: string | null };
   /** Every product on record for this dealer, unfiltered by the tab's product
    *  filter — the drawer says what they buy from us, all of it. */
@@ -206,9 +272,14 @@ export type RankMetric =
 /** Which rankings a scope can actually answer. The funnel ones divide by
  *  figures a non-funnel OEM never publishes, so offering them there would put a
  *  column of dashes behind a picker that looks like it should work. */
-export const RANK_METRICS = (funnel: boolean): RankMetric[] =>
+/** `fullCoverage` drops the addressable ranking: for an OEM whose whole range
+ *  we carry it is the total ranking again under a second name, and a picker
+ *  with two entries that produce an identical order reads as a bug. */
+export const RANK_METRICS = (funnel: boolean, fullCoverage = false): RankMetric[] =>
   funnel
-    ? ["gap", "ys_sale", "penetration", "oem_total", "ysasc"]
+    ? (fullCoverage
+        ? ["gap", "ys_sale", "penetration", "oem_total"]
+        : ["gap", "ys_sale", "penetration", "oem_total", "ysasc"])
     : ["tgt_gap", "ys_sale"];
 export const RANK_META: Record<RankMetric, {
   label: string; what: string; top: string; bottom: string; floor: boolean;
@@ -220,7 +291,7 @@ export const RANK_META: Record<RankMetric, {
   gap: {
     label: "vs Average",
     what: "units above or below what the OEM average would predict for this dealer — "
-      + "what we actually sell them, minus their Available YS Part Number × the average YS Share. "
+      + "what we actually sell them, minus their {avail} × the average {share}. "
       + "Measured on the addressable figure, so a dealer is never charged for cars "
       + "we make no part for",
     top: "the dealers furthest AHEAD of the average — where we're already "
@@ -241,7 +312,7 @@ export const RANK_META: Record<RankMetric, {
   },
   penetration: {
     label: "YS Share",
-    what: "YS SC Sale ÷ Available YS Part Number — of the covers this dealer sold that we make a part for, "
+    what: "{sale} ÷ {avail} — of the covers this dealer sold that we make a part for, "
       + "the share that was ours. This is a selling number: everything it divides by "
       + "was genuinely winnable",
     top: "where we convert the most of what we could have won",
@@ -283,8 +354,7 @@ export const RANK_META: Record<RankMetric, {
   ysasc: {
     label: "Available YS Part Number",
     what: "the covers this dealer sold that we hold a part number for — the winnable "
-      + "business at this dealer in units, before any of it is won. The share version "
-      + "of the same figure is the Available Part Number % tile above",
+      + "business at this dealer in units, before any of it is won",
     top: "where the most winnable units sit, whether or not we are winning them",
     bottom: "where there is least to win — a small dealer, or one selling covers we "
       + "make no part for",
@@ -311,8 +381,34 @@ export const oursOf = (d: Pick<PerfDealer, "ys_sale" | "sold">, funnel: boolean)
  *  units go by a different name per OEM — MSIL's file calls them YS SC Sale,
  *  TATA's are Amato — so one static label would be wrong on one of the two
  *  tabs. Everything else is named the same in both scopes. */
-export const rankLabel = (m: RankMetric, funnel: boolean): string =>
-  (!funnel && m === "ys_sale" ? "Amato SC Sale" : RANK_META[m].label);
+export const rankLabel = (
+  m: RankMetric, funnel: boolean, oems: string[] = [], products?: string[],
+): string => {
+  const L = oursLabels(oems, products);
+  // `funnel` still decides WHICH figure this column holds (oursOf above); it no
+  // longer decides what to call it. See OURS_NAME.
+  if (m === "oem_total") return totalLabel(oems);
+  if (m === "ys_sale") return L.sale;
+  if (m === "ysasc") return L.avail;
+  if (m === "penetration") return L.share;
+  return RANK_META[m].label;
+};
+
+/** RANK_META's prose with the OEM's own vocabulary filled in.
+ *
+ *  The strings carry {sale}/{avail}/{share} tokens rather than MSIL's words,
+ *  because the same ranking is read on a TATA tab where our units are Amato.
+ *  Hardcoding them meant an Explain that described a different company's
+ *  figures under this one's numbers — the sort of wrong that still reads as a
+ *  sentence. */
+export const rankMeta = (m: RankMetric, oems: string[] = [], products?: string[]) => {
+  const L = oursLabels(oems, products);
+  const fill = (t: string) =>
+    t.replace(/\{sale\}/g, L.sale).replace(/\{avail\}/g, L.avail)
+     .replace(/\{share\}/g, L.share);
+  const meta = RANK_META[m];
+  return { ...meta, what: fill(meta.what), top: fill(meta.top), bottom: fill(meta.bottom) };
+};
 
 export const rankValue = (
   d: PerfDealer, m: RankMetric, avgPene: number, funnel = true,

@@ -43,6 +43,9 @@ ADMIN_ONLY = {
 }
 
 
+NEXT_DEF = chr(10) + "def "  # start of the next top-level def
+
+
 def _source(name):
     with open(os.path.join(ROUTERS, name), encoding="utf-8") as f:
         return f.read()
@@ -118,6 +121,33 @@ def test_admin_only_endpoints_are_actually_admin_only():
     assert ADMIN_ONLY <= names, f"stale ADMIN_ONLY entries: {ADMIN_ONLY - names}"
     # The Sync button on the Overview stays open to reps.
     assert "sync_latest" not in ADMIN_ONLY
+
+
+def test_oem_targets_is_refused_to_field_reps():
+    """OEM Targets is management-only, and calling _scope is not enough to say so.
+
+    This is the one OE router with nothing to row-filter — its source carries no
+    salesperson at all — so every route satisfies the coverage check above by
+    calling _scope and then discarding it. That is precisely how the tab shipped
+    visible to reps: "nothing to scope" was read as "safe to show", when an
+    unfiltered answer here is the whole company's brand plan.
+
+    So the refusal is pinned separately from the scope resolution.
+    """
+    routes = _routes("oe_oem_targets.py")
+    assert routes, "no routes found in oe_oem_targets.py"
+    for func_name, body in routes:
+        assert "_refuse_if_scoped" in body, (
+            f"oe_oem_targets.py::{func_name} resolves a scope but never refuses a "
+            f"scoped account. Every route in this router is management-only.")
+
+
+def test_the_refusal_actually_checks_the_scope():
+    """_refuse_if_scoped satisfies the test above by name. Pin what it does."""
+    src = _source("oe_oem_targets.py")
+    body = src.split("def _refuse_if_scoped(", 1)[1].split(NEXT_DEF, 1)[0]
+    assert "scope.limited" in body and "403" in body, (
+        "_refuse_if_scoped no longer 403s a limited scope")
 
 
 @pytest.mark.parametrize("filename", OE_FILES)

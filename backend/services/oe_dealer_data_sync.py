@@ -150,9 +150,41 @@ _PROD = "|".join(PRODUCTS)
 # "TGT FOR JAS'26 SC"
 _QTR_PROD_RE = re.compile(
     rf"^TGT\s+FOR\s+(?P<tag>AMJ|JAS|OND|JFM)\s*'?\s*(?P<yy>\d{{2}}|\d{{4}})\s+(?P<prod>{_PROD})$")
-# "JULY'26 ACH SC"
+# "JULY'26 ACH SC", and "JULY'26 ACH SC AMATO" since Aug 2026.
+#
+# The trailing owner word appeared when the TATA tab gained a "JULY'26 SC TATA"
+# column — the dealer's whole SC volume — and our achievement column was renamed
+# to say whose number it is. Anchored to AMATO specifically, not to a wildcard
+# trailing word: on this tab a name is exactly what distinguishes our units from
+# the OEM's total, so "ACH SC TATA" must NOT quietly land in ys_sale.
 _ACH_PROD_RE = re.compile(
-    rf"^(?P<month>[A-Z]+\s*'?\s*(?:\d{{2}}|\d{{4}}))\s+ACH\s+(?P<prod>{_PROD})$")
+    rf"^(?P<month>[A-Z]+\s*'?\s*(?:\d{{2}}|\d{{4}}))\s+ACH\s+(?P<prod>{_PROD})"
+    rf"(?:\s+AMATO)?$")
+# "JULY'26 SC TATA" — the dealer's OWN volume of that product, the shape-B
+# equivalent of shape A's "TOTAL MSIL JAN'26". Arrived on the TATA tab in
+# Aug 2026; before that the tab published no total at all.
+#
+# The trailing name is REQUIRED to be the tab's own OEM (checked at the call
+# site, not here). On this tab a name is the only thing separating the OEM's
+# total from ours — "JULY'26 ACH SC AMATO" is our sale — so a column naming
+# anyone else is left unread rather than guessed at.
+_OEM_PROD_TOTAL_RE = re.compile(
+    rf"^(?P<month>[A-Z]+\s*'?\s*(?:\d{{2}}|\d{{4}}))\s+(?P<prod>{_PROD})\s+(?P<who>.+)$")
+
+# OEMs where we hold a part number for EVERY vehicle they sell.
+#
+# YSASC ("available seat covers") is the slice of a dealer's volume we could
+# possibly have won. On MSIL that is a real constraint and the file measures it.
+# On TATA there is nothing to measure: we carry the whole range, so the
+# addressable pool IS the dealer's total, and penetration is our share of
+# everything they sold.
+#
+# So a missing YSASC means two different things on the two tabs, and treating
+# TATA's as absent would blank the one ratio the tab exists to show. It is
+# filled in from oem_total at parse time — see the funnel check below, which
+# still has to hold — and Available Part Number % then reads a truthful 100%.
+FULL_PART_COVERAGE_OEMS = {"TATA"}
+
 # "AUG SC" — next month's column, opened before its numbers exist and before
 # anyone has put the year on it. Empty it is harmless; filled it is a month we
 # cannot place, so it is reported rather than guessed at (see _placeholder_error).
@@ -251,6 +283,7 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
         series: dict[str, dict[int, date]] = {s: {} for s in SERIES}
         # Shape B: {column_index: (month, product)} and {column_index: quarter}
         ach_cols: dict[int, tuple] = {}
+        oem_tot_cols: dict[int, tuple] = {}
         qtr_prod_cols: dict[int, tuple] = {}
         placeholder_cols: dict[int, str] = {}
 
@@ -261,6 +294,12 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
             if (m := _ACH_PROD_RE.match(h)) is not None:
                 if (d := _month_from_header(m.group("month").replace(" ", ""))) is not None:
                     ach_cols[c] = (d, m.group("prod"))
+                    continue
+            if (m := _OEM_PROD_TOTAL_RE.match(h)) is not None:
+                # Only when the column names THIS tab's OEM; see the pattern.
+                if (_norm_header(m.group("who")) == oem
+                        and (d := _month_from_header(m.group("month").replace(" ", ""))) is not None):
+                    oem_tot_cols[c] = (d, m.group("prod"))
                     continue
             if (m := _PLACEHOLDER_RE.match(h)) is not None and m.group("mon") in _MONTHS:
                 placeholder_cols[c] = h
@@ -275,12 +314,35 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
         quarters = {c: q for h, c in cols.items()
                     if (q := _quarter_from_header(h)) is not None}
 
+        # NOT widened by oem_tot_cols. has_funnel means "shape A", and it is
+        # what decides code_keyed below: a shape-B tab lists one row PER CODE
+        # with its own target, and folding those onto name+city would merge
+        # targets the OE team set separately. A per-product total column is a
+        # shape-B column, so it counts towards has_products instead.
         has_funnel = any(series.values())
-        has_products = bool(ach_cols or qtr_prod_cols)
+        full_coverage = oem in FULL_PART_COVERAGE_OEMS
+        has_products = bool(ach_cols or qtr_prod_cols or oem_tot_cols)
         # Which column identifies an outlet. A per-product tab lists one row per
         # dealer code and gives each its own target, so the code is identity
         # there; a funnel tab merges every code onto one outlet row, so it isn't.
         code_keyed = has_products and not has_funnel
+
+        # A product that has a quarter target but no achievement column at all.
+        #
+        # This is how the SC rename got through: "JULY'26 ACH SC" became
+        # "JULY'26 ACH SC AMATO", stopped matching, and 498 rows simply stopped
+        # arriving. Nothing failed — the tab still had its MAT columns, so it
+        # parsed, synced "Done", and the Dealers tab showed a 0 that looked like
+        # a real measurement. A target the OE team set is a firm statement that
+        # the product is being sold, so the missing counterpart is reportable.
+        tgt_prods = {q[-1] for q in qtr_prod_cols.values()}
+        ach_prods = {p for _, p in ach_cols.values()}
+        for prod in sorted(tgt_prods - ach_prods):
+            errors.append(
+                f"'{title}': there is a {prod} target but no {prod} achievement column "
+                f"was recognised, so no {prod} sales were read for this OEM. Expected a "
+                f"header like \"JULY'26 ACH {prod}\"; the headers present are "
+                f"{sorted(cols)[:12]}")
 
         if not (has_funnel or has_products):
             errors.append(f"'{title}': no month or target columns recognised — headers were "
@@ -347,6 +409,15 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
             for s in SERIES:
                 for c, d in series[s].items():
                     monthly.setdefault((d, DEFAULT_PRODUCT), {})[s] = _int(cell(line, c))
+            for c, (d, prod) in oem_tot_cols.items():
+                # The dealer's whole volume of that product.
+                slot = monthly.setdefault((d, prod), {})
+                slot["oem_total"] = _int(cell(line, c))
+                if full_coverage and slot["oem_total"] is not None:
+                    # Not a derived copy of a number the sheet also publishes —
+                    # this OEM publishes no YSASC because for them there is
+                    # nothing to measure. See FULL_PART_COVERAGE_OEMS.
+                    slot["ysasc"] = slot["oem_total"]
             for c, (d, prod) in ach_cols.items():
                 # The achievement IS our sale for that month — the same quantity
                 # shape A calls YSC. oem_total and ysasc are left absent, not

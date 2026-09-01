@@ -151,6 +151,142 @@ def test_a_placeholder_month_column_with_figures_is_reported_not_dropped():
     assert any("AUG SC" in e and "no year" in e for e in loud)
 
 
+def test_our_achievement_column_is_read_when_the_sheet_names_us_in_it():
+    """Aug 2026: the TATA tab gained a "JULY'26 SC TATA" column (the dealer's own
+    SC volume) and the achievement column was renamed "JULY'26 ACH SC AMATO" to
+    say whose number it is.
+
+    The rename silently cost 498 rows. Nothing failed — MAT kept its old header,
+    so the tab still parsed, the sync still said "Done", and the Dealers tab
+    showed "Amato SC Sale 0" for a quarter with a 59,433 target next to it. A 0
+    is a measurement, so nobody reading the screen could tell.
+    """
+    headers = IDENTITY + [
+        "TGT FOR JAS'26 SC", "JULY'26 SC TATA", "JULY'26 ACH SC AMATO",
+        "TGT FOR JAS'26 MAT", "JULY'26 ACH MAT", "AUG SC", "AUG MAT",
+    ]
+    recs, _, errors = parse_dealer_grids({"TATA": [headers,
+        ["ADISHAKTI CARS", "BANGALORE", "KARNATAKA", "ASHOKA",
+         3007720, 329, 120, 88, 113, 5, None, None]]})
+    rec, = recs
+    sc, = monthly(rec, "SC")
+    assert sc["ys_sale"] == 88, "our SC units, not the dealer's 120 and not nothing"
+    assert not errors
+
+
+def test_the_oems_own_total_is_not_mistaken_for_ours():
+    """"JULY'26 SC TATA" is how much the dealer sold in total. It is NOT read at
+    all yet, and it must never fall into ys_sale — the suffix is the only thing
+    separating our units from the OEM's, so the match is anchored to AMATO
+    rather than to "any trailing word"."""
+    headers = IDENTITY + [
+        "TGT FOR JAS'26 SC", "JULY'26 ACH SC TATA",
+        "TGT FOR JAS'26 MAT", "JULY'26 ACH MAT", "AUG SC", "AUG MAT",
+    ]
+    recs, _, errors = parse_dealer_grids({"TATA": [headers,
+        ["A DEALER", "PUNE", "MAHARASHTRA", "UMESH", "1", 329, 120, 113, 5, None, None]]})
+    assert not monthly(recs[0], "SC"), "the OEM's own total must not become our sale"
+    # And because SC has a target, the missing counterpart is reported.
+    assert any("SC target but no SC achievement" in e for e in errors)
+
+
+def test_a_target_with_no_achievement_column_is_reported():
+    """A target the OE team set is a firm statement that the product is sold, so
+    a product with a target and no achievement column at all is a header we
+    failed to read — not an OEM that publishes nothing. This is the check that
+    would have caught the rename on the sync that dropped the rows."""
+    headers = IDENTITY + [
+        "TGT FOR JAS'26 SC", "TGT FOR JAS'26 MAT", "JULY'26 ACH MAT",
+    ]
+    _, _, errors = parse_dealer_grids({"TATA": [headers,
+        ["A DEALER", "PUNE", "MAHARASHTRA", "UMESH", "1", 329, 113, 5]]})
+    assert any("SC target but no SC achievement" in e for e in errors)
+    # MAT has both, so it must not be reported.
+    assert not any("MAT target but no MAT" in e for e in errors)
+
+
+TATA_TOTAL_HEADERS = IDENTITY + [
+    "TGT FOR JAS'26 SC", "JULY'26 SC TATA", "JULY'26 ACH SC AMATO",
+    "TGT FOR JAS'26 MAT", "JULY'26 ACH MAT", "AUG SC", "AUG MAT",
+]
+
+
+def tata_total(*rows):
+    return parse_dealer_grids({"TATA": [TATA_TOTAL_HEADERS, *rows]})
+
+
+def test_the_oems_own_total_becomes_oem_total():
+    """"JULY'26 SC TATA" is the dealer's whole seat-cover volume — the shape-B
+    equivalent of MSIL's "TOTAL MSIL JAN'26". Before Aug 2026 the tab published
+    no total at all and every volume ratio was unavailable for TATA."""
+    recs, _, errors = tata_total(
+        ["ADISHAKTI CARS", "BANGALORE", "KARNATAKA", "ASHOKA",
+         3007720, 329, 120, 88, 113, 5, None, None])
+    sc, = monthly(recs[0], "SC")
+    assert sc["oem_total"] == 120
+    assert sc["ys_sale"] == 88
+    assert not errors
+
+
+def test_full_coverage_fills_ysasc_from_the_total():
+    """We hold a part number for every TATA vehicle, so the addressable pool IS
+    the dealer's whole volume. Left absent it would blank YS Share — the one
+    ratio the funnel exists to show — for an OEM that has no gap to report."""
+    recs, _, _ = tata_total(
+        ["ADISHAKTI CARS", "BANGALORE", "KARNATAKA", "ASHOKA",
+         3007720, 329, 120, 88, 113, 5, None, None])
+    sc, = monthly(recs[0], "SC")
+    assert sc["ysasc"] == sc["oem_total"] == 120
+
+
+def test_a_product_with_no_total_column_keeps_its_figures_absent():
+    """MAT has an achievement column and no total, and must stay that way. A
+    zero here would report the dealer as having sold no mats at all and make
+    every mat ratio false."""
+    recs, _, _ = tata_total(
+        ["ADISHAKTI CARS", "BANGALORE", "KARNATAKA", "ASHOKA",
+         3007720, 329, 120, 88, 113, 5, None, None])
+    mat, = monthly(recs[0], "MAT")
+    assert mat["ys_sale"] == 5
+    assert mat.get("oem_total") is None and mat.get("ysasc") is None
+
+
+def test_a_total_column_does_not_turn_the_tab_into_the_funnel_shape():
+    """has_funnel decides code-keying. A shape-B tab lists one row PER CODE with
+    its own target, so reading a total column as "this is shape A now" would
+    fold two codes onto one outlet and merge targets the OE team set
+    separately — silently, and in a way that still looks like working data."""
+    recs, _, _ = tata_total(
+        ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "DEBASIS", "300C002", 94, 40, 30, 10, 2, None, None],
+        ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "DEBASIS", "3007180", 452, 200, 150, 20, 3, None, None])
+    assert len(recs) == 2, "the two codes must stay two outlets"
+    assert {r["dealer_code"] for r in recs} == {"300C002", "3007180"}
+    assert sorted(t["target"] for r in recs for t in r["targets"] if t["product"] == "SC") == [94, 452]
+
+
+def test_a_total_naming_someone_else_is_not_read_as_the_oems():
+    """The trailing name is the only thing separating the OEM's total from ours,
+    so a column naming anyone but this tab's OEM is left unread rather than
+    guessed at. Reading it as oem_total would put a foreign denominator under
+    every ratio on the tab."""
+    headers = IDENTITY + [
+        "TGT FOR JAS'26 SC", "JULY'26 SC MAHINDRA", "JULY'26 ACH SC AMATO",
+    ]
+    recs, _, _ = parse_dealer_grids({"TATA": [headers,
+        ["A DEALER", "PUNE", "MAHARASHTRA", "UMESH", "1", 329, 120, 88]]})
+    sc, = monthly(recs[0], "SC")
+    assert sc["ys_sale"] == 88
+    assert sc.get("oem_total") is None, "a foreign total must not become this OEM's"
+
+
+def test_the_funnel_still_has_to_narrow_on_a_filled_in_ysasc():
+    """ysasc comes from oem_total at full coverage, so the check that we cannot
+    have sold more than was addressable now bites on the total itself."""
+    _, _, errors = tata_total(
+        ["A DEALER", "PUNE", "MAHARASHTRA", "UMESH", "1", 329, 50, 80, 10, 2, None, None])
+    assert any("above YSASC" in e for e in errors)
+
+
 # ── The MSIL shape is untouched by all of the above ───────────────────────────
 
 def test_funnel_tab_still_parses_as_seat_covers_on_one_outlet_per_city():
