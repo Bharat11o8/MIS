@@ -508,3 +508,18 @@ def test_both_readers_agree_on_a_dealership_tab():
     assert {(r["name"], r["city"], r["dealer_code"] or "") for r in recs} \
         == {(o["name"], o["city"], o["code"]) for o in got}
     assert {o["codes"] for o in got} == {"3008040, 300B910", "3002170"}
+
+
+def test_one_dealership_under_two_spellings_is_summed_not_written_twice():
+    """KHT AGENCIES PRIVATE LIMITED and KHT AGENCIES PVT LTD, both BANGALORE.
+    The sync's resolver reads them as one outlet, so keyed apart here they were
+    two writes to one dealer and the whole sync refused to store anything."""
+    recs, _, errors = tata(
+        ["KHT AGENCIES PRIVATE LIMITED", "BANGALORE", "KARNATAKA", "ASHOKA", "3002710, 3002715",
+         100, 30, 10, 2, None, None],
+        ["KHT AGENCIES PVT LTD", "BANGALORE", "KARNATAKA", "ASHOKA", "3002720, 3002725",
+         50, 20, 5, 1, None, None])
+    kht, = recs
+    assert [t["target"] for t in kht["targets"] if t["product"] == "SC"] == [150]
+    assert kht["dealer_codes"] == "3002710, 3002715, 3002720, 3002725"
+    assert any("listed more than once" in e for e in errors)

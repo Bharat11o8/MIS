@@ -110,6 +110,7 @@ import re
 from datetime import date
 from typing import NamedTuple, Optional
 
+from services.dealer_resolve import norm_city, norm_name
 from services.oe_network_sync import (
     _clean, _fetch_all_grids, _find_header_row, _norm_header, _to_number, normalize_state,
 )
@@ -544,7 +545,13 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
             # or create a phantom second outlet. On a code-keyed tab the code is
             # part of the key, so two codes stay two outlets and only a genuine
             # repeat of the same code merges.
-            key = (oem, name.upper(), city.upper(), (code or "").upper() if code_keyed else "")
+            #
+            # "Twice" is judged by the sync's resolver, not by the spelling:
+            # KHT AGENCIES PRIVATE LIMITED and KHT AGENCIES PVT LTD, both
+            # BANGALORE, are two rows here but one master outlet there, and
+            # keyed apart they reached the sync as two writes to one dealer.
+            key = (oem, norm_name(name), norm_city(city),
+                   (code or "").upper() if code_keyed else "")
             if key in seen:
                 errors.append(f"'{title}': {name} / {city}"
                               + (f" (code {code})" if code_keyed and code else "")
