@@ -12,7 +12,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scripts.backfill_oe_dealer_outlets import absorbed_siblings, pair_outlets  # noqa: E402
+from scripts.backfill_oe_dealer_outlets import (  # noqa: E402
+    absorbed_siblings, identity_clashes, pair_outlets,
+)
 
 
 def m(mid, city, state, code=""):
@@ -158,3 +160,24 @@ def test_a_per_code_tab_folds_nothing():
               m("b", "LUCKNOW", "Uttar Pradesh", "300B391")]
     matched, _ = pair_outlets([o("LUCKNOW", "Uttar Pradesh", "300B390")], master, {})
     assert absorbed_siblings(matched, master) == []
+
+
+def test_an_uncoded_row_already_in_the_dealership_s_city_is_the_one_kept():
+    """GUGNANI AUTOCARS: an uncoded BHUBANESHWAR row and a 3000010 row in
+    CUTTACK; the file lists BHUBANESHWAR, 3000010. Keeping the coded row moved
+    it onto the uncoded row's exact identity and --apply died on the unique
+    index. The uncoded row is kept and the coded one folds into it."""
+    master = [m("bbsr", "BHUBANESHWAR", "Odisha"), m("ctc", "CUTTACK", "Odisha", "3000010")]
+    matched, spare = pair_outlets([group("BHUBANESHWAR", "ODISHA", "3000010")], master, {})
+    assert not spare
+    assert [row["id"] for row, _o in matched] == ["bbsr"]
+    folded = absorbed_siblings(matched, master)
+    assert {gone["id"]: keep["id"] for gone, keep in folded} == {"ctc": "bbsr"}
+    assert identity_clashes(master, matched, folded) == []
+
+
+def test_a_clash_is_reported_before_anything_is_written():
+    """The check the dry run makes, fed the pairing that broke --apply."""
+    master = [m("bbsr", "BHUBANESHWAR", "Odisha"), m("ctc", "CUTTACK", "Odisha", "3000010")]
+    bad = [(master[1], group("BHUBANESHWAR", "Odisha", "3000010"))]
+    assert identity_clashes(master, bad, []) == [("Odisha", "X", "BHUBANESHWAR", "")]

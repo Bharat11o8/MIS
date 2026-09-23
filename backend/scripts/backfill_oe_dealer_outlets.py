@@ -159,17 +159,28 @@ def pair_outlets(outs: list[dict], siblings: list[dict],
 
     # A dealership row lists every code it holds, and the master may still hold
     # one row per code from when the tab was cut that way. The row to keep is
-    # one of those: the one in the dealership's own city, else the lowest code —
-    # the anchor dealer_resolve already sends a group's contacts to, so the
-    # visits resolved there stay where they are. The others are folded in by
+    # the one in the dealership's own city, else the lowest code — the anchor
+    # dealer_resolve already sends a group's contacts to, so the visits
+    # resolved there stay where they are. The others are folded in by
     # absorbed_siblings.
+    #
+    # In that city, an UNCODED row wins over a coded one. The keeper loses its
+    # code, so a coded keeper would land on exactly the identity the uncoded
+    # row already holds: GUGNANI AUTOCARS had an uncoded BHUBANESHWAR row and
+    # its 3000010 row in CUTTACK, and keeping 3000010 killed --apply on the
+    # unique index. The uncoded row is that dealership's outlet already.
+    def mc(m):
+        return (m.get("dealer_code") or "").upper()
+
     by_list = []
     for o in pending:
         listed = {c.upper() for c in split_codes(o["codes"])} if not o["code"] else set()
-        hits = [m for m in pool if (m.get("dealer_code") or "").upper() in listed]
+        hits = [m for m in pool if mc(m) in listed]
         if hits:
-            hit = min(hits, key=lambda m: (norm_city(m["city"]) != norm_city(o["city"]),
-                                           (m.get("dealer_code") or "").upper()))
+            here = [m for m in pool if norm_city(m["city"]) == norm_city(o["city"])
+                    and (not mc(m) or mc(m) in listed)]
+            hit = min(here or hits, key=lambda m: (norm_city(m["city"]) != norm_city(o["city"]),
+                                                   mc(m) != "", mc(m)))
             pool.remove(hit)
             matched.append((hit, o))
         else:
@@ -248,6 +259,21 @@ def absorbed_siblings(matched: list[tuple], siblings: list[dict]) -> list[tuple[
                 out.append((m, keeper))
                 break
     return out
+
+
+def identity_clashes(master: list, updates: list, absorbed: list) -> list:
+    """The (state, name, city, code) keys two rows would share once the run is
+    applied — what idx_oe_dealerships_unique_v2 checks, spelled the same way.
+    Inserts are left out: they go through ON CONFLICT DO NOTHING and cannot
+    fail the run."""
+    def key(state, name, city, code):
+        return (state, (name or "").upper(), (city or "").upper(), (code or "").upper())
+
+    moved = {m["id"] for m, _o in updates} | {m["id"] for m, _k in absorbed}
+    final = [key(m["state"], o["name"], o["city"], o["code"]) for m, o in updates]
+    final += [key(m["state"], m["name"], m["city"], m["dealer_code"])
+              for m in master if m["id"] not in moved]
+    return [k for k, n in collections.Counter(final).items() if n > 1]
 
 
 def outlets_from_grid(grid: list, tab: str) -> list[dict]:
@@ -457,6 +483,18 @@ def main() -> None:
     print(f"\nmaster rows the file does not mention (left untouched): {len(unmatched)}")
     for m in unmatched:
         print(f"     {m['name'][:34]:<34} {str(m['state'])[:16]:<16} source={m['source']}")
+
+    clashes = identity_clashes(master, updates, absorbed)
+    if clashes:
+        # Found here, in the dry run, rather than as a unique violation halfway
+        # through --apply.
+        print(f"\nSTOPPED: {len(clashes)} outlet(s) would end up with the same identity "
+              f"(state / name / city / code) as another row, which the unique index "
+              f"refuses. Nothing was written:")
+        for k in clashes[:12]:
+            print(f"     {k}")
+        db.close()
+        raise SystemExit(1)
 
     if not args.apply:
         print("\nDRY RUN — nothing written. Re-run with --apply.")
