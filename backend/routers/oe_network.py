@@ -516,8 +516,8 @@ def sync_dealer_data(db: Session, source_id: Optional[str],
             f"the file, so the same dealer would be written twice for a month. Nothing was "
             f"changed. This is what the outlet backfill exists to fix — run it for this OEM "
             f"first, then sync again:  python -m scripts.backfill_oe_dealer_outlets "
-            f"--file \"<the .xlsx>\" --oem <OEM> --per-code   (add --apply once the dry run "
-            f"looks right). Colliding rows: {shown}"
+            f"--oem <OEM>   (add --apply once the dry run looks right). It reads the same "
+            f"registered sheet this sync just read. Colliding rows: {shown}"
             + (f" … and {len(collisions) - 4} more" if len(collisions) > 4 else ""))
 
     # One UPDATE ... FROM (VALUES ...) for every matched dealer, in place of one
@@ -3117,6 +3117,26 @@ def dealer_performance(
         for key in ("oem_total", "ysasc"):
             kpis[key] = None
 
+    # The window `sold` actually covers, which is NOT the selected period: the
+    # `sold` CTE rolls up to whole quarters so the figure sits beside a target
+    # agreed for the same quarter. Picking July or August inside JAS'26 gives
+    # the identical number, and with nothing on screen saying so the tile reads
+    # as a filter that has stopped working.
+    #
+    # NULL when no target quarter overlaps the period at all — `_ours` then
+    # falls back to the period's own ys_sale, so the figure really is the
+    # selected months and there is nothing to disclose.
+    sq = db.execute(text(f"""
+        SELECT MIN(t.period_start) AS m_from, MAX(t.period_end) AS m_to
+        FROM oe_dealer_targets t JOIN oe_dealerships d ON d.id = t.dealer_id
+        WHERE (CAST(:m_from AS date) IS NULL OR t.period_end   >= CAST(:m_from AS date))
+          AND (CAST(:m_to   AS date) IS NULL OR t.period_start <= CAST(:m_to   AS date))
+          AND {_prod('t')} {extra}
+    """), params).mappings().first()
+    sold_scope = ({"month_from": sq["m_from"].isoformat(),
+                   "month_to": sq["m_to"].isoformat()}
+                  if sq and sq["m_from"] else None)
+
     by_sp: dict = {}
     seen_groups: set = set()
     for d in dealers:
@@ -3167,6 +3187,9 @@ def dealer_performance(
             "oems": caps["oems"] or 0,
         },
         "kpis": kpis,
+        # The whole-quarter window `kpis.sold` (and every row's `sold`) is
+        # summed over, when that is wider than the period asked for.
+        "sold_scope": sold_scope,
         # The funnel for the products that publish one, when not all do.
         # None when `kpis` already carries it, or when nothing publishes one.
         "funnel_scope": funnel_scope,

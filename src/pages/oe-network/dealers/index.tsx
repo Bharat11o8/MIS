@@ -139,6 +139,20 @@ export default function DealersTab({ headers }: { headers: Record<string, string
   // The panel below is narrower: only the products that publish a total.
   const FS = oursLabels(oems, fs?.products);
   const tgtPct = hitPct(k?.sold, k?.target);
+  // `sold` is rolled up to the whole quarters the period touches, because it
+  // sits beside a target agreed for a quarter and never pro-rated. So it does
+  // NOT move between months inside one quarter — July and August of JAS'26
+  // give the same figure. The Target tile has always declared that and this
+  // one did not, which made the pair read as one tile having stopped following
+  // the filter. Only said when the window really is wider than what was asked
+  // for; where no quarter overlaps, `sold` is the selected months after all.
+  const ym = (s: string | null | undefined) => s?.slice(0, 7);
+  const ss = data?.sold_scope ?? null;
+  const soldSub = ss && (ym(ss.month_from) !== ym(data?.period.month_from)
+                         || ym(ss.month_to) !== ym(data?.period.month_to))
+    ? `${MONTH_SHORT[Number(ss.month_from.slice(5, 7)) - 1]}–${
+        MONTH_SHORT[Number(ss.month_to.slice(5, 7)) - 1]}, whole quarter`
+    : undefined;
   // The benchmark, NOT this view's own penetration. Filtering to a rep must not
   // change the yardstick their dealers are measured against, or a weak
   // territory reads as having the least to gain.
@@ -270,7 +284,7 @@ export default function DealersTab({ headers }: { headers: Record<string, string
           <StatCard label="Target" value={n0(k.target)}
             sub="whole quarter, never pro-rated"
             icon={<Target size={18} />} {...KPI.target} />
-          <StatCard label={L.sale} value={n0(k.sold)}
+          <StatCard label={L.sale} value={n0(k.sold)} sub={soldSub}
             icon={<Package size={18} />} {...KPI.ours} />
           <StatCard label="Achieved %" value={pct(tgtPct)}
             sub={`${n0(k.sold)} ÷ ${n0(k.target)}`}

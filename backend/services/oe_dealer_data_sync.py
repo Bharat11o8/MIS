@@ -53,6 +53,11 @@ and code 3007180 with 452. 43 name+city pairs are split this way. Merging them
 would fold two targets the team set separately into one number nobody agreed to,
 so on a shape-B tab the code joins the key and each code is its own outlet.
 
+UNLESS the rows are cut by dealership. In Sep 2026 TATA moved to one row per
+dealership, every code it holds listed in one cell ("3008040, 300B910") and one
+target for the lot. A single multi-code cell is what says so — see
+keyed_by_code — and the tab is then keyed name + city exactly like shape A.
+
 The shape decides this, not the OEM name: a per-product tab is code-keyed, a
 funnel tab is outlet-keyed. Consequence worth knowing — a visit log names a
 dealership and a city and never a code, so contacts cannot be attributed to one
@@ -103,7 +108,7 @@ from __future__ import annotations
 import calendar
 import re
 from datetime import date
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from services.oe_network_sync import (
     _clean, _fetch_all_grids, _find_header_row, _norm_header, _to_number, normalize_state,
@@ -264,6 +269,108 @@ def _code(v) -> Optional[str]:
     return _clean(v)
 
 
+class Shape(NamedTuple):
+    """What a tab's headers say it publishes, and how its rows are keyed."""
+    series: dict            # {series_name: {column_index: month}}
+    ach_cols: dict          # shape B: {column_index: (month, product)}
+    oem_tot_cols: dict      # shape B: {column_index: (month, product)}
+    qtr_prod_cols: dict     # shape B: {column_index: (quarter…, product)}
+    placeholder_cols: dict  # {column_index: header} — a month with no year
+    quarters: dict          # {column_index: quarter}
+    has_funnel: bool
+    has_products: bool
+    code_keyed: bool
+
+
+def classify_columns(cols: dict, oem: str) -> Shape:
+    """Read a tab's shape off its headers alone.
+
+    Public because `code_keyed` is not only the parser's business: the outlet
+    backfill has to key outlets exactly as the parser does or the two disagree
+    about who exists, and a tab read on the wrong grain silently folds 43
+    name+city pairs into one. Deriving it here once means the flag cannot be
+    passed wrongly, because there is no flag.
+    """
+    # {series_name: {column_index: month}} — one pass, driven by the header
+    # text alone. _YSASC_RE is tried before _OEM_TOTAL_RE only for clarity;
+    # the negative lookahead already keeps them disjoint.
+    series: dict[str, dict[int, date]] = {s: {} for s in SERIES}
+    # Shape B: {column_index: (month, product)} and {column_index: quarter}
+    ach_cols: dict[int, tuple] = {}
+    oem_tot_cols: dict[int, tuple] = {}
+    qtr_prod_cols: dict[int, tuple] = {}
+    placeholder_cols: dict[int, str] = {}
+
+    for h, c in cols.items():
+        if (q := _quarter_prod_from_header(h)) is not None:
+            qtr_prod_cols[c] = q
+            continue
+        if (m := _ACH_PROD_RE.match(h)) is not None:
+            if (d := _month_from_header(m.group("month").replace(" ", ""))) is not None:
+                ach_cols[c] = (d, m.group("prod"))
+                continue
+        if (m := _OEM_PROD_TOTAL_RE.match(h)) is not None:
+            # Only when the column names THIS tab's OEM; see the pattern.
+            if (_norm_header(m.group("who")) == oem
+                    and (d := _month_from_header(m.group("month").replace(" ", ""))) is not None):
+                oem_tot_cols[c] = (d, m.group("prod"))
+                continue
+        if (m := _PLACEHOLDER_RE.match(h)) is not None and m.group("mon") in _MONTHS:
+            placeholder_cols[c] = h
+            continue
+        for name, rx in (("ysasc", _YSASC_RE), ("oem_total", _OEM_TOTAL_RE),
+                         ("ys_sale", _YS_SALE_RE)):
+            mm = rx.match(h)
+            if mm and (d := _month_from_header(mm.group("month").strip())) is not None:
+                series[name][c] = d
+                break
+
+    quarters = {c: q for h, c in cols.items()
+                if (q := _quarter_from_header(h)) is not None}
+
+    # NOT widened by oem_tot_cols. has_funnel means "shape A", and it is
+    # what decides code_keyed below: a shape-B tab lists one row PER CODE
+    # with its own target, and folding those onto name+city would merge
+    # targets the OE team set separately. A per-product total column is a
+    # shape-B column, so it counts towards has_products instead.
+    has_funnel = any(series.values())
+    has_products = bool(ach_cols or qtr_prod_cols or oem_tot_cols)
+    # Which column identifies an outlet. A per-product tab lists one row per
+    # dealer code and gives each its own target, so the code is identity
+    # there; a funnel tab merges every code onto one outlet row, so it isn't.
+    code_keyed = has_products and not has_funnel
+    return Shape(series, ach_cols, oem_tot_cols, qtr_prod_cols, placeholder_cols,
+                 quarters, has_funnel, has_products, code_keyed)
+
+
+# "3008040, 300B910" — every code a dealership holds, in one CODE cell.
+_CODE_SEP = re.compile(r"[,;/\n]+")
+
+
+def split_codes(v) -> list[str]:
+    """The codes in one CODE cell, in the sheet's order."""
+    return [c for c in (p.strip() for p in _CODE_SEP.split(_code(v) or "")) if c]
+
+
+def keyed_by_code(shape: Shape, code_cells) -> bool:
+    """Whether this tab's outlets are keyed by dealer code — the headers' answer,
+    overruled by the rows when they list several codes in one cell.
+
+    The headers can only say what a tab publishes, not how its rows are cut.
+    TATA moved to one row per DEALERSHIP in Sep 2026, targets included:
+    "A G MOTORS / AMRITSAR, 3008040, 300B910" with a single SC target where
+    there used to be one row per code. Keyed on the code there, the whole list
+    becomes one code no outlet holds, and every group's sibling rows stay in the
+    master as outlets no sale is written to again. One multi-code cell is enough:
+    a per-code tab never has one, and a group tab has plenty (dealers with only
+    one code look identical under either reading).
+
+    Shared by the parser and the outlet backfill, for the same reason
+    classify_columns is: they must agree about who exists.
+    """
+    return shape.code_keyed and not any(len(split_codes(c)) > 1 for c in code_cells)
+
+
 def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
     """(records, skipped_tabs, errors). Split out from parse_dealer_data so the
     same logic can be run against a downloaded copy of the file."""
@@ -277,55 +384,13 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
         h_row, cols = header
         oem = _norm_header(title)
 
-        # {series_name: {column_index: month}} — one pass, driven by the header
-        # text alone. _YSASC_RE is tried before _OEM_TOTAL_RE only for clarity;
-        # the negative lookahead already keeps them disjoint.
-        series: dict[str, dict[int, date]] = {s: {} for s in SERIES}
-        # Shape B: {column_index: (month, product)} and {column_index: quarter}
-        ach_cols: dict[int, tuple] = {}
-        oem_tot_cols: dict[int, tuple] = {}
-        qtr_prod_cols: dict[int, tuple] = {}
-        placeholder_cols: dict[int, str] = {}
-
-        for h, c in cols.items():
-            if (q := _quarter_prod_from_header(h)) is not None:
-                qtr_prod_cols[c] = q
-                continue
-            if (m := _ACH_PROD_RE.match(h)) is not None:
-                if (d := _month_from_header(m.group("month").replace(" ", ""))) is not None:
-                    ach_cols[c] = (d, m.group("prod"))
-                    continue
-            if (m := _OEM_PROD_TOTAL_RE.match(h)) is not None:
-                # Only when the column names THIS tab's OEM; see the pattern.
-                if (_norm_header(m.group("who")) == oem
-                        and (d := _month_from_header(m.group("month").replace(" ", ""))) is not None):
-                    oem_tot_cols[c] = (d, m.group("prod"))
-                    continue
-            if (m := _PLACEHOLDER_RE.match(h)) is not None and m.group("mon") in _MONTHS:
-                placeholder_cols[c] = h
-                continue
-            for name, rx in (("ysasc", _YSASC_RE), ("oem_total", _OEM_TOTAL_RE),
-                             ("ys_sale", _YS_SALE_RE)):
-                mm = rx.match(h)
-                if mm and (d := _month_from_header(mm.group("month").strip())) is not None:
-                    series[name][c] = d
-                    break
-
-        quarters = {c: q for h, c in cols.items()
-                    if (q := _quarter_from_header(h)) is not None}
-
-        # NOT widened by oem_tot_cols. has_funnel means "shape A", and it is
-        # what decides code_keyed below: a shape-B tab lists one row PER CODE
-        # with its own target, and folding those onto name+city would merge
-        # targets the OE team set separately. A per-product total column is a
-        # shape-B column, so it counts towards has_products instead.
-        has_funnel = any(series.values())
+        shape = classify_columns(cols, oem)
+        series = shape.series
+        ach_cols, oem_tot_cols = shape.ach_cols, shape.oem_tot_cols
+        qtr_prod_cols, placeholder_cols = shape.qtr_prod_cols, shape.placeholder_cols
+        quarters = shape.quarters
+        has_funnel, has_products = shape.has_funnel, shape.has_products
         full_coverage = oem in FULL_PART_COVERAGE_OEMS
-        has_products = bool(ach_cols or qtr_prod_cols or oem_tot_cols)
-        # Which column identifies an outlet. A per-product tab lists one row per
-        # dealer code and gives each its own target, so the code is identity
-        # there; a funnel tab merges every code onto one outlet row, so it isn't.
-        code_keyed = has_products and not has_funnel
 
         # A product that has a quarter target but no achievement column at all.
         #
@@ -368,6 +433,8 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
 
         def cell(line, idx):
             return line[idx] if idx is not None and idx < len(line) else None
+
+        code_keyed = keyed_by_code(shape, (cell(line, code_c) for line in data_rows))
 
         # A code-keyed tab carries a few blank-CODE rows that repeat a name+city
         # already listed WITH a code, all figures zero — padding left behind by
@@ -465,7 +532,7 @@ def parse_dealer_grids(grids: dict) -> tuple[list, list, list]:
                 # Identity, and only on a code-keyed tab. Elsewhere the outlet is
                 # name + city and this stays NULL, exactly as the master expects.
                 "dealer_code": code if code_keyed else None,
-                "dealer_codes": code,
+                "dealer_codes": ", ".join(split_codes(code)) or None,
                 "monthly": [{"month": d, "product": p, **v}
                             for (d, p), v in sorted(monthly.items(), key=lambda kv: kv[0])],
                 "targets": sorted(targets.values(),

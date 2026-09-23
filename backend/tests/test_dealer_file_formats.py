@@ -22,6 +22,7 @@ from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from scripts.backfill_oe_dealer_outlets import outlets_from_grid  # noqa: E402
 from services.oe_dealer_data_sync import parse_dealer_grids  # noqa: E402
 
 IDENTITY = ["DEALER NAME", "DEALER CITY", "STATES", "SALES PERSON", "CODE"]
@@ -379,3 +380,131 @@ def test_rounding_each_dealer_would_miss_the_sheet_total():
                if t["quarter"] == "Q2" and t["product"] == "SC"]
     assert sum(targets) == 100.0
     assert sum(round(t) for t in targets) == 99
+
+
+# ── The backfill reads the same rows the sync does ────────────────────────────
+#
+# Two readers walk the identity block: the parser above, and the outlet backfill
+# (scripts/backfill_oe_dealer_outlets.py) that creates the master rows the parser
+# then resolves against. If they disagree about who exists, the backfill either
+# creates outlets no sale is ever written to — phantoms that lower every coverage
+# figure — or misses the one whose absence is what made the sync fail, which
+# looks like the backfill not working.
+
+def outlets(headers, *rows, tab="TATA"):
+    return outlets_from_grid([headers, *rows], tab)
+
+
+def test_backfill_and_parser_agree_about_which_outlets_exist():
+    """The invariant the two readers have to hold: same grid, same outlets.
+
+    Both halves of it matter. The padding row must be dropped by both, and the
+    second code of a dealership must be kept by both — that second code is
+    exactly the row a sync dies on when the master has no outlet for it.
+    """
+    rows = [
+        ["SEVEN AUTOCORP PVT LTD", "LUCKNOW", "UP", "PANKAJ", "300B390", 94, 10, 0, 0, None, None],
+        ["SEVEN AUTOCORP PVT LTD", "LUCKNOW", "UP", "PANKAJ", "300B391", 44, 4, 0, 0, None, None],
+        ["SEVEN AUTOCORP PVT LTD", "BASTI", "UP", "PANKAJ", "300B330", 20, 2, 0, 0, None, None],
+        ["KEY MOTOR", "BANGALORE", "KARNATAKA", "ASHOKA", "3007560", 434, 130, 0, 0, None, None],
+        ["KEY MOTOR", "BANGALORE", "KARNATAKA", "ASHOKA", None, None, 0, None, 0, None, None],
+    ]
+    recs, _, _ = tata(*rows)
+    parsed = {(r["name"], r["city"], r["dealer_code"] or "") for r in recs}
+    backfilled = {(o["name"], o["city"], o["code"])
+                  for o in outlets(TATA_HEADERS, *rows)}
+    assert parsed == backfilled
+    assert ("SEVEN AUTOCORP PVT LTD", "LUCKNOW", "300B391") in backfilled
+
+
+def test_backfill_reads_a_row_the_sheet_truncated():
+    """The Sheets API cuts each row off at its last non-empty cell, so a dealer
+    with no CODE yet arrives SHORTER than the header. Indexing it blindly raised
+    — and the whole backfill died on one uncoded dealer."""
+    got, = outlets(TATA_HEADERS, ["GUARD TATA", "DWARKA", "DELHI", "PANKAJ"])
+    assert (got["name"], got["city"], got["code"]) == ("GUARD TATA", "DWARKA", "")
+
+
+def test_backfill_finds_a_header_that_is_not_the_first_row():
+    """The tab opens with a title row often enough that the parser looks for the
+    header rather than assuming row 0. The backfill has to look the same way, or
+    it reads the title as a dealer and every real one as a stranger."""
+    got = outlets(TATA_HEADERS, ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "D", "300C002"])
+    titled = outlets_from_grid(
+        [["TATA MOTORS — DEALER VIEW FY26-27"], [], TATA_HEADERS,
+         ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "D", "300C002"]], "TATA")
+    assert titled == got
+
+
+def test_the_grain_is_read_off_the_headers_not_passed_in():
+    """The backfill used to take --per-code. Pass it on a funnel tab and every
+    outlet splits by a code that is only reference data there; forget it on a
+    per-product tab and 43 name+city pairs fold into one. Both tabs now answer
+    for themselves, and they answer the same way the parser keys its rows."""
+    tata_rows = [
+        ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "D", "300C002", 94, 10, 0, 0, None, None],
+        ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "D", "3007180", 452, 40, 0, 0, None, None],
+    ]
+    # Two codes, one city: kept apart, because each carries its own target.
+    assert len(outlets(TATA_HEADERS, *tata_rows)) == 2
+
+    msil_rows = [
+        ["MY CAR", "PUNE", "MAHARASHTRA", "R", "1907", 100, 60, 100, 12, 12, 0.2, 5, 4, 6, None],
+        ["MY CAR", "PUNE", "MAHARASHTRA", "R", "1907191", 100, 60, 100, 12, 12, 0.2, 5, 4, 6, None],
+    ]
+    # Same two codes' worth of rows on a funnel tab: ONE outlet, codes unioned —
+    # MY CAR / PUNE is a single dealership that happens to hold several codes.
+    got, = outlets(MSIL_HEADERS, *msil_rows, tab="MSIL")
+    assert got["code"] == ""
+    assert got["codes"] == "1907, 1907191"
+
+
+def test_both_readers_agree_on_the_funnel_tab_too():
+    """The agreement above is only worth something if it holds on both shapes."""
+    rows = [
+        ["MY CAR", "PUNE", "MAHARASHTRA", "R", "1907", 100, 60, 100, 12, 12, 0.2, 5, 4, 6, None],
+        ["MY CAR", "NASHIK", "MAHARASHTRA", "R", "1908", 80, 40, 80, 9, 9, 0.2, 4, 3, 5, None],
+    ]
+    recs, _, _ = msil(*rows)
+    assert {(r["name"], r["city"], r["dealer_code"] or "") for r in recs} \
+        == {(o["name"], o["city"], o["code"]) for o in outlets(MSIL_HEADERS, *rows, tab="MSIL")}
+
+
+# ── TATA cut by dealership (Sep 2026) ────────────────────────────────────────
+# The tab went from one row per code to one row per dealership, the codes listed
+# in one cell and one target for the lot. Read on the old grain, the list became
+# a single code no outlet holds and each group's per-code rows stayed behind as
+# outlets no sale is written to.
+
+GROUP_ROWS = [
+    ["A G MOTORS", "AMRITSAR", "PUNJAB", "PANKAJ", "3008040, 300B910", 48, 12, 19, 0, None, None],
+    ["ADITYA AUTOCARE", "NAGPUR", "MAHARASHTRA", "UMESH", 3002170, 381, 89, 19, 2, None, None],
+]
+
+
+def test_a_dealership_row_is_keyed_by_name_and_city_not_its_code_list():
+    recs, _, errors = tata(*GROUP_ROWS)
+    assert not errors
+    ag = by_key(recs)[("A G MOTORS", "AMRITSAR", None)]
+    assert ag["dealer_codes"] == "3008040, 300B910"
+    # One target for the whole dealership, as the sheet sets it.
+    assert [t["target"] for t in ag["targets"] if t["product"] == "SC"] == [48]
+    # A single-code dealer on the same tab is keyed the same way, not by code.
+    assert ("ADITYA AUTOCARE", "NAGPUR", None) in by_key(recs)
+
+
+def test_a_per_code_tab_is_still_keyed_by_code():
+    """The rows overrule the headers only when they list codes; the old layout
+    must keep splitting ANANYA's two PATNA codes."""
+    recs, _, _ = tata(
+        ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "D", "300C002", 94, 10, 0, 0, None, None],
+        ["ANANYA AUTO AGENCY", "PATNA", "BIHAR", "D", "3007180", 452, 40, 0, 0, None, None])
+    assert {r["dealer_code"] for r in recs} == {"300C002", "3007180"}
+
+
+def test_both_readers_agree_on_a_dealership_tab():
+    recs, _, _ = tata(*GROUP_ROWS)
+    got = outlets(TATA_HEADERS, *GROUP_ROWS)
+    assert {(r["name"], r["city"], r["dealer_code"] or "") for r in recs} \
+        == {(o["name"], o["city"], o["code"]) for o in got}
+    assert {o["codes"] for o in got} == {"3008040, 300B910", "3002170"}
